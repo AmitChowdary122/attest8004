@@ -254,7 +254,8 @@ contract ValidationRegistryTest is Test {
 
     function test_Response_StoresAndEmits() public {
         _request(owner, validatorA, agentId, HASH);
-        vm.warp(block.timestamp + 60);
+        uint256 respondedAt = vm.getBlockTimestamp() + 60;
+        vm.warp(respondedAt);
 
         vm.recordLogs();
         _respond(validatorA, HASH, 87, TAG);
@@ -281,7 +282,7 @@ contract ValidationRegistryTest is Test {
         assertEq(sr, 87);
         assertEq(srh, RESPONSE_HASH);
         assertEq(stag, TAG);
-        assertEq(lastUpdate, block.timestamp);
+        assertEq(lastUpdate, respondedAt);
     }
 
     function test_Response_AcceptsBounds_0_and_100() public {
@@ -325,7 +326,7 @@ contract ValidationRegistryTest is Test {
         _request(owner, validatorA, agentId, HASH);
         _respond(validatorA, HASH, 40, "soft-finality");
 
-        uint256 later = block.timestamp + 100;
+        uint256 later = vm.getBlockTimestamp() + 100;
         vm.warp(later);
         vm.prank(validatorA);
         registry.validationResponse(HASH, 90, "ipfs://final", keccak256("final"), "hard-finality");
@@ -372,7 +373,7 @@ contract ValidationRegistryTest is Test {
     /// The EIP read interface cannot tell "pending" from "responded 0": both read response 0.
     /// Consumers must therefore require a minimum score of at least 1.
     function test_GetValidationStatus_Pending() public {
-        uint256 requestedAt = block.timestamp + 1234;
+        uint256 requestedAt = vm.getBlockTimestamp() + 1234;
         vm.warp(requestedAt);
         _request(owner, validatorA, agentId, HASH);
         vm.warp(requestedAt + 50);
@@ -555,7 +556,8 @@ contract ValidationRegistryTest is Test {
     function testFuzz_StatusRoundTrip(bytes32 requestHash, uint8 r, bytes32 respHash, string calldata tag) public {
         r = uint8(bound(r, 0, 100));
         _request(owner, validatorA, agentId, requestHash);
-        vm.warp(block.timestamp + 7);
+        uint256 respondedAt = vm.getBlockTimestamp() + 7;
+        vm.warp(respondedAt);
         vm.prank(validatorA);
         registry.validationResponse(requestHash, r, "uri", respHash, tag);
 
@@ -566,7 +568,7 @@ contract ValidationRegistryTest is Test {
         assertEq(sr, r);
         assertEq(srh, respHash);
         assertEq(stag, tag);
-        assertEq(lastUpdate, block.timestamp);
+        assertEq(lastUpdate, respondedAt);
     }
 
     /// Eight requests; bit i of each mask picks validator A or B, tag "t1" or "t2", and whether
