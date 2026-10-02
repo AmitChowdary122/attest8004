@@ -3,6 +3,7 @@ packages:
   - validators/*
   - indexer
   - web
+  - scripts
 
 # Shared dependency versions; packages reference them as "catalog:".
 catalog:
