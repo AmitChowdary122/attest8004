@@ -8,8 +8,10 @@ import {ValidationRegistry} from "../src/ValidationRegistry.sol";
 /// deterministic deployment proxy). Deploying with a CALL instead of `new` lets the transaction
 /// carry a literal gas limit, which matters because Monad charges for the gas limit, not the gas
 /// used. Re-running is a no-op once the contract exists.
-/// The address depends on the init code, which includes the Identity Registry argument, so each
-/// chain's registry has its own address. Run it with script/deploy-testnet.sh.
+/// The address depends on the init code, which includes the Identity Registry argument: testnet
+/// and mainnet use different Identity Registries, so their addresses differ. (A chain that shares
+/// an Identity Registry address would get the same address.) Run it with script/deploy-testnet.sh,
+/// which first checks Monad's eth_estimateGas for this call against DEPLOY_GAS (see deployPlan).
 contract DeployValidationRegistry is Script {
     // CREATE2_FACTORY (0x4e59b448…956C) is inherited from forge-std's CommonBase.
     bytes32 public constant SALT = keccak256("attest8004.ValidationRegistry.v1");
@@ -40,11 +42,21 @@ contract DeployValidationRegistry is Script {
     function deploy(address identityRegistry) public returns (ValidationRegistry) {
         address predicted = predictedAddress(identityRegistry);
         if (predicted.code.length == 0) {
-            (bool ok, bytes memory ret) =
-                CREATE2_FACTORY.call{gas: DEPLOY_GAS}(abi.encodePacked(SALT, initCode(identityRegistry)));
+            (bool ok, bytes memory ret) = CREATE2_FACTORY.call{gas: DEPLOY_GAS}(_deployCalldata(identityRegistry));
             if (!ok || ret.length != 20 || address(bytes20(ret)) != predicted) revert DeployFailed(predicted);
         }
         return ValidationRegistry(predicted);
+    }
+
+    /// @notice The exact transaction deploy() broadcasts on `chainId`, so the wrapper can compare
+    /// the node's gas estimate with the limit before sending.
+    function deployPlan(uint256 chainId)
+        public
+        pure
+        returns (address to, bytes memory data, uint256 gasLimit, address predicted)
+    {
+        address identityRegistry = identityRegistryFor(chainId);
+        return (CREATE2_FACTORY, _deployCalldata(identityRegistry), DEPLOY_GAS, predictedAddress(identityRegistry));
     }
 
     function predictedAddress(address identityRegistry) public pure returns (address) {
@@ -55,6 +67,10 @@ contract DeployValidationRegistry is Script {
 
     function initCode(address identityRegistry) public pure returns (bytes memory) {
         return abi.encodePacked(type(ValidationRegistry).creationCode, abi.encode(identityRegistry));
+    }
+
+    function _deployCalldata(address identityRegistry) internal pure returns (bytes memory) {
+        return abi.encodePacked(SALT, initCode(identityRegistry));
     }
 
     function identityRegistryFor(uint256 chainId) public pure returns (address) {

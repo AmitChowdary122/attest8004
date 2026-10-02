@@ -51,6 +51,23 @@ contract DeployValidationRegistryTest is Test {
         assertTrue(script.predictedAddress(IDENTITY_TESTNET) != script.predictedAddress(IDENTITY_MAINNET));
     }
 
+    /// deploy-testnet.sh compares Monad's eth_estimateGas for exactly this call with the limit
+    /// before it broadcasts, so the plan must describe the transaction deploy() sends.
+    function test_DeployPlan_MatchesTheDeployTransaction() public view {
+        (address to, bytes memory data, uint256 gasLimit, address predicted) = script.deployPlan(10143);
+        assertEq(to, FACTORY);
+        assertEq(
+            data, abi.encodePacked(script.SALT(), type(ValidationRegistry).creationCode, abi.encode(IDENTITY_TESTNET))
+        );
+        assertEq(gasLimit, script.DEPLOY_GAS());
+        assertEq(predicted, script.predictedAddress(IDENTITY_TESTNET));
+    }
+
+    function test_DeployPlan_RevertWhen_UnknownChain() public {
+        vm.expectRevert(abi.encodeWithSelector(DeployValidationRegistry.UnsupportedChain.selector, 1));
+        script.deployPlan(1);
+    }
+
     function test_IdentityRegistryFor_KnownChains() public view {
         assertEq(script.identityRegistryFor(10143), IDENTITY_TESTNET);
         assertEq(script.identityRegistryFor(143), IDENTITY_MAINNET);

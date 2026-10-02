@@ -7,7 +7,9 @@
 # Reads DEPLOYER_PRIVATE_KEY and MONAD_TESTNET_RPC_URL from the repo's .env as environment
 # variables. Never prints them: no `set -x`, and no forge -v flags (traces can echo values).
 # --skip-simulation keeps the literal gas limit set in the script (DEPLOY_GAS); forge's
-# on-chain simulation would replace it with its own estimate.
+# on-chain simulation would replace it with its own estimate. So before forge runs, this
+# wrapper asks the node for eth_estimateGas of the exact deploy call (deployPlan) and stops
+# if the estimate is above the limit: Monad charges the full limit even when a tx runs out of gas.
 set -euo pipefail
 
 cd "$(dirname "$0")/.."
@@ -17,6 +19,26 @@ set -a
 set +a
 : "${DEPLOYER_PRIVATE_KEY:?DEPLOYER_PRIVATE_KEY is not set in .env}"
 : "${MONAD_TESTNET_RPC_URL:?MONAD_TESTNET_RPC_URL is not set in .env}"
+: "${DEPLOYER_ADDRESS:?DEPLOYER_ADDRESS is not set in .env}"
+
+chain_id=$(cast chain-id --rpc-url "$MONAD_TESTNET_RPC_URL")
+plan=$(forge script script/DeployValidationRegistry.s.sol --sig "deployPlan(uint256)" "$chain_id" --json \
+  | grep '^{' | tail -n 1)
+to=$(jq -r '.returns.to.value' <<<"$plan")
+data=$(jq -r '.returns.data.value' <<<"$plan")
+gas_limit=$(jq -r '.returns.gasLimit.value' <<<"$plan")
+predicted=$(jq -r '.returns.predicted.value' <<<"$plan")
+
+if [[ "$(cast code "$predicted" --rpc-url "$MONAD_TESTNET_RPC_URL")" != "0x" ]]; then
+  echo "gas guard: ValidationRegistry already deployed at $predicted; the script will not send a deploy"
+else
+  estimate=$(cast estimate "$to" "$data" --from "$DEPLOYER_ADDRESS" --rpc-url "$MONAD_TESTNET_RPC_URL")
+  if ((estimate > gas_limit)); then
+    echo "gas guard: eth_estimateGas $estimate is above DEPLOY_GAS $gas_limit; raise DEPLOY_GAS in the script" >&2
+    exit 1
+  fi
+  echo "gas guard: eth_estimateGas $estimate <= DEPLOY_GAS $gas_limit"
+fi
 
 args=(
   script script/DeployValidationRegistry.s.sol
