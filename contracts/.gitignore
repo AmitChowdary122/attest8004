@@ -18,3 +18,6 @@ docs/
 .env
 .env.*
 !.env.example
+# Keep only run-latest.json per script and chain; timestamped copies and lock files are noise.
+/broadcast/**/run-[0-9]*.json
+/broadcast/**/*.lock
