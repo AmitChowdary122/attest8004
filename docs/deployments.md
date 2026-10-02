@@ -19,6 +19,22 @@ Every Attest8004 deployment is recorded here: chain, contract, address, the comm
   Differences from the EIP are listed in [spec-notes.md](./spec-notes.md).
 - **Not upgradeable, no owner.** Nobody can change it after deployment.
 
+## Verified round trips
+
+`scripts/src/validation-roundtrip.ts` (`pnpm --filter @attest8004/scripts roundtrip`) registers a test agent, requests
+validation from validator A, and has validator A respond. It then checks `getValidationStatus` and `getSummary`
+onchain. The response is a smoke test of the registry, not a validation verdict; its evidence JSON says so.
+
+| Date | Chain | Registry | agentId | requestHash | register tx | validationRequest tx | validationResponse tx |
+|---|---|---|---|---|---|---|---|
+| 2026-10-02 | Monad testnet (10143) | `0xc4A4D0cE…F9a8f` | 1982 | `0xe7382dcc…996dea2` | [`0x1cbd6edd…e9e1327`](https://monad-testnet.socialscan.io/tx/0x1cbd6eddb85ac102c8916b120793dd8dff716311bab0be7a6492f7411e9e1327) | [`0x7ef1b474…fcf040`](https://monad-testnet.socialscan.io/tx/0x7ef1b474bcdd6d0b10104ebd9b872aa1f0f66bf904a34ae99c19ef4348fcf040) | [`0x7eb0f99e…901bfb6`](https://monad-testnet.socialscan.io/tx/0x7eb0f99e00b7c4557f3634aa847316c2ebb2c6f86e20bead2e09f002a901bfb6) |
+
+- Agent owner (the deployer): `0x3EFEB3Cf2FB54A7D99abE90AaB786cE5A831a8CF`. Validator A: `0xa62DaB21E0C0F57e94B3ed6e675F214199989e92`.
+- Full `requestHash`: `0xe7382dcc048aaacd828a3af2a7cd955bed6ba731877ba5149b5b0f3eb996dea2`. Check it yourself:
+  `cast call 0xc4A4D0cEB3971cbE7a2536494aC106f2Cd9F9a8f "getValidationStatus(bytes32)(address,uint256,uint8,bytes32,string,uint256)" <requestHash> --rpc-url https://testnet-rpc.monad.xyz`
+- Gas limits (all explicit): register 493,000; validationRequest 284,000; validationResponse 165,000 (provisional for this
+  first run; tightened to 102,000 afterwards from the measured estimate of 84,212).
+
 ## Canonical contracts used (not deployed by us)
 
 | Contract | Monad testnet (10143) | Monad mainnet (143) |

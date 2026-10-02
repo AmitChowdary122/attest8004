@@ -33,15 +33,15 @@ import { monadTestnet } from "viem/chains";
 import { DEPLOYMENTS } from "./deployments.ts";
 
 /**
- * Explicit gas limits (Monad charges for the limit). register and validationRequest: Monad testnet
- * eth_estimateGas on 2 Oct 2026 (410,457 and 235,881) x 1.2, rounded up to 1k. validationResponse
- * can't be estimated before a request exists: forge's Monad-profile gas (74,908) plus intrinsic and
- * calldata gas, x 1.5. The script's estimate guard confirms each limit before sending.
+ * Explicit gas limits (Monad charges for the limit): Monad testnet eth_estimateGas on 2 Oct 2026
+ * x 1.2, rounded up to 1k. Estimates: register 410,457; validationRequest 235,881;
+ * validationResponse 84,212 (measured in the first round trip, which ran with a provisional
+ * 165,000). The script's estimate guard re-checks each limit before sending.
  */
 const GAS = {
   register: 493_000n,
   validationRequest: 284_000n,
-  validationResponse: 165_000n,
+  validationResponse: 102_000n,
 } as const;
 
 const TAG = "attest8004-roundtrip";
