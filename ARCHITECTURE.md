@@ -8,7 +8,7 @@
 
 ## 1. What it is
 
-AI agents on Monad already have identity through the canonical **ERC-8004 Identity Registry**, and feedback through the **Reputation Registry**. What's missing is the third ERC-8004 piece, the **Validation Registry**: a neutral, onchain record that *an independent party checked this agent's action, and here is the verdict*. Monad's docs list it as "coming soon", and no deployment exists on any chain.
+AI agents on Monad already have identity through the canonical **ERC-8004 Identity Registry**, and feedback through the **Reputation Registry**. What's missing is the third ERC-8004 piece, the **Validation Registry**: a neutral, onchain record that *an independent party checked this agent's action, and here is the verdict*. Monad's docs list it as "coming soon", and there is no canonical deployment on any chain. Attest8004's spec-conformant (non-canonical) registry is live on Monad testnet; see `docs/deployments.md`.
 
 Attest8004 provides that layer:
 
@@ -98,7 +98,7 @@ flowchart TB
   G --> V
 ```
 
-- **ValidationRegistry** reads the Identity Registry only to check that `msg.sender` is the owner or approved operator of `agentId` (`ownerOf`, `isApprovedForAll`, `getApproved`). It never trusts its own callers for this. The Identity Registry address is a **constructor argument** stored as an `immutable`. The EIP describes an `initialize(address)` instead, as used by the reference's upgradeable proxy; we have no proxy, owner or `initialize`, and `getIdentityRegistry()` returns the address. Because the address is part of the init code, the registry's CREATE2 address differs per chain. All differences from the EIP are in [`docs/spec-notes.md`](./docs/spec-notes.md).
+- **ValidationRegistry** reads the Identity Registry only to check that `msg.sender` is the owner or approved operator of `agentId` (`ownerOf`, `isApprovedForAll`, `getApproved`). It never trusts its own callers for this. The Identity Registry address is a **constructor argument** stored as an `immutable`. The EIP describes an `initialize(address)` instead, as used by the reference's upgradeable proxy; we have no proxy, owner or `initialize`, and `getIdentityRegistry()` returns the address. Because the Identity Registry address is part of the init code, the registry's CREATE2 address depends on it: testnet and mainnet use different Identity Registries, so their addresses differ. All differences from the EIP are in [`docs/spec-notes.md`](./docs/spec-notes.md).
 - **MandateRegistry** reads the Identity Registry so that only the agent's owner can set the initial passkey key. After that, every mandate or inbox-key change requires the passkey.
 - **AttestGate** reads the ValidationRegistry. It holds its own **trusted validator set** and **minimum score**, chosen by the consumer contract's owner, not by Attest8004.
 
@@ -198,7 +198,9 @@ sequenceDiagram
 > - check the **stored `agentId` and `validatorAddress`** returned by `getValidationStatus`, not only the score (anyone who owns an agent can claim a `requestHash` first);
 > - require `minScore >= 1`, because a pending request reads as response 0.
 >
-> Details: [`docs/spec-notes.md`](./docs/spec-notes.md), rows 5, 7 and 12.
+> **Who sends `validationRequest` is also open (decide in P3).** The registry accepts it only from the agent's owner or an ERC-721 operator (`isApprovedForAll` / `getApproved`); the `agentWallet` alone is not enough. Making the agent's hot key an operator would also let it transfer the agent NFT, so in the diagram above "Agent" can't simply be the agent's runtime key. One option is a minimal forwarder contract, approved as operator, that can only forward `validationRequest`.
+>
+> Details: [`docs/spec-notes.md`](./docs/spec-notes.md), rows 5, 7, 10 and 12, and the P2/P3 decisions in `STATUS.md`.
 
 ### 5.3 Blocked attack (demo: the Grok/Bankr pattern)
 1. A permission change happens outside the mandate: a new operator approval on the agent in the Identity Registry.
@@ -281,7 +283,7 @@ Validators **must** recompute `requestHash` from this JSON and reject it on mism
 | Component | Trusted for | Not trusted for | How it's checked |
 |---|---|---|---|
 | ValidationRegistry | Faithfully storing requests and responses | Judging anything | Open source, no admin, test suite |
-| Canonical Identity Registry | Who owns or operates an `agentId` | — | Canonical ERC-8004 deployment |
+| Canonical Identity Registry | Who owns or operates an `agentId` | — | Canonical ERC-8004 deployment. **It is an upgradeable (UUPS) proxy with an owner**, so its owner can change ownership and approval logic. Our ValidationRegistry pins its address as an `immutable` and inherits that trust. |
 | P256 precompile `0x0100` | Raw ECDSA P-256 verification | WebAuthn semantics, low-s | Our contract checks the challenge, flags, rpIdHash and low-s, and checks the return length |
 | `mandate-v1` | A deterministic verdict | — | **Anyone can re-execute it** (§5.5) |
 | `risk-qwen-v1` | Advisory risk score and explanation | Being "correct". LLMs can be wrong or manipulated | Evidence hash committed onchain, full trace in the evidence, never the only gate |
@@ -303,7 +305,7 @@ The recommended gate policy is *require `mandate-v1` = 100 **and** `risk-qwen-v1
 | Operator passkey | P-256 WebAuthn credential | Authenticator (Google Password Manager / iCloud Keychain) | Operator | Public key `(qx, qy)` in MandateRegistry |
 | Inbox key | X25519, derived from passkey PRF | **Nowhere.** Derived on demand in the browser, buffers zeroed after use | Operator | Public key in MandateRegistry |
 | Operator wallet | secp256k1 | Operator's wallet | Operator | Agent owner in the Identity Registry |
-| Agent wallet | secp256k1 | Agent runtime (demo: ephemeral test key) | Agent | Calls `validationRequest` and `execute` |
+| Agent wallet | secp256k1 | Agent runtime (demo: ephemeral test key) | Agent | Calls `execute`. It can call `validationRequest` only as the agent's owner or an ERC-721 operator, which would also let it transfer the agent NFT; how agents submit requests is a P3 decision (§5.2 note). |
 | Validator A / B keys | secp256k1 | Validator service env (`.env`, never committed) | Validator operator | `validatorAddress` in requests and responses |
 | Deployer | secp256k1 | `.env` | Builder | Deploys only. No admin rights afterwards. |
 | API keys (Qwen, Nansen, Envio) | Bearer tokens | Validator or indexer env | Builder | None |
@@ -322,7 +324,7 @@ The LLM never sees or holds any private key. Validators sign; the model only pro
 - **Gas:** Monad charges on the *gas limit*, so every transaction sets an explicit, tight limit.
 - **LLM output** is untrusted data: schema-validated, capped tool calls and tokens, temperature 0–0.2, full trace kept.
 - **Secrets:** gitleaks runs as a pre-commit hook and over the full history before the repo goes public. Only `.env.example` is committed.
-- **No upgradeability or admin** in the registries, so nothing can be swapped out after deployment.
+- **No upgradeability or admin** in our registries, so nothing can be swapped out after deployment. The canonical Identity Registry they read *is* upgradeable by its owner (§7).
 
 ---
 

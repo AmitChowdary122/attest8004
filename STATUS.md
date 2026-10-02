@@ -21,7 +21,7 @@ Running log, updated at the end of every session (CLAUDE.md, rule 10). Newest se
   - 5 hand-made mutants of the contract are each caught by the suite.
 - **Deployed on Monad testnet:** `0xc4A4D0cEB3971cbE7a2536494aC106f2Cd9F9a8f` (commit `8dc8859`), tx `0x724f31e0…cf64d03`.
   - It goes through the CREATE2 factory with a literal gas limit (`script/deploy-testnet.sh`).
-  - The address is per chain, because the init code includes the Identity Registry. A mainnet deploy would land at a different address.
+  - The address depends on the Identity Registry address in the init code. Testnet and mainnet use different Identity Registries, so a mainnet deploy would land at a different address.
 - **Round trip on testnet** (`pnpm --filter @attest8004/scripts roundtrip`).
   - The deployer registered test agent **1982**. As owner it requested validation from validator A, and validator A responded 100 with tag `attest8004-roundtrip`.
   - The script checked `getValidationStatus` and `getSummary` onchain, and they were checked again with `cast`.
@@ -62,11 +62,13 @@ Running log, updated at the end of every session (CLAUDE.md, rule 10). Newest se
 - **P2: `requestHash` and the two-validator flow.** EIP-8004 (and our registry, like the reference) allows **one validator per `requestHash`**: a second `validationRequest` with the same hash reverts. So ARCHITECTURE §5.2, which sends one hash to both validators, can't work as drawn. Recommended:
   - add `validatorAddress` to the `requestHash` preimage, so the gate recomputes one hash per trusted validator;
   - mark consumption on a **validator-independent action hash**, so one action can't execute twice using different validators' verdicts;
-  - check the **stored `agentId` and `validatorAddress`** from `getValidationStatus`, not only the score (any agent owner can claim a hash first);
+  - check the **stored `agentId` and `validatorAddress`** from `getValidationStatus`, not only the score (any agent owner can claim a hash first, and can repeat that for every retry: spec-notes row 12);
   - require `minScore >= 1` (a pending request reads as response 0).
 
   This changes SPEC §4.3 and ARCHITECTURE §4.3–4.4, so it needs your OK. Also decide whether `requestHash` stays an *action* hash, or becomes `keccak256` of the request payload as the EIP's wording says (spec-notes, row 6).
 - **P3: how agents submit requests.** Only the agent's owner or an ERC-721 operator can call `validationRequest`. But making the agent's hot key an operator (`setApprovalForAll` or `approve`) would also let it **transfer the agent NFT**. Decide in P3 how agents submit requests. One option: a minimal forwarder contract, approved as operator, that can only forward `validationRequest` for agents whose owners enabled it.
+- **Trust note:** the canonical Identity Registry is an upgradeable (UUPS) proxy with an owner. Our registry pins its address, so it inherits that trust (ARCHITECTURE §7).
+- **Before reusing the deploy pattern in P2/P4:** `deploy-testnet.sh` now checks Monad's `eth_estimateGas` for the exact deploy call (`deployPlan`) against `DEPLOY_GAS` before broadcasting. Copy that guard.
 - **Test agent 1982** now exists in the canonical testnet Identity Registry, owned by the deployer. Its registration file says it is a test agent (`active: false`).
 
 ## Fri 2 Oct 2026 · P0 scaffold

@@ -2,7 +2,8 @@ import type { Address } from "viem";
 
 /**
  * Attest8004 addresses per chain. Mirrors docs/deployments.md; keep the two in sync.
- * The ValidationRegistry address is per chain: its init code includes the Identity Registry.
+ * The ValidationRegistry address depends on the Identity Registry in its init code, so testnet and
+ * mainnet addresses differ.
  */
 export const DEPLOYMENTS = {
   10143: {

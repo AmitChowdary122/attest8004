@@ -13,11 +13,13 @@ Every Attest8004 deployment is recorded here: chain, contract, address, the comm
   CREATE2 factory `0x4e59b44847b379578588920cA78FbF26c0B4956C` with salt `keccak256("attest8004.ValidationRegistry.v1")`.
   The broadcast record is `contracts/broadcast/DeployValidationRegistry.s.sol/10143/run-latest.json`.
 - **Gas:** explicit limit 1,140,000 (Monad `eth_estimateGas` was 949,673; limit = ×1.2, rounded up to 10k).
-- **The address is per chain.** The init code includes the Identity Registry argument, so a mainnet deployment will have a
-  different address. Check it with `predictedAddress(<identity registry>)` on the deploy script.
+- **The address depends on the Identity Registry.** The init code includes the Identity Registry argument, and testnet and
+  mainnet use different Identity Registries, so a mainnet deployment will have a different address. Check it with
+  `predictedAddress(<identity registry>)` on the deploy script.
 - **Not canonical.** This is a spec-conformant ERC-8004 Validation Registry, not an official erc-8004 deployment.
   Differences from the EIP are listed in [spec-notes.md](./spec-notes.md).
-- **Not upgradeable, no owner.** Nobody can change it after deployment.
+- **Not upgradeable, no owner.** Nobody can change this contract after deployment. It reads the canonical Identity Registry,
+  which *is* an upgradeable proxy with an owner; see the trust model in ARCHITECTURE §7.
 
 ## Verified round trips
 

@@ -46,7 +46,7 @@ contract DeployValidationRegistryTest is Test {
         assertEq(deployed.getIdentityRegistry(), address(identity));
     }
 
-    /// The init code includes the constructor argument, so each chain's registry has its own address.
+    /// The init code includes the Identity Registry argument, so testnet and mainnet addresses differ.
     function test_PredictedAddress_DiffersPerIdentityRegistry() public view {
         assertTrue(script.predictedAddress(IDENTITY_TESTNET) != script.predictedAddress(IDENTITY_MAINNET));
     }
