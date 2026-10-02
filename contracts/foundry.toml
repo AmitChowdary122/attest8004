@@ -1,0 +1,29 @@
+[profile.default]
+src = "src"
+test = "test"
+script = "script"
+out = "out"
+libs = ["lib"]
+# Monad: P256VERIFY precompile at 0x0100, Monad gas semantics.
+network = "monad"
+solc_version = "0.8.37"
+# Osaka opcodes (e.g. CLZ) verified live on Monad testnet and mainnet on 2 Oct 2026.
+evm_version = "osaka"
+optimizer = true
+optimizer_runs = 200
+remappings = [
+    "@openzeppelin/contracts/=lib/openzeppelin-contracts/contracts/",
+    "forge-std/=lib/forge-std/src/",
+]
+
+[profile.default.fuzz]
+runs = 1000
+
+[profile.ci.fuzz]
+runs = 10000
+
+[rpc_endpoints]
+monad_testnet = "${MONAD_TESTNET_RPC_URL}"
+monad = "${MONAD_RPC_URL}"
+
+# See https://getfoundry.sh/config/reference/ for all options.
