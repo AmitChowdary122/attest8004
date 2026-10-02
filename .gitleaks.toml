@@ -1,0 +1,16 @@
+title = "attest8004 gitleaks config"
+
+# Keep every built-in gitleaks rule.
+[extend]
+useDefault = true
+
+# The default rules do not catch raw hex EVM private keys, e.g.
+# DEPLOYER_PRIVATE_KEY=0x<64 hex>, `--private-key 0x...`, `uint256 pk = 0x...`.
+# Matches a 32-byte hex value assigned to a key-like name.
+[[rules]]
+id = "evm-private-key"
+description = "Hex-encoded EVM (secp256k1 / P-256) private key"
+regex = '''(?i)(?:priv(?:ate)?[_-]?key|secret|\bpk|\bsk)[a-z0-9_]*["']?(?:\s*[:=]\s*|\s+)["']?(?:0x)?([0-9a-f]{64})\b'''
+secretGroup = 1
+entropy = 3.0
+keywords = ["priv", "secret", "pk", "sk"]

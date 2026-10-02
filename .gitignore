@@ -1,0 +1,35 @@
+# Secrets: only .env.example is committed (CLAUDE.md, hard rule 1)
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+
+# Node / TypeScript
+node_modules/
+dist/
+coverage/
+*.tsbuildinfo
+.pnpm-store/
+npm-debug.log*
+pnpm-debug.log*
+
+# Foundry (see also contracts/.gitignore)
+contracts/out/
+contracts/cache/
+
+# Envio HyperIndex
+indexer/generated/
+indexer/.envio/
+
+# Web / Vercel
+.vercel/
+
+# Editors and OS
+.DS_Store
+.idea/
+.vscode/
+*.swp
+
+# Claude Code per-user settings
+.claude/settings.local.json
