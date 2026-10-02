@@ -2,7 +2,7 @@
 
 > **The missing ERC-8004 Validation layer for Monad.**
 > Built for Monad Metropolis, Track 04 (Trust, Identity & AI Infrastructure).
-> **Status: work in progress.** Nothing is deployed yet; see [STATUS.md](./STATUS.md).
+> **Status: work in progress.** The ValidationRegistry is live on Monad testnet (see [Deployments](#deployments)); the other parts are being built. Progress is in [STATUS.md](./STATUS.md).
 
 ## What
 
@@ -46,6 +46,7 @@ The diagrams, flows, data formats, trust model and key custody are in **[ARCHITE
 | [`validators/qwen/`](./validators/qwen) | `risk-qwen-v1` agentic validator |
 | [`indexer/`](./indexer) | Envio HyperIndex project |
 | [`web/`](./web) | `/approve`, `/inbox`, `/dashboard` |
+| [`scripts/`](./scripts) | `@attest8004/scripts`: operational scripts (testnet validation round trip) |
 | [`docs/`](./docs) | Quickstart, API reference, threat model, deployments |
 
 ## Quickstart
@@ -59,13 +60,25 @@ git clone --recurse-submodules https://github.com/AmitChowdary122/attest8004.git
 cd attest8004
 pnpm install            # also enables the gitleaks pre-commit hook
 cp .env.example .env    # fill in hackathon-only keys; never commit .env
-pnpm test:contracts     # forge test
+pnpm test:contracts     # forge test (fork tests skip unless MONAD_TESTNET_RPC_URL is set)
 pnpm test               # TypeScript tests
+```
+
+Run the fork tests against the live testnet Identity Registry, and a full validation round trip on testnet (it needs
+`DEPLOYER_PRIVATE_KEY` and `VALIDATOR_A_PRIVATE_KEY` in `.env`, funded with testnet MON):
+
+```bash
+cd contracts && MONAD_TESTNET_RPC_URL=https://testnet-rpc.monad.xyz forge test --match-path 'test/fork/*' && cd ..
+pnpm --filter @attest8004/scripts roundtrip   # register agent -> validationRequest -> validationResponse
 ```
 
 ## Deployments
 
-Not deployed yet. Every deployment (chain, address, commit and date) will be recorded in [docs/deployments.md](./docs/deployments.md).
+| Chain | Contract | Address |
+|---|---|---|
+| Monad testnet (10143) | `ValidationRegistry` (spec-conformant, **not canonical**) | [`0xc4A4D0cEB3971cbE7a2536494aC106f2Cd9F9a8f`](https://monad-testnet.socialscan.io/address/0xc4a4d0ceb3971cbe7a2536494ac106f2cd9f9a8f) |
+
+Deploy tx [`0x724f31e0…cf64d03`](https://monad-testnet.socialscan.io/tx/0x724f31e0efd09993f2d73581cb742e71d4bef52c0f4f2a30cccd43d79cf64d03). A scripted register → request → response round trip on this registry (agentId 1982) is recorded, with its transaction hashes, in [docs/deployments.md](./docs/deployments.md). That file records every deployment with its chain, address, commit and date. Differences from the EIP-8004 Draft are in [docs/spec-notes.md](./docs/spec-notes.md).
 
 Canonical contracts this project builds on:
 
@@ -96,13 +109,19 @@ At runtime, `risk-qwen-v1` uses **Qwen 3.8 Max** (Alibaba Cloud Model Studio) fo
 | Library | Licence | Used for |
 |---|---|---|
 | [forge-std](https://github.com/foundry-rs/forge-std) v1.17.0 | MIT / Apache-2.0 | Foundry testing |
-| [OpenZeppelin Contracts](https://github.com/OpenZeppelin/openzeppelin-contracts) v5.7.0 | MIT | Contract utilities (P256, WebAuthn) |
+| [OpenZeppelin Contracts](https://github.com/OpenZeppelin/openzeppelin-contracts) v5.7.0 | MIT | Contract utilities (P256, WebAuthn); ERC721 in a test mock |
 | [viem](https://viem.sh) | MIT | TypeScript EVM client |
 | [zod](https://zod.dev) | MIT | Schema validation |
 | [Vitest](https://vitest.dev) | MIT | TypeScript tests |
 | [TypeScript](https://www.typescriptlang.org) | Apache-2.0 | Language |
 | [React](https://react.dev) | MIT | Web app |
 | [Vite](https://vite.dev) | MIT | Web build |
+
+**Standards and reference code:**
+
+- `contracts/src/interfaces/IValidationRegistry.sol` copies the function and event signatures from the [EIP-8004](https://eips.ethereum.org/EIPS/eip-8004) text (CC0).
+- `ValidationRegistry` was written for this project. Its behaviour deliberately matches the reference [`erc-8004/erc-8004-contracts`](https://github.com/erc-8004/erc-8004-contracts) `ValidationRegistryUpgradeable` (MIT), but no code was copied from it. The differences are in [docs/spec-notes.md](./docs/spec-notes.md).
+- Deployment goes through the widely used deterministic deployment proxy at `0x4e59b44847b379578588920cA78FbF26c0B4956C` (Arachnid); it is called onchain, and none of its code is included here.
 
 This list grows as libraries are added (Envio, Mera, agent0 and others).
 

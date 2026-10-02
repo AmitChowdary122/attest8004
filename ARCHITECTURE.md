@@ -98,7 +98,7 @@ flowchart TB
   G --> V
 ```
 
-- **ValidationRegistry** reads the Identity Registry only to check that `msg.sender` is the owner or approved operator of `agentId`. It never trusts its own callers for this.
+- **ValidationRegistry** reads the Identity Registry only to check that `msg.sender` is the owner or approved operator of `agentId` (`ownerOf`, `isApprovedForAll`, `getApproved`). It never trusts its own callers for this. The Identity Registry address is a **constructor argument** stored as an `immutable`. The EIP describes an `initialize(address)` instead, as used by the reference's upgradeable proxy; we have no proxy, owner or `initialize`, and `getIdentityRegistry()` returns the address. Because the address is part of the init code, the registry's CREATE2 address differs per chain. All differences from the EIP are in [`docs/spec-notes.md`](./docs/spec-notes.md).
 - **MandateRegistry** reads the Identity Registry so that only the agent's owner can set the initial passkey key. After that, every mandate or inbox-key change requires the passkey.
 - **AttestGate** reads the ValidationRegistry. It holds its own **trusted validator set** and **minimum score**, chosen by the consumer contract's owner, not by Attest8004.
 
@@ -136,7 +136,7 @@ requestHash = keccak256(abi.encode(
 1. Recompute `requestHash` from the call arguments.
 2. `block.timestamp <= deadline`.
 3. `requestHash` has not been consumed.
-4. `getValidationStatus(requestHash)` returns a validator in the gate's trusted set, with `response >= minScore`.
+4. `getValidationStatus(requestHash)` returns a validator in the gate's trusted set, with `response >= minScore`. *(P2 must refine this: see the note under §5.2.)*
 5. If the gate requires several validators (e.g. both `mandate-v1` and `risk-qwen-v1`), every one must pass.
 6. Mark it consumed, then execute.
 
@@ -191,6 +191,14 @@ sequenceDiagram
   G->>VR: getValidationStatus(requestHash)
   G-->>A: executed (requestHash consumed)
 ```
+
+> **Known conflict with EIP-8004, to resolve in P2.** EIP-8004 keys a request by `requestHash`, and each request names exactly **one** validator: our ValidationRegistry, like the reference, reverts a second `validationRequest` with the same hash. The flow above, which sends one `requestHash` to both validators, therefore can't work as drawn. The recommended P2 design:
+> - add `validatorAddress` to the `requestHash` preimage, so the gate recomputes one hash per trusted validator;
+> - mark consumption on a **validator-independent action hash**, so one action can't execute twice using different validators' verdicts;
+> - check the **stored `agentId` and `validatorAddress`** returned by `getValidationStatus`, not only the score (anyone who owns an agent can claim a `requestHash` first);
+> - require `minScore >= 1`, because a pending request reads as response 0.
+>
+> Details: [`docs/spec-notes.md`](./docs/spec-notes.md), rows 5, 7 and 12.
 
 ### 5.3 Blocked attack (demo: the Grok/Bankr pattern)
 1. A permission change happens outside the mandate: a new operator approval on the agent in the Identity Registry.
@@ -365,5 +373,6 @@ attest8004/
   indexer/          Envio HyperIndex
   web/              /approve, /inbox, /dashboard
   cre/              (stretch) Chainlink CRE workflow
-  docs/             quickstart, API ref, threat model, deployments, nansen.md, mera.md, security-review.md
+  scripts/          @attest8004/scripts: operational scripts (testnet round trip)
+  docs/             quickstart, API ref, threat model, deployments, spec-notes.md, nansen.md, mera.md, security-review.md
 ```
