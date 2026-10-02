@@ -1,0 +1,20 @@
+{
+  "name": "@attest8004/validator-qwen",
+  "version": "0.0.0",
+  "private": true,
+  "description": "risk-qwen-v1: agentic Attest8004 validator (Qwen 3.8 Max + Nansen)",
+  "license": "MIT",
+  "type": "module",
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run --passWithNoTests"
+  },
+  "dependencies": {
+    "@attest8004/sdk": "workspace:*"
+  },
+  "devDependencies": {
+    "@types/node": "catalog:",
+    "typescript": "catalog:",
+    "vitest": "catalog:"
+  }
+}

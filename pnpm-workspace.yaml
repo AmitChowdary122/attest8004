@@ -1,0 +1,13 @@
+packages:
+  - packages/*
+  - validators/*
+  - indexer
+  - web
+
+# Shared dependency versions; packages reference them as "catalog:".
+catalog:
+  "@types/node": ^22.20.0
+  typescript: ^7.0.2
+  viem: ^2.57.2
+  vitest: ^5.0.3
+  zod: ^4.6.5

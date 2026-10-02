@@ -1,0 +1,20 @@
+{
+  "name": "@attest8004/validator-mandate",
+  "version": "0.0.0",
+  "private": true,
+  "description": "mandate-v1: deterministic, re-executable Attest8004 validator",
+  "license": "MIT",
+  "type": "module",
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run --passWithNoTests"
+  },
+  "dependencies": {
+    "@attest8004/sdk": "workspace:*"
+  },
+  "devDependencies": {
+    "@types/node": "catalog:",
+    "typescript": "catalog:",
+    "vitest": "catalog:"
+  }
+}
