@@ -38,10 +38,61 @@ jobs:
       - name: Build
         run: forge build --sizes
 
-      - name: Test
-        run: forge test -vvv
+      - name: Test (unit + fuzz)
+        run: forge test -vvv --no-match-path 'test/fork/*'
         env:
           FOUNDRY_PROFILE: ci
+
+  contracts-fork:
+    name: Contracts (fork tests vs Monad testnet)
+    runs-on: ubuntu-latest
+    # Uses the public Monad testnet RPC; a rate limit there must not turn main red.
+    continue-on-error: true
+    permissions:
+      contents: read
+    defaults:
+      run:
+        working-directory: contracts
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          submodules: recursive
+
+      - name: Install Foundry
+        uses: foundry-rs/foundry-toolchain@908c540300062bd5a7e473851cdb4282204cee09 # v1.9.1
+        with:
+          version: v1.8.4
+
+      - name: Fork tests against the canonical testnet Identity Registry
+        run: forge test -vvv --match-path 'test/fork/*'
+        env:
+          # Public endpoint, not a secret.
+          MONAD_TESTNET_RPC_URL: https://testnet-rpc.monad.xyz
+
+  secrets:
+    name: Secrets (gitleaks, full history)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+
+      - name: Install gitleaks v8.30.1 (checksum-pinned)
+        run: |
+          curl -sSfL -o gitleaks.tar.gz \
+            https://github.com/gitleaks/gitleaks/releases/download/v8.30.1/gitleaks_8.30.1_linux_x64.tar.gz
+          echo "551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb  gitleaks.tar.gz" | sha256sum -c -
+          tar -xzf gitleaks.tar.gz gitleaks
+          sudo install -m 0755 gitleaks /usr/local/bin/gitleaks
+          rm gitleaks gitleaks.tar.gz
+
+      - name: Scan every commit on every ref
+        # Uses the repo's .gitleaks.toml (default rules + the EVM private-key rule).
+        run: gitleaks git --redact --no-banner --verbose --log-opts="--all" .
 
   typescript:
     name: TypeScript (pnpm test)
