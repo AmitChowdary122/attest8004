@@ -1,0 +1,369 @@
+# Attest8004 — Architecture
+
+> **Status:** design reference v0.1 (2 Oct 2026), written before implementation.
+> **Rule:** any change to an interface, flow, data format or trust assumption updates this file **in the same commit**.
+> Build scope and acceptance criteria live in [`SPEC.md`](./SPEC.md). This file explains *how the system works and why*.
+
+---
+
+## 1. What it is
+
+AI agents on Monad already have identity through the canonical **ERC-8004 Identity Registry**, and feedback through the **Reputation Registry**. What's missing is the third ERC-8004 piece, the **Validation Registry**: a neutral, onchain record that *an independent party checked this agent's action, and here is the verdict*. Monad's docs list it as "coming soon", and no deployment exists on any chain.
+
+Attest8004 provides that layer:
+
+1. **ValidationRegistry**: implements the EIP-8004 validation interface and authorises callers through the canonical Identity Registry.
+2. **Passkey-approved mandates**: the agent's operator states what the agent may do (targets, functions, spend caps, expiry) and approves it with a passkey, verified onchain by Monad's P256 precompile (`0x0100`).
+3. **Validators**:
+   - `mandate-v1`: deterministic; anyone can re-run it and get the same verdict.
+   - `risk-qwen-v1`: agentic; Qwen 3.8 Max plans tool calls over simulation, Nansen data and ERC-8004 reputation.
+4. **AttestGate**: a modifier that lets any contract refuse an action unless it carries a fresh, sufficient verdict for *exactly that action*.
+5. **Private findings inbox**: detailed findings are encrypted to a key derived from the operator's passkey (Mera PRF). It's never stored, and can be re-derived on any device.
+6. **Trust API**: Envio indexes everything into per-agent and per-validator summaries for the SDK and dashboard.
+
+---
+
+## 2. System context
+
+```mermaid
+flowchart LR
+  OP["Operator<br/>(passkey: laptop + phone)"]
+  AG["AI agent<br/>(ERC-8004 agentId)"]
+  ID["ERC-8004 Identity Registry<br/>(canonical, Monad)"]
+  VR["ValidationRegistry<br/>(Attest8004)"]
+  MR["MandateRegistry<br/>(P256 @ 0x0100)"]
+  VA["Validator A<br/>mandate-v1"]
+  VB["Validator B<br/>risk-qwen-v1"]
+  QW["Qwen 3.8 Max"]
+  NS["Nansen API"]
+  GATE["Consumer contract<br/>with AttestGate<br/>(e.g. DemoAgentVault)"]
+  IDX["Envio HyperIndex"]
+  UI["SDK getAgentTrust()<br/>+ dashboard"]
+  INBOX["/inbox<br/>(decrypt with passkey)"]
+
+  OP -->|"approve mandate,<br/>publish inbox key"| MR
+  AG -->|validationRequest| VR
+  VR -.->|"owner / operator check"| ID
+  VR -->|ValidationRequest event| VA
+  VR -->|ValidationRequest event| VB
+  VA -->|reads mandate| MR
+  VB --> QW
+  VB --> NS
+  VA -->|validationResponse| VR
+  VB -->|validationResponse| VR
+  AG -->|"execute(action)"| GATE
+  GATE -->|getValidationStatus| VR
+  VB -->|encrypted findings| INBOX
+  OP --> INBOX
+  IDX -.->|indexes events| VR
+  IDX -.-> MR
+  IDX -.-> ID
+  UI --> IDX
+```
+
+---
+
+## 3. Components
+
+| Layer | Component | Path | Responsibility |
+|---|---|---|---|
+| Onchain | `ValidationRegistry` | `contracts/src/` | Stores validation requests and responses. EIP-8004 interface. Authorises requesters via the canonical Identity Registry. No admin, not upgradeable. |
+| Onchain | `MandateRegistry` | `contracts/src/` | Per-agent operator passkey public key, the current mandate, and the inbox public key. Changes require a WebAuthn assertion verified via `0x0100`. |
+| Onchain | `AttestGate` (abstract or modifier) | `contracts/src/` | Recomputes `requestHash` from the call and checks for a fresh verdict from a trusted validator with at least the minimum score. Each verdict is single-use. |
+| Onchain | `DemoAgentVault` | `contracts/src/` | Example consumer: holds the agent's test funds; `execute(Action)` is gated. |
+| Offchain | `@attest8004/sdk` client | `packages/sdk/` | Builds actions, computes `requestHash`, submits requests, waits for verdicts, reads trust summaries. |
+| Offchain | `@attest8004/sdk` validator base | `packages/sdk/` | Subscribes to requests, checks the request against its hash, runs `check()`, posts signed responses with evidence. |
+| Offchain | `mandate-v1` | `validators/mandate/` | Deterministic mandate and permission checks plus simulation at a pinned block. Ships a `verify` CLI for re-execution. |
+| Offchain | `risk-qwen-v1` | `validators/qwen/` | Agentic risk assessment: Qwen 3.8 Max with tools (simulation, Nansen, ERC-8004 reputation, permission history). Outputs JSON validated against a schema. |
+| Data | Envio indexer | `indexer/` | Indexes requests, responses, mandates, inbox keys and Identity Registry permission events. Derives agent and validator summaries. Serves GraphQL. |
+| Client | Web app | `web/` | `/approve` (passkey and mandate), `/inbox` (Mera decrypt), `/dashboard` (trust data). |
+| Stretch | CRE workflow | `cre/` | Chainlink CRE orchestration of a validator: log trigger, HTTP call, EVM write. |
+
+---
+
+## 4. Onchain design
+
+### 4.1 Contract relationships
+
+```mermaid
+flowchart TB
+  ID["ERC-8004 IdentityRegistry (canonical)<br/>ownerOf · isApprovedForAll · getApproved"]
+  VR["ValidationRegistry<br/>validationRequest · validationResponse<br/>getValidationStatus · getSummary<br/>getAgentValidations · getValidatorRequests"]
+  MR["MandateRegistry<br/>setPasskey · setMandate · setInboxKey<br/>(WebAuthn → P256 @ 0x0100)"]
+  G["AttestGate<br/>onlyValidated(action, minScore)"]
+  V["DemoAgentVault<br/>execute(action)"]
+  ID --> VR
+  ID --> MR
+  VR --> G
+  G --> V
+```
+
+- **ValidationRegistry** reads the Identity Registry only to check that `msg.sender` is the owner or approved operator of `agentId`. It never trusts its own callers for this.
+- **MandateRegistry** reads the Identity Registry so that only the agent's owner can set the initial passkey key. After that, every mandate or inbox-key change requires the passkey.
+- **AttestGate** reads the ValidationRegistry. It holds its own **trusted validator set** and **minimum score**, chosen by the consumer contract's owner, not by Attest8004.
+
+### 4.2 Canonical addresses used
+
+| Contract | Monad testnet (10143) | Monad mainnet (143) |
+|---|---|---|
+| ERC-8004 IdentityRegistry | `0x8004A818BFB912233c491871b3d84c89A494BD9e` | `0x8004A169FB4a3325136EB29fA0ceB6D2e539a432` |
+| ERC-8004 ReputationRegistry (read only) | `0x8004B663056A597Dffe9eCcC1965A193B7388713` | `0x8004BAa17C55a88189AE136b182e5fdA19dE9b63` |
+| P256VERIFY precompile | `0x0100` | `0x0100` |
+| Attest8004 contracts | see `docs/deployments.md` | see `docs/deployments.md` |
+
+### 4.3 The action and its hash (single source of truth)
+
+```solidity
+struct Action {
+    uint256 agentId;
+    address target;
+    uint256 value;
+    bytes   data;
+    uint64  deadline;
+    bytes32 salt;
+}
+
+requestHash = keccak256(abi.encode(
+    block.chainid, gate, agentId, target, value, keccak256(data), deadline, salt
+));
+```
+
+- It binds the verdict to **one chain, one gate and one exact action**, with an expiry.
+- `salt` makes otherwise identical actions distinct. The gate marks each `requestHash` **consumed** after execution.
+- It's implemented identically in Solidity and TypeScript, and checked against shared vectors in `packages/sdk/test/vectors.json`.
+
+### 4.4 Gate check (in order)
+1. Recompute `requestHash` from the call arguments.
+2. `block.timestamp <= deadline`.
+3. `requestHash` has not been consumed.
+4. `getValidationStatus(requestHash)` returns a validator in the gate's trusted set, with `response >= minScore`.
+5. If the gate requires several validators (e.g. both `mandate-v1` and `risk-qwen-v1`), every one must pass.
+6. Mark it consumed, then execute.
+
+---
+
+## 5. Key flows
+
+### 5.1 Operator setup (one time per agent)
+
+```mermaid
+sequenceDiagram
+  autonumber
+  actor Op as Operator
+  participant W as Web /approve
+  participant ID as IdentityRegistry
+  participant MR as MandateRegistry
+  participant P as P256 @ 0x0100
+  Op->>ID: register agent (owner = operator wallet)
+  Op->>W: create passkey (Google Password Manager / iCloud)
+  W->>MR: setPasskey(agentId, qx, qy)  [owner wallet tx]
+  MR->>ID: ownerOf(agentId) == msg.sender?
+  Op->>W: approve mandate (targets, selectors, caps, expiry)
+  W->>W: WebAuthn assertion over challenge = H(chainId, MR, agentId, mandateHash, nonce)
+  W->>MR: setMandate(agentId, mandate, webauthnAuth)
+  MR->>P: verify(sha256(authData ‖ sha256(clientDataJSON)), r, s, qx, qy)
+  P-->>MR: 32 bytes ...01 (or empty = invalid)
+  MR-->>Op: MandateSet event
+  Op->>W: open /inbox → passkey PRF → X25519 public key
+  W->>MR: setInboxKey(agentId, x25519Pub, webauthnAuth)
+```
+
+### 5.2 Validated action (happy path)
+
+```mermaid
+sequenceDiagram
+  autonumber
+  participant A as Agent
+  participant VR as ValidationRegistry
+  participant VA as mandate-v1
+  participant VB as risk-qwen-v1
+  participant G as DemoAgentVault (AttestGate)
+  A->>A: build Action, requestHash = H(...)
+  A->>VR: validationRequest(VA, agentId, requestURI, requestHash)
+  A->>VR: validationRequest(VB, agentId, requestURI, requestHash)
+  VR-->>VA: ValidationRequest event
+  VR-->>VB: ValidationRequest event
+  VA->>VA: load request, check hash, check mandate + permissions, simulate at block N
+  VA->>VR: validationResponse(requestHash, 100, evidenceURI, evidenceHash, "mandate-v1")
+  VB->>VB: Qwen plans → tools (simulate, Nansen, reputation) → JSON verdict
+  VB->>VR: validationResponse(requestHash, 92, evidenceURI, evidenceHash, "risk-qwen-v1")
+  A->>G: execute(action)
+  G->>VR: getValidationStatus(requestHash)
+  G-->>A: executed (requestHash consumed)
+```
+
+### 5.3 Blocked attack (demo: the Grok/Bankr pattern)
+1. A permission change happens outside the mandate: a new operator approval on the agent in the Identity Registry.
+2. The agent is induced to transfer funds to an unknown address.
+3. `mandate-v1` sees (a) a target not on the allowlist or above the cap, and (b) a permission change after the last passkey-approved mandate. It scores 0, with machine-readable reasons.
+4. `risk-qwen-v1` explains the risk using Nansen data on the counterparty, and scores it low.
+5. `execute(action)` reverts at the gate.
+6. The full detail goes to the operator's encrypted inbox. Only the score and evidence hash are public.
+
+### 5.4 Private findings, any device
+
+```mermaid
+sequenceDiagram
+  autonumber
+  participant VB as Validator
+  participant MR as MandateRegistry
+  participant S as Validator storage (HTTP)
+  actor Op as Operator (phone or laptop)
+  participant W as Web /inbox
+  VB->>MR: read inbox public key (X25519)
+  VB->>VB: ephemeral X25519 → ECDH → HKDF → AES-256-GCM(findings)
+  VB->>S: store ciphertext at responseURI (responseHash = keccak(ciphertext))
+  Op->>W: open /inbox, tap passkey
+  W->>W: Mera PRF(salt = sha256("attest8004.inbox.v1")) → HKDF → X25519 private key (memory only)
+  W->>S: fetch ciphertext, verify keccak == responseHash
+  W->>W: decrypt, show findings, zero key buffers
+```
+
+The same synced passkey gives the same PRF output on every device, so the phone decrypts exactly what the laptop does. Nothing secret is ever written to storage.
+
+### 5.5 Re-execute a verdict (why `mandate-v1` is "trust", not "opinion")
+
+```
+npx attest8004 verify <requestHash>
+```
+1. Fetch the request and the evidence (with the pinned block number).
+2. Re-run the identical mandate, permission and simulation checks against chain state at that block.
+3. Compare with the onchain response. They must match. A mismatch is public proof that the validator misbehaved.
+
+---
+
+## 6. Data formats
+
+**Request JSON v1.** Referenced by `requestURI`, preferably as a `data:` URI so no hosting is needed.
+```json
+{
+  "schema": "attest8004.request.v1",
+  "chainId": 10143,
+  "gate": "0x…",
+  "agentId": "42",
+  "action": { "target": "0x…", "value": "0", "data": "0x…", "deadline": 1760000000, "salt": "0x…" }
+}
+```
+Validators **must** recompute `requestHash` from this JSON and reject it on mismatch.
+
+**Evidence JSON v1.** Referenced by `responseURI`. `responseHash = keccak256(bytes)`.
+```json
+{
+  "schema": "attest8004.evidence.v1",
+  "validator": "mandate-v1",
+  "requestHash": "0x…",
+  "blockNumber": 123456,
+  "score": 0,
+  "reasons": ["TARGET_NOT_ALLOWED", "PERMISSION_CHANGED_AFTER_MANDATE"],
+  "findingsCiphertext": "<optional: encrypted findings envelope or URI>"
+}
+```
+
+**Findings envelope.** Encrypted to the operator's inbox key.
+```json
+{ "schema": "attest8004.findings.v1", "epk": "<x25519 ephemeral pub>", "nonce": "…", "ct": "…" }
+```
+
+**Tags:** `mandate-v1` and `risk-qwen-v1`. The tag goes in `validationResponse(..., tag)` and is used by `getSummary` and the indexer.
+
+---
+
+## 7. Trust model
+
+| Component | Trusted for | Not trusted for | How it's checked |
+|---|---|---|---|
+| ValidationRegistry | Faithfully storing requests and responses | Judging anything | Open source, no admin, test suite |
+| Canonical Identity Registry | Who owns or operates an `agentId` | — | Canonical ERC-8004 deployment |
+| P256 precompile `0x0100` | Raw ECDSA P-256 verification | WebAuthn semantics, low-s | Our contract checks the challenge, flags, rpIdHash and low-s, and checks the return length |
+| `mandate-v1` | A deterministic verdict | — | **Anyone can re-execute it** (§5.5) |
+| `risk-qwen-v1` | Advisory risk score and explanation | Being "correct". LLMs can be wrong or manipulated | Evidence hash committed onchain, full trace in the evidence, never the only gate |
+| Validator storage (HTTP) | Availability | Integrity | `responseHash` onchain |
+| Consumer (gate owner) | Choosing which validators to trust and the minimum score | — | Their own policy, visible onchain |
+
+**Two trust modes:**
+- **Verifiable** (`mandate-v1`): anyone can reproduce the verdict.
+- **Advisory** (`risk-qwen-v1`): adds context but must never be the only check.
+
+The recommended gate policy is *require `mandate-v1` = 100 **and** `risk-qwen-v1` ≥ threshold*.
+
+---
+
+## 8. Keys and secrets
+
+| Key | Type | Lives in | Who controls it | Onchain footprint |
+|---|---|---|---|---|
+| Operator passkey | P-256 WebAuthn credential | Authenticator (Google Password Manager / iCloud Keychain) | Operator | Public key `(qx, qy)` in MandateRegistry |
+| Inbox key | X25519, derived from passkey PRF | **Nowhere.** Derived on demand in the browser, buffers zeroed after use | Operator | Public key in MandateRegistry |
+| Operator wallet | secp256k1 | Operator's wallet | Operator | Agent owner in the Identity Registry |
+| Agent wallet | secp256k1 | Agent runtime (demo: ephemeral test key) | Agent | Calls `validationRequest` and `execute` |
+| Validator A / B keys | secp256k1 | Validator service env (`.env`, never committed) | Validator operator | `validatorAddress` in requests and responses |
+| Deployer | secp256k1 | `.env` | Builder | Deploys only. No admin rights afterwards. |
+| API keys (Qwen, Nansen, Envio) | Bearer tokens | Validator or indexer env | Builder | None |
+
+The LLM never sees or holds any private key. Validators sign; the model only proposes a structured verdict, which is checked against a schema.
+
+---
+
+## 9. Security design decisions
+
+- **The P256 return check:** `0x0100` returns *empty bytes* for an invalid signature. We require `returndata.length == 32 && uint256(returndata) == 1`.
+- **Low-s enforced** (the precompile doesn't), so a passkey signature can't be altered into a second valid form.
+- **WebAuthn binding:** the challenge commits to the chain, the contract, the agent, the payload hash and a nonce. Checks cover `type == "webauthn.get"`, the UP and UV flags, and the rpIdHash.
+- **Replay:** a per-agent nonce on mandate and inbox changes, and single-use `requestHash` at the gate.
+- **Verdict reuse across actions** is impossible, because the gate recomputes `requestHash` from the call.
+- **Gas:** Monad charges on the *gas limit*, so every transaction sets an explicit, tight limit.
+- **LLM output** is untrusted data: schema-validated, capped tool calls and tokens, temperature 0–0.2, full trace kept.
+- **Secrets:** gitleaks runs as a pre-commit hook and over the full history before the repo goes public. Only `.env.example` is committed.
+- **No upgradeability or admin** in the registries, so nothing can be swapped out after deployment.
+
+---
+
+## 10. Why Monad
+
+- **The native P256 precompile (`0x0100`)** makes passkey-approved mandates cheap to verify onchain (6,900 gas).
+- **Canonical ERC-8004 Identity and Reputation registries are live on Monad**, so Attest8004 completes the trio rather than inventing a parallel identity system.
+- **Sub-second finality and low fees** make *per-action* validation practical: request, verdict and gated execution fit inside an agent's normal latency budget.
+- **Monad's agent focus** (ERC-8004 docs, an x402 facilitator, Mera passkeys) means the first users are already building here.
+
+---
+
+## 11. Environments
+
+| Env | Chain | Used for |
+|---|---|---|
+| Local | Anvil (fork of Monad testnet) | Unit and fork tests |
+| Testnet | Monad testnet `10143` | Main deployment, demo, external integrations |
+| Mainnet | Monad `143` | Only if Envio requires it for indexing |
+
+The web app is deployed early to a **fixed domain**, because passkeys are bound to the rpId. Demo passkeys are created on that domain, not on localhost.
+
+---
+
+## 12. Extension points and roadmap
+
+- **Canonical registry migration:** same interface, so consumers switch the address when the official Validation Registry ships.
+- **Economic security:** validator staking and slashing for provably wrong `mandate-v1` verdicts (proved by re-execution).
+- **More validator types:** TEE-attested validators and zk proofs of model inference, using the ERC-8004 `supportedTrust` modes.
+- **Paid validations:** validators charge per request via x402 (Monad facilitator).
+- **Orchestration:** a Chainlink CRE workflow as a decentralised validator runner.
+- **BTX encrypted mempool (future):** submit validation requests encrypted until ordering, so attackers can't front-run a pending verdict. *Not live; design note only.*
+- **Red-team attestations:** security audit and red-team results posted as validations, so an agent's "audited" status becomes machine-checkable.
+
+---
+
+## 13. Repo map
+
+```
+attest8004/
+  ARCHITECTURE.md   ← this file
+  SPEC.md           build scope + acceptance criteria
+  CLAUDE.md         rules for the AI coding agent
+  STATUS.md         progress log
+  contracts/        Foundry: src/, test/, script/
+  packages/sdk/     @attest8004/sdk (client + validator base)
+  validators/       mandate/, qwen/
+  indexer/          Envio HyperIndex
+  web/              /approve, /inbox, /dashboard
+  cre/              (stretch) Chainlink CRE workflow
+  docs/             quickstart, API ref, threat model, deployments, nansen.md, mera.md, security-review.md
+```
