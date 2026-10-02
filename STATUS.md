@@ -57,6 +57,19 @@ Running log, updated at the end of every session (CLAUDE.md, rule 10). Newest se
   - Post the integration offer (GAMEPLAN §6) with the testnet registry address.
   - Still open from P0, status unknown to me: the Qwen 3.8 Max model ID, the Envio token, Nansen credits, the PRF smoke test, the Discord questions, deploying `web/` to Vercel, and funding validator B.
 - **P2 (Sun 4 Oct):** AttestGate and DemoAgentVault (SPEC §4.3). First settle the `requestHash` decision below.
+- **Minor review findings, deferred** (from the P1 whole-branch review; for P10 or whenever convenient):
+  - `deploy-testnet.sh` passes the deployer key in forge's argv, so other local users could see it via `ps` while forge runs. Use `--keystore`, or document the trade-off.
+  - Test gaps:
+    - the old owner's `setApprovalForAll` operator after a transfer;
+    - a fork test that a nonexistent `agentId` reverts through the live registry;
+    - `testFuzz_OnlyNamedValidatorCanRespond` asserts nothing on its success path.
+  - Round-trip script:
+    - filter `Registered` logs by emitter address;
+    - viem errors print the RPC URL, which matters only if a keyed URL is used.
+  - Add `timeout-minutes` to the `contracts-fork` CI job.
+  - Re-add a line on `test/Toolchain.t.sol` to `contracts/README.md`.
+  - Note in the README quickstart that each round trip registers a new test agent in the shared registry.
+  - `CLAUDE.md` still says "No Validation Registry is deployed anywhere". That's your file to edit; "no canonical one" is now the accurate wording.
 
 ### Blockers or decisions needed
 - **P2: `requestHash` and the two-validator flow.** EIP-8004 (and our registry, like the reference) allows **one validator per `requestHash`**: a second `validationRequest` with the same hash reverts. So ARCHITECTURE §5.2, which sends one hash to both validators, can't work as drawn. Recommended:
