@@ -1,0 +1,19 @@
+# Attest8004 docs
+
+The docs are part of the product (SPEC §4.10). Each file is added in the phase shown.
+
+| Doc | What | Status |
+|---|---|---|
+| [deployments.md](./deployments.md) | Every deployment: chain, address, commit and date | stub |
+| [spec-notes.md](./spec-notes.md) | Differences between our ValidationRegistry and the EIP-8004 Draft | stub (P1) |
+| [nansen.md](./nansen.md) | Every Nansen endpoint and data category used | stub (P5) |
+| `quickstart.md` | A 10-minute integration guide | planned (P11) |
+| `api.md` | SDK and API reference | planned (P11) |
+| `threat-model.md` | Threat model | planned (P11) |
+| `trust-modes.md` | Deterministic vs agentic validation | planned (P11) |
+| `migration.md` | Migrating to the canonical Validation Registry | planned (P11) |
+| `btx.md` | BTX encrypted-mempool design note (**future work, not live**) | planned (P11) |
+| `mera.md` | Passkey-derived findings inbox and the cross-device test | planned (P7) |
+| `security-review.md` | Auditor self-review | planned (P10) |
+
+How the system works is in [../ARCHITECTURE.md](../ARCHITECTURE.md).
