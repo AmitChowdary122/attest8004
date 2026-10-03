@@ -88,6 +88,7 @@ export const mandateRegistryAbi = parseAbi([
  */
 export const identityRegistryAbi = parseAbi([
   "function ownerOf(uint256 tokenId) view returns (address)",
+  "function balanceOf(address owner) view returns (uint256)",
   "function getApproved(uint256 tokenId) view returns (address)",
   "function isApprovedForAll(address owner, address operator) view returns (bool)",
   "function approve(address to, uint256 tokenId)",
@@ -96,6 +97,17 @@ export const identityRegistryAbi = parseAbi([
   "event Approval(address indexed owner, address indexed approved, uint256 indexed tokenId)",
   "event ApprovalForAll(address indexed owner, address indexed operator, bool approved)",
   "error ERC721NonexistentToken(uint256 tokenId)",
+]);
+
+/**
+ * The canonical ERC-8004 ReputationRegistry (CLAUDE.md), testnet/mainnet addresses in
+ * `DEPLOYMENTS[chainId].reputationRegistry`, version `"2.0.0"`: `risk-v1`'s `erc8004_reputation` tool
+ * reads an agent's clients and their aggregate feedback. `getSummary` with an empty `clientAddresses`
+ * reverts (`"clientAddresses required"`), so callers skip it when `getClients` returns none.
+ */
+export const reputationRegistryAbi = parseAbi([
+  "function getClients(uint256 agentId) view returns (address[])",
+  "function getSummary(uint256 agentId, address[] clientAddresses, string tag1, string tag2) view returns (uint64 count, int128 summaryValue, uint8 summaryValueDecimals)",
 ]);
 
 /** The read side of an AttestGate consumer (contracts/src/AttestGate.sol), plus its errors. */

@@ -1,0 +1,44 @@
+{
+  "_comment": "One read-only debug_traceCall on https://testnet-rpc.monad.xyz (Task 8 brief, Ruling R6), captured 2026-10-04. Repeated once at the same block; the answer was byte-for-byte identical both times.",
+  "chainId": 10143,
+  "block": "67957232",
+  "blockHex": "0x40cf1f0",
+  "call": {
+    "from": "0x23BfBD12545CCd1501ddA1B65a54518FD6212a96",
+    "to": "0xEEEBBa55620afC42E9c88b5d962476367b8da338",
+    "value": "0x38d7ea4c68000",
+    "data": "0x",
+    "gas": "0xf4240"
+  },
+  "params": [
+    {
+      "from": "0x23BfBD12545CCd1501ddA1B65a54518FD6212a96",
+      "to": "0xEEEBBa55620afC42E9c88b5d962476367b8da338",
+      "value": "0x38d7ea4c68000",
+      "data": "0x",
+      "gas": "0xf4240"
+    },
+    "0x40cf1f0",
+    { "tracer": "callTracer" }
+  ],
+  "result": {
+    "type": "CALL",
+    "from": "0x23bfbd12545ccd1501dda1b65a54518fd6212a96",
+    "to": "0xeeebba55620afc42e9c88b5d962476367b8da338",
+    "value": "0x38d7ea4c68000",
+    "gas": "0xf4240",
+    "gasUsed": "0xf4240",
+    "input": "0x",
+    "calls": [
+      {
+        "type": "CALL",
+        "from": "0xeeebba55620afc42e9c88b5d962476367b8da338",
+        "to": "0xc8702ca01e934f0568ea43b354c17ec7749d313f",
+        "value": "0x38d7ea4c68000",
+        "gas": "0xe1376",
+        "gasUsed": "0x0",
+        "input": "0x"
+      }
+    ]
+  }
+}

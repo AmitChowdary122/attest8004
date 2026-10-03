@@ -7,3 +7,6 @@ export * from "./llm.ts";
 export * from "./pacer.ts";
 export * from "./guard.ts";
 export * from "./replay.ts";
+export * from "./trace.ts";
+export * from "./reader.ts";
+export * from "./tools.ts";

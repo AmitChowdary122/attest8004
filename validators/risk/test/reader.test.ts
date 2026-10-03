@@ -1,0 +1,206 @@
+import { identityRegistryAbi, mandateRegistryAbi, reputationRegistryAbi } from "@attest8004/sdk";
+import { HttpRequestError, getAddress, keccak256, toHex, zeroHash, type Hex } from "viem";
+import { generatePrivateKey, privateKeyToAccount } from "viem/accounts";
+import { beforeEach, describe, expect, it } from "vitest";
+import { FakeRpc, RevertError, revert } from "../../../packages/sdk/test/helpers/fake-rpc.ts";
+import { viemRiskReader, type RiskAddresses } from "../src/reader.ts";
+
+const ADDRESSES: RiskAddresses = {
+  validationRegistry: getAddress("0xc4a4d0ceb3971cbe7a2536494ac106f2cd9f9a8f"),
+  identityRegistry: getAddress("0x8004a818bfb912233c491871b3d84c89a494bd9e"),
+  forwarder: getAddress("0x1451f3c36545b191d3642f759d59f21dcfd657b2"),
+  mandateRegistry: getAddress("0x2523197373ef813e19b5b14ef2984130868cd17c"),
+  reputationRegistry: getAddress("0x8004b663056a597dffe9eccc1965a193b7388713"),
+};
+const GATE = getAddress("0x23bfbd12545ccd1501dda1b65a54518fd6212a96");
+const TARGET = getAddress("0x00000000000000000000000000000000000000b2");
+const SOMEONE = getAddress("0x00000000000000000000000000000000000000c3");
+const AGENT = 1_984n;
+const P = 70_000_000n;
+const account = privateKeyToAccount(generatePrivateKey());
+
+function rpcError(code: number, message: string): Error {
+  return Object.assign(new Error(message), { code });
+}
+
+let rpc: FakeRpc;
+beforeEach(() => {
+  rpc = new FakeRpc();
+  rpc.blockNumber = P;
+});
+
+/** `retryCount: 0` so a transient failure surfaces at once instead of after viem's backoff. */
+function reader(concurrency?: number) {
+  const { publicClient } = rpc.clients(account, { retryCount: 0 });
+  return viemRiskReader({ publicClient, addresses: ADDRESSES, ...(concurrency ? { concurrency } : {}) });
+}
+
+function callsOf(method: string) {
+  return rpc.calls.filter((c) => c.method === method);
+}
+
+describe("viemRiskReader: trace()", () => {
+  const call = { from: GATE, to: TARGET, value: 1_000_000_000_000_000n, data: "0x" as Hex, gas: 1_000_000n };
+
+  it("sends debug_traceCall with exactly [{from,to,value,data,gas}, '0x<P>', {tracer: callTracer}]", async () => {
+    rpc.intercept = (method) => (method === "debug_traceCall" ? { type: "CALL", from: GATE, to: TARGET, value: toHex(call.value), input: "0x" } : undefined);
+    const result = await reader().trace(call, P);
+    expect(result).toEqual({ ok: true, frame: { type: "CALL", from: GATE, to: TARGET, value: toHex(call.value), input: "0x" } });
+
+    const [sent] = callsOf("debug_traceCall");
+    expect(sent?.params).toEqual([
+      { from: GATE, to: TARGET, value: toHex(call.value), data: "0x", gas: toHex(1_000_000n) },
+      toHex(P),
+      { tracer: "callTracer" },
+    ]);
+  });
+
+  it("JSON-RPC -32003 (insufficient funds) gives {ok: false, error: INSUFFICIENT_FUNDS}, not a throw", async () => {
+    rpc.intercept = (method) => {
+      if (method === "debug_traceCall") throw rpcError(-32003, "Insufficient funds for gas * price + value");
+      return undefined;
+    };
+    await expect(reader().trace(call, P)).resolves.toEqual({ ok: false, error: "INSUFFICIENT_FUNDS" });
+  });
+
+  it("any other RPC or transport failure throws", async () => {
+    rpc.intercept = (method) => {
+      if (method === "debug_traceCall") throw new HttpRequestError({ url: "https://testnet-rpc.monad.xyz", status: 429 });
+      return undefined;
+    };
+    await expect(reader().trace(call, P)).rejects.toThrow(/HTTP request failed/);
+  });
+
+  it.each([
+    ["null", null],
+    ["a bare string", "not a frame"],
+    ["an object with no type/from", { foo: "bar" }],
+  ] as const)("a malformed answer (%s) throws", async (_, answer) => {
+    rpc.intercept = (method) => (method === "debug_traceCall" ? answer : undefined);
+    await expect(reader().trace(call, P)).rejects.toThrow(/malformed RPC answer/);
+  });
+});
+
+describe("viemRiskReader: code/balance/nonce", () => {
+  it("reads eth_getCode/eth_getBalance/eth_getTransactionCount at exactly P", async () => {
+    rpc.intercept = (method, params) => {
+      if (method === "eth_getCode") return "0x6080";
+      if (method === "eth_getBalance") return toHex(1_234n);
+      if (method === "eth_getTransactionCount") return toHex(7n);
+      return undefined;
+    };
+    const r = reader();
+    await expect(r.code(TARGET, P)).resolves.toBe("0x6080");
+    await expect(r.balance(TARGET, P)).resolves.toBe(1_234n);
+    await expect(r.nonce(TARGET, P)).resolves.toBe(7n);
+    for (const method of ["eth_getCode", "eth_getBalance", "eth_getTransactionCount"]) {
+      for (const call of callsOf(method)) expect(call.params[1]).toBe(toHex(P));
+    }
+  });
+
+  it("a malformed answer (null, a non-hex string) throws for each", async () => {
+    rpc.intercept = (method) => (["eth_getCode", "eth_getBalance", "eth_getTransactionCount"].includes(method) ? null : undefined);
+    const r = reader();
+    await expect(r.code(TARGET, P)).rejects.toThrow(/malformed RPC answer/);
+    await expect(r.balance(TARGET, P)).rejects.toThrow(/malformed RPC answer/);
+    await expect(r.nonce(TARGET, P)).rejects.toThrow(/malformed RPC answer/);
+  });
+
+  it("a transport failure throws", async () => {
+    rpc.intercept = (method) => {
+      if (method === "eth_getCode") throw new HttpRequestError({ url: "https://testnet-rpc.monad.xyz", status: 429 });
+      return undefined;
+    };
+    await expect(reader().code(TARGET, P)).rejects.toThrow(/HTTP request failed/);
+  });
+});
+
+describe("viemRiskReader: agentOwner", () => {
+  it("decodes ownerOf at P", async () => {
+    rpc.onCall(ADDRESSES.identityRegistry, identityRegistryAbi, "ownerOf", () => SOMEONE);
+    await expect(reader().agentOwner(AGENT, P)).resolves.toBe(SOMEONE);
+    const [call] = callsOf("eth_call");
+    expect(call?.params[1]).toBe(toHex(P));
+  });
+
+  it("ownerOf reverting (no such agent) gives null", async () => {
+    rpc.onCall(ADDRESSES.identityRegistry, identityRegistryAbi, "ownerOf", () =>
+      revert(identityRegistryAbi, "ERC721NonexistentToken", [AGENT]),
+    );
+    await expect(reader().agentOwner(AGENT, P)).resolves.toBeNull();
+  });
+
+  it("an RPC or transport error throws, never null", async () => {
+    rpc.intercept = (method) => {
+      if (method === "eth_call") throw new HttpRequestError({ url: "https://testnet-rpc.monad.xyz", status: 429 });
+      return undefined;
+    };
+    await expect(reader().agentOwner(AGENT, P)).rejects.toThrow(/HTTP request failed/);
+  });
+
+  it("a malformed (non-hex) eth_call answer throws, not null", async () => {
+    rpc.intercept = (method) => (method === "eth_call" ? 123 : undefined);
+    await expect(reader().agentOwner(AGENT, P)).rejects.toThrow(/malformed RPC answer/);
+  });
+});
+
+describe("viemRiskReader: agentsOwned, reputationClients, reputationSummary", () => {
+  it("agentsOwned decodes the Identity Registry's balanceOf", async () => {
+    rpc.onCall(ADDRESSES.identityRegistry, identityRegistryAbi, "balanceOf", () => 3n);
+    await expect(reader().agentsOwned(SOMEONE, P)).resolves.toBe(3n);
+  });
+
+  it("reputationClients decodes getClients, checksummed", async () => {
+    rpc.onCall(ADDRESSES.reputationRegistry, reputationRegistryAbi, "getClients", () => [SOMEONE.toLowerCase(), TARGET.toLowerCase()]);
+    await expect(reader().reputationClients(AGENT, P)).resolves.toEqual([SOMEONE, TARGET]);
+  });
+
+  it("reputationSummary decodes count/value/decimals and sends exactly the given client list", async () => {
+    rpc.onCall(ADDRESSES.reputationRegistry, reputationRegistryAbi, "getSummary", () => [5n, -12n, 2]);
+    const clients = [SOMEONE, TARGET];
+    await expect(reader().reputationSummary(AGENT, clients, P)).resolves.toEqual({ count: 5n, value: -12n, decimals: 2 });
+    const [call] = callsOf("eth_call");
+    expect(call?.params[1]).toBe(toHex(P));
+  });
+
+  it("getSummary with no clients reverts, and that throws here (callers must skip it instead)", async () => {
+    rpc.onCall(ADDRESSES.reputationRegistry, reputationRegistryAbi, "getSummary", () =>
+      new RevertError("0x08c379a0"),
+    );
+    await expect(reader().reputationSummary(AGENT, [], P)).rejects.toThrow();
+  });
+});
+
+describe("viemRiskReader: shares one limiter (default 8) with its wrapped mandate-v1 reads", () => {
+  it("at most `concurrency` requests are ever in flight across both kinds of read", async () => {
+    rpc.delayMs = 2;
+    rpc.onCall(ADDRESSES.identityRegistry, identityRegistryAbi, "ownerOf", () => SOMEONE);
+    rpc.intercept = (method) => (method === "eth_getCode" ? "0x" : undefined);
+    const r = reader(3);
+    await Promise.all([
+      r.ownerOf(AGENT, P),
+      r.ownerOf(AGENT, P),
+      r.code(TARGET, P),
+      r.code(TARGET, P),
+      r.code(SOMEONE, P),
+      r.code(GATE, P),
+    ]);
+    expect(rpc.peakInFlight).toBeLessThanOrEqual(3);
+    expect(rpc.peakInFlight).toBeGreaterThan(0);
+  });
+});
+
+describe("viemRiskReader: still a VerifyReader (mandate-v1's own methods pass through)", () => {
+  it("finalized() and mandate() work unchanged, reading at P", async () => {
+    rpc.finalizedNumber = P - 1n;
+    rpc.onCall(ADDRESSES.mandateRegistry, mandateRegistryAbi, "getMandate", () => [
+      { allowedTargets: [], allowedSelectors: [], maxValuePerTx: 0n, maxValuePerDay: 0n, validUntil: 0n },
+      zeroHash,
+      "0x0000000000000000000000000000000000000000",
+      0n,
+    ]);
+    const r = reader();
+    await expect(r.finalized()).resolves.toEqual({ number: P - 1n, hash: keccak256(toHex(P - 1n)), timestamp: expect.any(BigInt) });
+    await expect(r.mandate(AGENT, P)).resolves.toBeNull(); // mandateHash zero: never set
+  });
+});

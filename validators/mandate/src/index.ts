@@ -7,6 +7,7 @@ export * from "./params.ts";
 export * from "./types.ts";
 export * from "./rules.ts";
 export * from "./blocks.ts";
+export * from "./concurrency.ts";
 export * from "./reader.ts";
 export * from "./collect.ts";
 export * from "./evidence.ts";
