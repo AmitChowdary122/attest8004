@@ -181,8 +181,8 @@ describe("Attest8004Client.isValidated (mirrors AttestGate)", () => {
     rpc
       .onCall(GATE, attestGateAbi, "validationRegistry", () => REGISTRY)
       .onCall(GATE, attestGateAbi, "requirements", () => [
-        { validator: VALIDATOR_A, minScore: 100 },
-        { validator: VALIDATOR_B, minScore: 70 },
+        { validator: VALIDATOR_A, minScore: 100, tagHash: keccak256(toHex("mandate-v1")) },
+        { validator: VALIDATOR_B, minScore: 70, tagHash: keccak256(toHex("risk-v1")) },
       ])
       .onCall(GATE, attestGateAbi, "consumed", ([hash]) => {
         expect(hash).toBe(computeActionHash({ chainId: CHAIN_ID, gate: GATE, action }));
@@ -215,6 +215,11 @@ describe("Attest8004Client.isValidated (mirrors AttestGate)", () => {
 
   it("is false when the stored validator is another one", async () => {
     statuses.set(rhA, [VALIDATOR_C, 7n, 100, keccak256(toHex("c")), "x", 1n]);
+    expect(await isValidated()).toBe(false);
+  });
+
+  it("is false when a requirement's verdict carries another tag", async () => {
+    statuses.set(rhA, [VALIDATOR_A, 7n, 100, keccak256(toHex("a")), "other", 1n]);
     expect(await isValidated()).toBe(false);
   });
 

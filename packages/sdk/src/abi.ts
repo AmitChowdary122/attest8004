@@ -101,7 +101,7 @@ export const identityRegistryAbi = parseAbi([
 /** The read side of an AttestGate consumer (contracts/src/AttestGate.sol), plus its errors. */
 export const attestGateAbi = parseAbi([
   "struct Action { uint256 agentId; address target; uint256 value; bytes data; uint64 deadline; bytes32 salt; }",
-  "struct Requirement { address validator; uint8 minScore; }",
+  "struct Requirement { address validator; uint8 minScore; bytes32 tagHash; }",
   "function validationRegistry() view returns (address)",
   "function requirements() view returns (Requirement[])",
   "function consumed(bytes32 actionHash) view returns (bool)",
@@ -114,4 +114,6 @@ export const attestGateAbi = parseAbi([
   "error ValidatorMismatch(bytes32 requestHash, address expected, address actual)",
   "error AgentMismatch(bytes32 requestHash, uint256 expected, uint256 actual)",
   "error ScoreTooLow(address validator, bytes32 requestHash, uint8 response, uint8 minScore)",
+  "error ZeroTagHash(address validator)",
+  "error TagMismatch(address validator, bytes32 requestHash, bytes32 expected, bytes32 actual)",
 ]);

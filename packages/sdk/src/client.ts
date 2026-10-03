@@ -2,6 +2,8 @@ import {
   BaseError,
   ContractFunctionRevertedError,
   getAddress,
+  keccak256,
+  toBytes,
   type Address,
   type Hash,
   type Hex,
@@ -155,8 +157,9 @@ export class Attest8004Client {
   /**
    * Whether `gate` would accept `action` now, checked the way AttestGate checks it: the deadline
    * against the latest block, the action not yet consumed, and for every requirement the gate
-   * reports, a stored verdict naming that validator and this agent with at least the minimum score.
-   * A request that doesn't exist reads as false; an RPC failure throws.
+   * reports, a stored verdict naming that validator and this agent, with at least the minimum
+   * score and a tag that hashes to the requirement's `tagHash`. A request that doesn't exist
+   * reads as false; an RPC failure throws.
    */
   async isValidated(args: { gate: Address; action: Action }): Promise<boolean> {
     const { publicClient } = this.options;
@@ -177,7 +180,7 @@ export class Attest8004Client {
     ]);
     if (block.timestamp > action.deadline || consumed) return false;
 
-    for (const { validator, minScore } of requirements) {
+    for (const { validator, minScore, tagHash } of requirements) {
       const requestHash = computeRequestHash({ chainId, gate, validator, action });
       let status: readonly [Address, bigint, number, Hex, string, bigint];
       try {
@@ -191,9 +194,10 @@ export class Attest8004Client {
         if (isRevert(error)) return false;
         throw error;
       }
-      const [storedValidator, storedAgentId, response] = status;
+      const [storedValidator, storedAgentId, response, , tag] = status;
       if (getAddress(storedValidator) !== getAddress(validator)) return false;
       if (storedAgentId !== action.agentId || response < minScore) return false;
+      if (keccak256(toBytes(tag)) !== tagHash) return false;
     }
     return true;
   }

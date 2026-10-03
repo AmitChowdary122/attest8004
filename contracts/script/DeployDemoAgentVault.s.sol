@@ -10,10 +10,10 @@ import {DemoAgentVault} from "../src/DemoAgentVault.sol";
 /// contract exists. Run it with `script/deploy-testnet.sh DemoAgentVault`, which first checks
 /// Monad's eth_estimateGas for this call against DEPLOY_GAS (see deployPlan).
 /// The configuration is constants, so the deployed vault's settings are reviewable in git:
-/// demo agent 1984 (registered in P3; its hot key requests through the AgentRequestForwarder), and
-/// validator A (mandate-v1) with a minimum score of 100. The P2 vault for test agent 1982 is
-/// superseded. P5 redeploys it requiring both validators; different constructor arguments give a
-/// new address.
+/// demo agent 1984 (registered in P3; its hot key requests through the AgentRequestForwarder),
+/// validator A (mandate-v1) with a minimum score of 100, and validator B (risk-v1) with a minimum
+/// score of 80. The P2 vault for test agent 1982, and the P3 vault requiring validator A only, are
+/// superseded; the new constructor arguments give this vault a new address.
 contract DeployDemoAgentVault is Script {
     // CREATE2_FACTORY (0x4e59b448…956C) is inherited from forge-std's CommonBase.
     bytes32 public constant SALT = keccak256("attest8004.DemoAgentVault.v1");
@@ -25,6 +25,10 @@ contract DeployDemoAgentVault is Script {
     uint256 public constant AGENT_ID_TESTNET = 1984;
     address public constant VALIDATOR_A = 0xa62DaB21E0C0F57e94B3ed6e675F214199989e92;
     uint8 public constant MIN_SCORE_A = 100;
+    bytes32 public constant TAG_A = keccak256("mandate-v1");
+    address public constant VALIDATOR_B = 0x780df855b48AeC7A3907433b0b5984A2fe5dca5E;
+    uint8 public constant MIN_SCORE_B = 80;
+    bytes32 public constant TAG_B = keccak256("risk-v1");
 
     error UnsupportedChain(uint256 chainId);
     error DeployFailed(address predicted);
@@ -81,8 +85,9 @@ contract DeployDemoAgentVault is Script {
         returns (address registry, uint256 agentId, AttestGate.Requirement[] memory requirements)
     {
         if (chainId != 10143) revert UnsupportedChain(chainId);
-        requirements = new AttestGate.Requirement[](1);
-        requirements[0] = AttestGate.Requirement(VALIDATOR_A, MIN_SCORE_A);
+        requirements = new AttestGate.Requirement[](2);
+        requirements[0] = AttestGate.Requirement(VALIDATOR_A, MIN_SCORE_A, TAG_A);
+        requirements[1] = AttestGate.Requirement(VALIDATOR_B, MIN_SCORE_B, TAG_B);
         return (VALIDATION_REGISTRY_TESTNET, AGENT_ID_TESTNET, requirements);
     }
 

@@ -75,18 +75,23 @@ and `actionHash`, which leaves the validator out. The TypeScript SDK implements 
 checked against `packages/sdk/test/vectors.json`, whose expected values come from `cast` (`vectors.sh`).
 
 `src/AttestGate.sol` is an abstract contract with the `onlyValidated(action)` modifier. It holds 1 to 4 immutable
-`(validator, minScore)` requirements, and every one must pass. For each, it recomputes that validator's
-`requestHash` and checks the registry's stored validator, agentId and score. It marks `actionHash` consumed
-before the consumer's external call. `src/DemoAgentVault.sol` is the example consumer: bound to one agentId,
-it holds native funds and makes validated calls under a transient reentrancy guard.
+`(validator, minScore, tagHash)` requirements, and every one must pass. For each, it recomputes that validator's
+`requestHash` and checks the registry's stored validator, agentId, score and tag: a verdict naming the right
+validator and agent with a sufficient score but the wrong tag reverts `TagMismatch`, because a validator key
+signs only its own tag (ARCHITECTURE §9) and a gate that accepted any tag from the named validator would take
+a verdict meant for a different requirement. The constructor rejects a zero `tagHash`: there's no wildcard. It
+marks `actionHash` consumed before the consumer's external call. `src/DemoAgentVault.sol` is the example
+consumer: bound to one agentId, it holds native funds and makes validated calls under a transient reentrancy
+guard. The live testnet deployment requires both `mandate-v1` (validator A, minimum 100) and `risk-v1`
+(validator B, minimum 80) — see `script/DeployDemoAgentVault.s.sol` and `docs/deployments.md`.
 
 | Test file | What it covers |
 |---|---|
 | `test/ActionHash.t.sol` | The shared vectors (8 cases, read from the SDK's `vectors.json`), and fuzz: the validator is bound, `requestHash` never equals `actionHash` |
-| `test/AttestGate.t.sol` | Constructor rules (minScore 1-100, no zero or duplicate validators, 1-4 requirements); executes when validated; reverts when unvalidated, pending, low or lowered score, untrusted validator, hash squatted by another agent, expired, replayed, different action, another gate, another chain; two validators must both pass; fuzz on score, fields and deadline |
+| `test/AttestGate.t.sol` | Constructor rules (minScore 1-100, no zero or duplicate validators, no zero tagHash, 1-4 requirements); executes when validated; reverts when unvalidated, pending, low or lowered score, wrong tag (and that score is checked before tag), untrusted validator, hash squatted by another agent, expired, replayed, different action, another gate, another chain; two validators must both pass, including both tags; fuzz on score, tag, fields and deadline |
 | `test/DemoAgentVault.t.sol` | Bound to one agent, native transfers, a failed call rolls back consumption, any caller may submit, re-entry blocked, consumed before the external call |
-| `test/fork/DemoAgentVault.fork.t.sol` | The vault against the **live P1 registry** and canonical Identity Registry, including the exact testnet configuration (demo agent 1984) |
-| `test/DeployDemoAgentVault.t.sol` | The CREATE2 deploy script: predicted address, idempotence, wiring, the testnet configuration |
+| `test/fork/DemoAgentVault.fork.t.sol` | The vault against the **live P1 registry** and canonical Identity Registry, including the exact testnet configuration (demo agent 1984, both validators answering with their own tag) |
+| `test/DeployDemoAgentVault.t.sol` | The CREATE2 deploy script: predicted address, idempotence, wiring, the testnet configuration (both validators and tags) |
 | `test/Toolchain.t.sol` | P0 toolchain smoke test: P256VERIFY at `0x0100` in Foundry's Monad profile (32 bytes `…01` for a valid signature, empty for an invalid one), and the OpenZeppelin remapping (`P256.verify`) |
 
 Fork tests fork the latest testnet block (Monad RPC nodes don't reliably serve old state) and skip unless
