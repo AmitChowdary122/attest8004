@@ -53,6 +53,31 @@ onchain. The response is a smoke test of the registry, not a validation verdict;
 - Gas limits (all explicit): register 493,000; validationRequest 284,000; validationResponse 165,000 (provisional for this
   first run; tightened to 102,000 afterwards from the measured estimate of 84,212).
 
+## Verified gated executes
+
+`scripts/src/gated-execute.ts` (`pnpm --filter @attest8004/scripts gated-execute`) runs one validated action through
+`DemoAgentVault` for agent 1982. It checks that the SDK's `actionHash` and `requestHash` equal the vault's own
+(`actionHashOf`, `requestHashOf`). The deployer, as the agent's owner, requests validation from validator A with the
+request JSON v1 as a `data:` URI, validator A responds 100, and the deployer calls `execute`. Before and after, it
+**simulates** (never sends) the cases the gate must refuse. The response is a smoke test of the gate, not a
+`mandate-v1` verdict: tag `attest8004-gate-smoke`, and its evidence JSON says no checks ran.
+
+| Date | Chain | Vault | agentId | Action | validationRequest tx | validationResponse tx | execute tx |
+|---|---|---|---|---|---|---|---|
+| 2026-10-03 | Monad testnet (10143) | `0x7A5EC388…F2C4CD` | 1982 | 0.001 MON from the vault to the deployer | [`0x526b86de…5f3bc97`](https://monad-testnet.socialscan.io/tx/0x526b86de0581903664bea5eae7c2e24fe29ffcb64783312bfd9ed7fe65f3bc97) | [`0x1330ecb6…f42d82a`](https://monad-testnet.socialscan.io/tx/0x1330ecb60852ce2ef238f0b2e9abf5f0fb342d3ed3fc66a047afeecf5f42d82a) | [`0x59d5987e…71e3f85`](https://monad-testnet.socialscan.io/tx/0x59d5987e1d2583def79af6af40efd60daf0fa88cc7553d6f3b31a0eab71e3f85) (block 67,757,794) |
+
+- `actionHash` `0x395747b092f0a549890a53edc7e36807d744d602c00c0baaadd04053b8bef0de` (consumed);
+  `requestHash` `0xab7381321a83c0f46407f2b770c88b8d76f155e1974b13b8bb63489e240bd7b9` (validator A).
+- Simulated and refused as expected: the action before validation (`ValidationNotFound`), while the request was
+  pending (`ScoreTooLow`, response 0), a different action with `value + 1 wei` (`ValidationNotFound`), and a replay
+  after execution (`ActionAlreadyConsumed`).
+- The vault was first funded with 0.01 MON ([`0x36bba3bc…5a29e1a`](https://monad-testnet.socialscan.io/tx/0x36bba3bcc0b40ea3d77898066a81a7d1656dc9f79a060fbb2625a5de95a29e1a)).
+- Gas limits for this run were provisional (fund 30,000; validationRequest 400,000; validationResponse 165,000;
+  execute 250,000). Monad's estimates were 21,212, 202,643, 84,514 and 87,626, and the script now uses those × 1.2:
+  26,000, 244,000, 102,000 and 106,000.
+- Check it yourself:
+  `cast call 0x7A5EC388CCbfD3B255CFa94fc2062c0807F2C4CD "consumed(bytes32)(bool)" 0x395747b092f0a549890a53edc7e36807d744d602c00c0baaadd04053b8bef0de --rpc-url https://testnet-rpc.monad.xyz`
+
 ## Canonical contracts used (not deployed by us)
 
 | Contract | Monad testnet (10143) | Monad mainnet (143) |
