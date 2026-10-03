@@ -2,6 +2,7 @@ import {
   buildEvidence,
   canonicalJson,
   decodeJsonDataUri,
+  deploymentsFor,
   parseRequestUri,
   requestHashOfJson,
   validationRegistryAbi,
@@ -11,7 +12,7 @@ import {
 import { decodeErrorResult, keccak256, stringToBytes, zeroAddress, zeroHash, type Address, type Hex } from "viem";
 import { MAX_EVIDENCE_URI_BYTES, type PreimageCache } from "./collect.ts";
 import { MANDATE_V1 } from "./params.ts";
-import type { MandateAddresses, VerifyReader } from "./reader.ts";
+import { mandateAddressesFor, type MandateAddresses, type VerifyReader } from "./reader.ts";
 import { mandateRequestOf, runMandateV1 } from "./run.ts";
 import type { PermissionEvent, PinnedBlock, SpendEntry } from "./types.ts";
 
@@ -39,8 +40,9 @@ import type { PermissionEvent, PinnedBlock, SpendEntry } from "./types.ts";
  * - `REQUEST_INVALID`: the request's own log carries a request JSON that doesn't parse, doesn't hash
  *   to `requestHash`, or names another validator or agent than the registry records. A
  *   `mandate-v1` validator must not answer such a request (the SDK's base never does), so a mismatch.
- * - `PIN_OUT_OF_RANGE`: the evidence's pinned block is before the request's block or after the block
- *   the response landed in. A mismatch: an honest validator pins between the two.
+ * - `PIN_OUT_OF_RANGE`: the evidence's pinned block is before the request's block, after the block
+ *   the response landed in, or before the MandateRegistry was deployed. A mismatch: an honest
+ *   validator pins between the first two, and can't pin before the third (it reads the mandate there).
  * - `SCORE_MISMATCH`: the onchain score isn't the recomputed one. A mismatch.
  * - `RESPONSE_HASH_MISMATCH`: the onchain `responseHash` isn't the hash of the recomputed evidence,
  *   or it commits to evidence that isn't a `mandate-v1` document at all (no pinned block or request
@@ -101,6 +103,23 @@ export interface VerifyReport {
   permissionEvents: PermissionEvent[];
 }
 
+/**
+ * What `verifyRequest` checks a verdict against besides the chain: the contracts to re-run with, and
+ * the blocks the two registries were deployed in (before them their addresses have no code, so reads
+ * there return no data instead of an answer).
+ */
+export interface VerifyContext {
+  addresses: MandateAddresses;
+  validationRegistryDeployBlock: bigint;
+  mandateRegistryDeployBlock: bigint;
+}
+
+/** The {@link VerifyContext} for `chainId` from the SDK's recorded deployment (`DEPLOYMENTS`). Throws for a chain with none. */
+export function verifyContextFor(chainId: number): VerifyContext {
+  const { validationRegistryDeployBlock, mandateRegistryDeployBlock } = deploymentsFor(chainId);
+  return { addresses: mandateAddressesFor(chainId), validationRegistryDeployBlock, mandateRegistryDeployBlock };
+}
+
 const DECIMAL = /^(0|[1-9]\d*)$/;
 const UINT64_LIMIT = 2n ** 64n;
 
@@ -114,8 +133,8 @@ const UINT64_LIMIT = 2n ** 64n;
  *    decodes the inline evidence (→ `EVIDENCE_NOT_DECODED`), checks that it hashes to the
  *    `responseHash` (→ `EVIDENCE_HASH_MISMATCH`) and names a pinned block `P` and the request's
  *    block (→ `RESPONSE_HASH_MISMATCH`).
- * 3. `P` must be at or after the evidence's request block and at or before the response's own block
- *    (→ `PIN_OUT_OF_RANGE`).
+ * 3. `P` must be at or after the evidence's request block and the MandateRegistry's deployment, and
+ *    at or before the response's own block (→ `PIN_OUT_OF_RANGE`, with no read at `P`).
  * 4. The evidence's request block must not be before `validationRegistryDeployBlock`
  *    (→ `REQUEST_BLOCK_WRONG`, with no read). Reads the `ValidationRequest` log in that block. If none
  *    is returned, state decides: the request's status must exist at that block and not one block
@@ -132,15 +151,8 @@ const UINT64_LIMIT = 2n ** 64n;
  * can't find (`SpendLogNotFoundError`, `MandateSetLogNotFoundError`). Like the validator, it never
  * turns a failed read into a verdict, let alone a mismatch; retry later or use another RPC.
  */
-export async function verifyRequest(o: {
-  reader: VerifyReader;
-  requestHash: Hex;
-  /** The contracts to re-run with: the SDK's recorded deployment for the chain (`mandateAddressesFor`). */
-  addresses: MandateAddresses;
-  /** The block the ValidationRegistry was deployed in (`deploymentsFor(chainId).validationRegistryDeployBlock`). */
-  validationRegistryDeployBlock: bigint;
-}): Promise<VerifyReport> {
-  const { reader, addresses, validationRegistryDeployBlock } = o;
+export async function verifyRequest(o: { reader: VerifyReader; requestHash: Hex } & VerifyContext): Promise<VerifyReport> {
+  const { reader, addresses, validationRegistryDeployBlock, mandateRegistryDeployBlock } = o;
   const requestHash = o.requestHash.toLowerCase() as Hex;
   const head = await reader.finalized();
 
@@ -165,7 +177,9 @@ export async function verifyRequest(o: {
   if (posted === null) return report(base, ["RESPONSE_HASH_MISMATCH"]);
 
   const { doc, pinnedBlock, requestBlock } = posted;
-  if (pinnedBlock < requestBlock || pinnedBlock > response.block) return report({ ...base, pinnedBlock }, ["PIN_OUT_OF_RANGE"]);
+  if (pinnedBlock < requestBlock || pinnedBlock > response.block || pinnedBlock < mandateRegistryDeployBlock) {
+    return report({ ...base, pinnedBlock }, ["PIN_OUT_OF_RANGE"]);
+  }
 
   const request = await requestAt(reader, requestHash, requestBlock, validationRegistryDeployBlock, status);
   if ("problem" in request) return report({ ...base, pinnedBlock }, [request.problem]);

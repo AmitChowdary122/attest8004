@@ -263,6 +263,7 @@ function validator(over: Partial<MandateValidatorOptions> = {}): MandateValidato
     cursor: new MemoryCursorStore(999n),
     reader,
     addresses: ADDRESSES,
+    mandateRegistryDeployBlock: 0n,
     gates: [GATE],
     admission,
     retryDelayMs: 0,
@@ -640,6 +641,16 @@ describe("MandateValidator: the pinned block", () => {
     expect(doc.reasons).toEqual(["DAILY_CAP_EXCEEDED"]);
     expect(doc.spend.entries.map((entry: Doc) => entry.requestHash)).toEqual([first.requestHash]);
     expect(reader.calls).toContainEqual({ method: "status", at: 1_004n }); // refused: not yet answered there
+  });
+
+  it("never pins below the MandateRegistry's deployment block, where the mandate can't be read", async () => {
+    const e = addRequest(requestJson());
+    reader.heads = [1_004n, 1_005n, 1_006n]; // accepts() reads 1,004; the pin waits through 1,005
+
+    await validator({ mandateRegistryDeployBlock: 1_006n }).pollOnce();
+
+    expect(posted(e.requestHash).doc.block.number).toBe("1006");
+    expect(reader.heads).toEqual([1_006n]);
   });
 
   it("never pins below the request's own block", async () => {

@@ -4,6 +4,7 @@
 // knowing this key's last response. Logs are JSON lines; the key and the RPC URL are never logged.
 import {
   Admission,
+  deploymentsFor,
   jsonLineLog,
   mandateRegistryAbi,
   validationRegistryAbi,
@@ -65,6 +66,7 @@ async function main(): Promise<void> {
     cursor: new FileCursorStore(config.cursorPath),
     reader: viemMandateReader({ publicClient, addresses, concurrency: READER_CONCURRENCY }),
     addresses,
+    mandateRegistryDeployBlock: deploymentsFor(chain.id).mandateRegistryDeployBlock,
     gates: config.gates,
     admission: new Admission({
       maxRequestsPerAgent: config.maxRequestsPerAgentPerHour,

@@ -34,6 +34,11 @@ export type MandateValidatorOptions = Omit<ValidatorOptions, "tag" | "maxDeadlin
   maxRequestBytes?: number;
   reader: MandateReader;
   addresses: MandateAddresses;
+  /**
+   * The block the MandateRegistry in `addresses` was deployed in (`deploymentsFor(chainId)`). `P` is
+   * never below it: the mandate can't be read before it, and `verify` rejects such a pin.
+   */
+  mandateRegistryDeployBlock: bigint;
   /** The gates (e.g. a DemoAgentVault) whose requests this validator answers. Compared case-insensitively. */
   gates: Address[];
   /** The per-agent rate limit and daily gas budget, checked last in `accepts()`. */
@@ -58,8 +63,8 @@ export type MandateValidatorOptions = Omit<ValidatorOptions, "tag" | "maxDeadlin
  *   that finalized head is still below the request's block (a lagging RPC node), it throws instead of
  *   declining, so the base retries the request later.
  * - **`check()`** pins `P`, runs {@link runMandateV1} at `P`, and caches the request's parts.
- * - **The pin.** `P` is the finalized head at check time, but never below the request's own block nor
- *   below the block this process's last response landed in. And if this process's most recent approval
+ * - **The pin.** `P` is the finalized head at check time, but never below the request's own block, the
+ *   block this process's last response landed in, or the MandateRegistry's deployment block. And if this process's most recent approval
  *   is answered at `latest` but not yet at the finalized head (a send that landed but threw, so
  *   `onResponded` never ran), `P` waits until it is answered there. So two requests checked back to
  *   back always see each other's approval in their spend. It re-reads the head every `pinPollMs`, and
@@ -77,6 +82,7 @@ export class MandateValidator extends ValidatorBase {
   private readonly cursorStore: CursorStore;
   private readonly reader: MandateReader;
   private readonly addresses: MandateAddresses;
+  private readonly mandateRegistryDeployBlock: bigint;
   private readonly gates: ReadonlySet<string>;
   private readonly admission: Admission;
   private readonly cache: PreimageCache;
@@ -92,7 +98,7 @@ export class MandateValidator extends ValidatorBase {
   private caughtUp = false;
 
   constructor(options: MandateValidatorOptions) {
-    const { reader, addresses, gates, admission, pinTimeoutMs, pinPollMs, cache, ...base } = options;
+    const { reader, addresses, mandateRegistryDeployBlock, gates, admission, pinTimeoutMs, pinPollMs, cache, ...base } = options;
     const log = options.log ?? jsonLineLog;
     super({
       ...base,
@@ -106,6 +112,7 @@ export class MandateValidator extends ValidatorBase {
     this.cursorStore = options.cursor;
     this.reader = reader;
     this.addresses = addresses;
+    this.mandateRegistryDeployBlock = mandateRegistryDeployBlock;
     this.gates = new Set(gates.map((gate) => gate.toLowerCase()));
     this.admission = admission;
     this.cache = cache ?? new Map();
@@ -193,7 +200,9 @@ export class MandateValidator extends ValidatorBase {
 
   /** `P` for one check (see the class doc): the finalized head, once it is high enough and complete. */
   private async pin(requestHash: Hex, requestBlock: bigint): Promise<PinnedBlock> {
-    const floor = this.lastResponseBlock !== undefined && this.lastResponseBlock > requestBlock ? this.lastResponseBlock : requestBlock;
+    let floor = requestBlock;
+    if (this.lastResponseBlock !== undefined && this.lastResponseBlock > floor) floor = this.lastResponseBlock;
+    if (this.mandateRegistryDeployBlock > floor) floor = this.mandateRegistryDeployBlock;
     const approval = this.pendingApproval;
     // Only an approval that landed can be waited for; one that never landed has nothing to show at P.
     const mustSee = approval !== undefined && answered(await this.chain.status(approval)) ? approval : undefined;

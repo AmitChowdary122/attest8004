@@ -12,6 +12,11 @@ export interface Deployment {
   validationRegistryDeployBlock: bigint;
   agentRequestForwarder: Address;
   mandateRegistry: Address;
+  /**
+   * The block the MandateRegistry was deployed in. `mandate-v1` reads the mandate at its pinned block,
+   * so it never pins before this, and `verify` rejects evidence pinned before it without reading there.
+   */
+  mandateRegistryDeployBlock: bigint;
   demoAgents: readonly bigint[];
   demoAgentVault: Address;
   demoAgentVaultP2: Address;
@@ -32,6 +37,8 @@ export const DEPLOYMENTS = {
     agentRequestForwarder: "0x1451F3C36545b191d3642f759D59f21DcFD657B2",
     /** Per-agent spending mandate (SPEC §4.2): owner-set until P6 adds the WebAuthn hook. */
     mandateRegistry: "0x2523197373ef813E19b5b14Ef2984130868cD17c",
+    /** Deploy tx 0x1222b700…3ca0b84 (docs/deployments.md). */
+    mandateRegistryDeployBlock: 67_842_487n,
     /** The two demo agents, owned by the deployer; their hot keys request through the forwarder. */
     demoAgents: [1984n, 1985n] as readonly bigint[],
     /** Bound to demo agent 1984; requires validator A (mandate-v1) at 100 until the P5 redeploy. */

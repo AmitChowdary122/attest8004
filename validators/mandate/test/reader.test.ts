@@ -333,7 +333,17 @@ describe("viemMandateReader: simulate classifies only deterministic outcomes", (
   });
 });
 
-describe("viemMandateReader: consumed() is null only for a deterministic call failure", () => {
+describe("viemMandateReader: consumed() is null for any outcome of the pinned call that isn't a bool", () => {
+  it("a gate with no code (the call succeeds with no data) reads as null: chain state, not an RPC failure", async () => {
+    answerRawCall(GATE, () => "0x");
+    await expect(reader().consumed(GATE, HASH, P)).resolves.toBeNull();
+  });
+
+  it("a successful call whose data isn't a bool reads as null", async () => {
+    answerRawCall(GATE, () => `0x${"00".repeat(31)}02`);
+    await expect(reader().consumed(GATE, HASH, P)).resolves.toBeNull();
+  });
+
   it("a revert reads as null", async () => {
     rpc.onCall(GATE, attestGateAbi, "consumed", () => revert(attestGateAbi, "ActionAlreadyConsumed", [HASH]));
     await expect(reader().consumed(GATE, HASH, P)).resolves.toBeNull();
@@ -674,6 +684,73 @@ describe("viemMandateReader: CCIP-Read is never followed", () => {
     offchainLookupAt(ADDRESSES.identityRegistry, encodeAbiParameters([{ type: "address" }], [OWNER]));
     await expect(reader().ownerOf(AGENT, P)).rejects.toThrow();
     expectNoFollowUp();
+  });
+});
+
+describe("viemMandateReader: an approval through a gate with no code counts toward spend", () => {
+  it("collectInputs records it as consumed: null, counted: true (fail closed), instead of failing", async () => {
+    const CODELESS = getAddress("0x0000000000000000000000000000000000000e0a");
+    const pinned = { number: P, hash: keccak256(toHex(P)), timestamp: 1_790_000_000n };
+    const parts = {
+      chainId: 10_143,
+      gate: CODELESS,
+      agentId: AGENT,
+      target: TARGET,
+      value: 7n,
+      dataHash: keccak256("0x"),
+      deadline: pinned.timestamp - 60n, // expired: it counts only because consumed() is unknown
+      salt: keccak256(toHex("through a codeless gate")),
+    };
+    const approval = computeRequestHashFromParts({ ...parts, validator: VALIDATOR });
+    rpc
+      .onCall(ADDRESSES.identityRegistry, identityRegistryAbi, "ownerOf", () => OWNER)
+      .onCall(ADDRESSES.mandateRegistry, mandateRegistryAbi, "getMandate", () => [
+        { allowedTargets: [TARGET], allowedSelectors: ["0x00000000"], maxValuePerTx: 100n, maxValuePerDay: 1_000n, validUntil: pinned.timestamp + 86_400n },
+        MANDATE_HASH,
+        OWNER,
+        P - 10_000n,
+      ])
+      .onCall(ADDRESSES.validationRegistry, validationRegistryAbi, "getAgentValidations", () => [approval])
+      .onCall(ADDRESSES.validationRegistry, validationRegistryAbi, "getValidationStatus", () => [
+        VALIDATOR,
+        AGENT,
+        100,
+        keccak256(toHex("evidence")),
+        "mandate-v1",
+        pinned.timestamp - 600n,
+      ]);
+    rpc.intercept = (method, params) => {
+      if (method !== "eth_call") return undefined;
+      const to = getAddress((params[0] as { to: Address }).to);
+      return to === CODELESS || to === TARGET ? "0x" : undefined; // no code at either: the calls succeed with no data
+    };
+    const { publicClient } = rpc.clients(account, { retryCount: 0 });
+    const request = {
+      block: P - 3n,
+      requestHash: keccak256(toHex("the request being checked")),
+      chainId: 10_143,
+      gate: GATE,
+      agentId: AGENT,
+      target: TARGET,
+      value: 10n,
+      data: "0x" as Hex,
+      deadline: pinned.timestamp + 60n,
+      salt: keccak256(toHex("salt")),
+    };
+
+    const inputs = await collectInputs({
+      reader: viemMandateReader({ publicClient, addresses: ADDRESSES }),
+      validator: VALIDATOR,
+      request,
+      pinned,
+      cache: new Map([[approval, parts]]),
+    });
+
+    expect(inputs.spend).toEqual({
+      since: pinned.timestamp - MANDATE_V1.spendWindowSeconds,
+      total: 7n,
+      entries: [{ requestHash: approval, approvedAt: pinned.timestamp - 600n, gate: CODELESS, value: 7n, deadline: parts.deadline, consumed: null, counted: true }],
+    });
   });
 });
 

@@ -75,8 +75,11 @@ export interface MandateReader {
   agentValidations(agentId: bigint, at: bigint): Promise<Hex[]>;
   status(requestHash: Hex, at: bigint): Promise<ValidationStatus>;
   /**
-   * `gate.consumed(actionHash)` at `at`, with a gas cap of `MANDATE_V1.consumedCallGas`. `null` only
-   * when the call itself fails deterministically: it reverts, or runs out of gas within the cap.
+   * `gate.consumed(actionHash)` at `at`, with a gas cap of `MANDATE_V1.consumedCallGas`. `null` when
+   * the pinned call gives no bool, which is chain state, not an RPC failure: it reverts, runs out of
+   * gas within the cap, or succeeds with data that doesn't decode as a bool (a gate with no code
+   * returns none). The collector counts `null` toward spend (fail closed). A transport or RPC error
+   * still throws.
    */
   consumed(gate: Address, actionHash: Hex, at: bigint): Promise<boolean | null>;
   /**
@@ -296,8 +299,13 @@ export function viemMandateReader(options: {
         if (outcome?.error === "REVERTED" || outcome?.error === "OUT_OF_GAS") return null;
         throw error;
       }
-      // A call that succeeded but returned no bool (no `consumed()` at that address) throws here.
-      return decodeFunctionResult({ abi: attestGateAbi, functionName: "consumed", data });
+      // A call that succeeded but returned no bool (no code at that address, or no `consumed()`) is
+      // chain state at P, so it is unknown rather than a failure: verify must reach the same answer.
+      try {
+        return decodeFunctionResult({ abi: attestGateAbi, functionName: "consumed", data });
+      } catch {
+        return null;
+      }
     },
 
     async permissionLogs(fromBlock, toBlock, filter) {

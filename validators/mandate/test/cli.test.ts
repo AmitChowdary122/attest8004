@@ -1,10 +1,9 @@
-import { DEPLOYMENTS } from "@attest8004/sdk";
 import { HttpRequestError, InvalidParamsRpcError, keccak256, RpcRequestError, getAddress, toHex, type Hex } from "viem";
 import { describe, expect, it } from "vitest";
 import { DEFAULT_RPC_URL, main, USAGE, type CliDeps } from "../src/cli.ts";
 import { SpendLogNotFoundError } from "../src/collect.ts";
 import { mandateAddressesFor, type VerifyReader } from "../src/reader.ts";
-import type { VerifyReport } from "../src/verify.ts";
+import { verifyContextFor, type VerifyReport } from "../src/verify.ts";
 
 const HASH = `0x${"ab".repeat(32)}` as Hex;
 const RESPONSE_HASH = `0x${"cd".repeat(32)}` as Hex;
@@ -87,13 +86,14 @@ function harness(over: Partial<CliDeps> & { report?: VerifyReport } = {}) {
     main(argv, env, {
       connect: async (rpcUrl) => {
         urls.push(rpcUrl);
-        return { reader: unusedReader, addresses: ADDRESSES, validationRegistryDeployBlock: DEPLOYMENTS[10143].validationRegistryDeployBlock };
+        return { reader: unusedReader, ...verifyContextFor(10_143) };
       },
       verify: async (o) => {
         verifyCalls.push({ requestHash: o.requestHash });
         expect(o.reader).toBe(unusedReader);
         expect(o.addresses).toEqual(ADDRESSES);
         expect(o.validationRegistryDeployBlock).toBe(67_604_893n);
+        expect(o.mandateRegistryDeployBlock).toBe(67_842_487n);
         return report;
       },
       stdout: (text) => out.push(text),

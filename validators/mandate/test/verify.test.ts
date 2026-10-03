@@ -38,7 +38,7 @@ import { MANDATE_V1 } from "../src/params.ts";
 import { mandateAddressesFor, viemMandateReader, type MandateAddresses, type ResponseLog, type VerifyReader } from "../src/reader.ts";
 import type { MandateRecord, PermissionEvent, PinnedBlock, Simulation } from "../src/types.ts";
 import { MandateValidator } from "../src/validator.ts";
-import { verifyRequest, type VerifyReport } from "../src/verify.ts";
+import { verifyContextFor, verifyRequest, type VerifyReport } from "../src/verify.ts";
 
 const VALIDATOR = getAddress("0xa62dab21e0c0f57e94b3ed6e675f214199989e92");
 const OTHER_VALIDATOR = getAddress("0x00000000000000000000000000000000000000b0");
@@ -46,6 +46,8 @@ const GATE = getAddress("0x23bfbd12545ccd1501dda1b65a54518fd6212a96");
 const OWNER = getAddress("0x3efeb3cf2fb54a7d99abe90aab786ce5a831a8cf");
 const UNLISTED = getAddress("0x00000000000000000000000000000000000000b2");
 const OTHER_MANDATE_REGISTRY = getAddress("0x00000000000000000000000000000000000000c3");
+/** An address with no code: a call to it succeeds with no data. */
+const CODELESS_GATE = getAddress("0x0000000000000000000000000000000000000e0a");
 const AGENT = 1_984n;
 const CHAIN_ID = 10_143;
 const BASE_TS = 1_790_000_000n;
@@ -98,6 +100,10 @@ class FakeChain implements ValidatorChain {
    * read returns no data (`"0x"`), which doesn't decode, rather than reverting `UnknownRequest`.
    */
   deployBlock = 900n;
+  /** The block the MandateRegistry was deployed in; `getMandate` before it returns no data, likewise. */
+  mandateDeployBlock = 950n;
+  /** Gates with no code, so `consumed()` on them returns no data. Lower-case. */
+  readonly codelessGates = new Set<string>();
   readonly events: RequestEvent[] = [];
   readonly landed = new Map<Hex, Landed>();
 
@@ -168,6 +174,8 @@ class FakeReader implements VerifyReader {
   readonly statusReads: bigint[] = [];
   /** Every block a request log was looked up in. */
   readonly requestUriCalls: bigint[] = [];
+  /** Every block the mandate was read at. */
+  readonly mandateReads: bigint[] = [];
   /** A failure for the status read at `at` (thrown instead of reading), or undefined to read. */
   statusFailure: ((at: bigint) => unknown) | undefined;
   /** How an `UnknownRequest` revert reaches the caller. */
@@ -186,7 +194,9 @@ class FakeReader implements VerifyReader {
   async block(number: bigint): Promise<PinnedBlock> {
     return { number, hash: keccak256(toHex(`block ${number}`)), timestamp: tsOf(number) };
   }
-  async mandate() {
+  async mandate(_agentId: bigint, at: bigint) {
+    this.mandateReads.push(at);
+    if (at < this.chain.mandateDeployBlock) throw new AbiDecodingZeroDataError(); // what viem's decode of "0x" throws
     return this.mandateRecord;
   }
   async ownerOf() {
@@ -205,8 +215,9 @@ class FakeReader implements VerifyReader {
       throw this.unknownRequestAs(error as Error);
     }
   }
-  async consumed() {
-    return false;
+  async consumed(gate: Address) {
+    // What viemMandateReader returns when the pinned call to the gate yields no bool: unknown.
+    return this.chain.codelessGates.has(gate.toLowerCase()) ? null : false;
   }
   async permissionLogs(fromBlock: bigint, toBlock: bigint) {
     return this.permissionEvents.filter((e) => e.block >= fromBlock && e.block <= toBlock).map((e) => ({ ...e }));
@@ -248,10 +259,10 @@ function mandate(over: Partial<MandateRecord> = {}): MandateRecord {
 
 let saltCounter = 0;
 
-function requestJson(over: { target?: Address; value?: bigint; validator?: Address } = {}): RequestJsonV1 {
+function requestJson(over: { gate?: Address; target?: Address; value?: bigint; validator?: Address } = {}): RequestJsonV1 {
   return buildRequestJson({
     chainId: CHAIN_ID,
-    gate: GATE,
+    gate: over.gate ?? GATE,
     validator: over.validator ?? VALIDATOR,
     action: buildAction({
       agentId: AGENT,
@@ -287,13 +298,14 @@ function addRequest(json: RequestJsonV1, block = 1_000n): RequestEvent {
 }
 
 /** Runs a real `MandateValidator` over the fakes for one poll cycle: every pending request is answered. */
-async function runValidator(addresses: MandateAddresses = ADDRESSES): Promise<void> {
+async function runValidator(addresses: MandateAddresses = ADDRESSES, gates: Address[] = [GATE]): Promise<void> {
   const validator = new MandateValidator({
     chain,
     cursor: new MemoryCursorStore(999n),
     reader: validatorReader,
     addresses,
-    gates: [GATE],
+    mandateRegistryDeployBlock: chain.mandateDeployBlock,
+    gates,
     admission: new Admission({ maxRequestsPerAgent: 20, agentWindowSeconds: 3_600n, dailyGasBudget: 10_000_000n, maxGasPerResponse: 400_000n }),
     retryDelayMs: 0,
     pollIntervalMs: 0,
@@ -330,7 +342,13 @@ function resign(requestHash: Hex, edit: (doc: Doc) => void): void {
 }
 
 function verify(requestHash: Hex, reader: FakeReader = new FakeReader(chain)): Promise<VerifyReport> {
-  return verifyRequest({ reader, requestHash, addresses: ADDRESSES, validationRegistryDeployBlock: chain.deployBlock });
+  return verifyRequest({
+    reader,
+    requestHash,
+    addresses: ADDRESSES,
+    validationRegistryDeployBlock: chain.deployBlock,
+    mandateRegistryDeployBlock: chain.mandateDeployBlock,
+  });
 }
 
 describe("verifyRequest: an honest verdict reproduces", () => {
@@ -416,6 +434,47 @@ describe("verifyRequest: an honest verdict reproduces", () => {
     await runValidator();
     const report = await verify(`0x${e.requestHash.slice(2).toUpperCase()}` as Hex);
     expect(report).toMatchObject({ requestHash: e.requestHash, verdict: "match" });
+  });
+
+  it("an approval through a gate with no code counts as unknown (consumed: null, counted), and a later verdict verifies", async () => {
+    chain.codelessGates.add(CODELESS_GATE.toLowerCase());
+    const first = addRequest(requestJson({ gate: CODELESS_GATE, value: 1_000n }));
+    const second = addRequest(requestJson({ value: 1_000n }));
+    await runValidator(ADDRESSES, [GATE, CODELESS_GATE]);
+    const expected = {
+      requestHash: first.requestHash,
+      approvedAt: tsOf(1_005n),
+      gate: CODELESS_GATE,
+      value: 1_000n,
+      deadline: tsOf(1_004n) + 600n,
+      consumed: null,
+      counted: true,
+    };
+    expect((JSON.parse(evidenceText(second.requestHash)) as Doc).spend.entries).toEqual([
+      { ...expected, approvedAt: expected.approvedAt.toString(), value: "1000", deadline: expected.deadline.toString() },
+    ]);
+
+    const report = await verify(second.requestHash);
+
+    expect(report).toMatchObject({ verdict: "match", problems: [] });
+    expect(report.spendEntries).toEqual([expected]);
+  });
+
+  it("an honest pin exactly at the MandateRegistry's deployment block: match", async () => {
+    chain.mandateDeployBlock = 1_004n;
+    const e = addRequest(requestJson());
+    await runValidator();
+
+    await expect(verify(e.requestHash)).resolves.toMatchObject({ verdict: "match", pinnedBlock: 1_004n });
+  });
+
+  it("verifyContextFor reads the SDK's recorded deployment: the contracts and both registries' deployment blocks", () => {
+    expect(verifyContextFor(CHAIN_ID)).toEqual({
+      addresses: mandateAddressesFor(CHAIN_ID),
+      validationRegistryDeployBlock: 67_604_893n,
+      mandateRegistryDeployBlock: 67_842_487n,
+    });
+    expect(() => verifyContextFor(1)).toThrow(/no Attest8004 deployment/);
   });
 
   it("reports the permission events the re-run found", async () => {
@@ -516,6 +575,26 @@ describe("verifyRequest: a tampered or drifted verdict is a mismatch", () => {
     const report = await verify(e.requestHash);
 
     expect(report).toMatchObject({ verdict: "mismatch", problems: ["PIN_OUT_OF_RANGE"], pinnedBlock: 999n, recomputed: null });
+  });
+
+  it("the fake chain, like the real one, answers getMandate before the MandateRegistry's deployment with zero data", async () => {
+    await expect(new FakeReader(chain).mandate(AGENT, chain.mandateDeployBlock - 1n)).rejects.toBeInstanceOf(AbiDecodingZeroDataError);
+  });
+
+  it("a pin before the MandateRegistry existed: PIN_OUT_OF_RANGE, with nothing read at that block", async () => {
+    chain.mandateDeployBlock = 1_002n; // the request (block 1,000) predates the MandateRegistry
+    const e = addRequest(requestJson());
+    await runValidator(); // pins at 1,004
+    resign(e.requestHash, (doc) => {
+      doc.block.number = (chain.mandateDeployBlock - 1n).toString();
+    });
+    const reader = new FakeReader(chain);
+
+    const report = await verify(e.requestHash, reader);
+
+    expect(report).toMatchObject({ verdict: "mismatch", problems: ["PIN_OUT_OF_RANGE"], pinnedBlock: 1_001n, recomputed: null });
+    expect(reader.mandateReads).toEqual([]);
+    expect(reader.statusReads).toEqual([1_005n]);
   });
 
   it("a pin after the response's block: PIN_OUT_OF_RANGE", async () => {
@@ -716,6 +795,7 @@ describe("verifyRequest: what can't be found or re-run is never a mismatch", () 
       requestHash: unknown,
       addresses: ADDRESSES,
       validationRegistryDeployBlock: 900n,
+      mandateRegistryDeployBlock: 950n,
     });
 
     expect(report).toMatchObject({ verdict: "unverifiable", problems: ["REQUEST_NOT_FOUND"] });

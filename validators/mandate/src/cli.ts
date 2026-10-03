@@ -6,10 +6,9 @@
 // line it runs, so a keyed URL belongs in MONAD_TESTNET_RPC_URL (or `pnpm -s` with --rpc-url).
 import { realpathSync } from "node:fs";
 import { fileURLToPath } from "node:url";
-import { deploymentsFor } from "@attest8004/sdk";
 import { BaseError, createPublicClient, formatEther, http } from "viem";
-import { mandateAddressesFor, viemMandateReader, type MandateAddresses, type VerifyReader } from "./reader.ts";
-import { verifyRequest, type VerifyProblem, type VerifyReport, type VerifyVerdict } from "./verify.ts";
+import { viemMandateReader, type VerifyReader } from "./reader.ts";
+import { verifyContextFor, verifyRequest, type VerifyContext, type VerifyProblem, type VerifyReport, type VerifyVerdict } from "./verify.ts";
 
 /** Monad's public testnet RPC: the default, so a third party needs no `.env`. */
 export const DEFAULT_RPC_URL = "https://testnet-rpc.monad.xyz";
@@ -34,11 +33,8 @@ export const USAGE = [
 
 /** What `main` needs from the outside world, so tests can script it. */
 export interface CliDeps {
-  /**
-   * Connects to the RPC at `rpcUrl`: a reader, the contracts to recompute with and the block the
-   * ValidationRegistry was deployed in (the chain's recorded deployment).
-   */
-  connect(rpcUrl: string): Promise<{ reader: VerifyReader; addresses: MandateAddresses; validationRegistryDeployBlock: bigint }>;
+  /** Connects to the RPC at `rpcUrl`: a reader, and the chain's recorded deployment to check against. */
+  connect(rpcUrl: string): Promise<{ reader: VerifyReader } & VerifyContext>;
   /** Default {@link verifyRequest}. */
   verify?: typeof verifyRequest;
   /** Writes `text` and a newline. */
@@ -71,8 +67,8 @@ export async function main(argv: readonly string[], env: Record<string, string |
 
   let report: VerifyReport;
   try {
-    const { reader, addresses, validationRegistryDeployBlock } = await deps.connect(rpc.url);
-    report = await (deps.verify ?? verifyRequest)({ reader, requestHash: command.requestHash, addresses, validationRegistryDeployBlock });
+    const connected = await deps.connect(rpc.url);
+    report = await (deps.verify ?? verifyRequest)({ ...connected, requestHash: command.requestHash });
   } catch (error) {
     deps.stderr(printable(`could not verify ${command.requestHash}: ${redact(errorText(error), rpc.url)}`));
     return 2;
@@ -87,10 +83,8 @@ export function nodeCliDeps(): CliDeps {
   return {
     async connect(rpcUrl) {
       const publicClient = createPublicClient({ transport: http(rpcUrl) });
-      const chainId = await publicClient.getChainId();
-      const addresses = mandateAddressesFor(chainId);
-      const { validationRegistryDeployBlock } = deploymentsFor(chainId);
-      return { reader: viemMandateReader({ publicClient, addresses }), addresses, validationRegistryDeployBlock };
+      const context = verifyContextFor(await publicClient.getChainId());
+      return { reader: viemMandateReader({ publicClient, addresses: context.addresses }), ...context };
     },
     stdout: (text) => process.stdout.write(`${text}\n`),
     stderr: (text) => process.stderr.write(`${text}\n`),

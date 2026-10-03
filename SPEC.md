@@ -139,7 +139,7 @@ attest8004/
 ### 4.5 Validator A — `mandate-v1` (deterministic)
 **This validator carries the "is it trust?" argument: anyone can re-run a verdict from chain data alone and get the same score and the same `responseHash`.** Lead with it in the docs and the demo. As built in P4 (`validators/mandate/`):
 
-- **One pinned block.** Every input is read at one block `P`, and the verdict's clock is `P`'s timestamp. `P` is the finalized head when the check runs, never below the request's block or the block this process's last response landed in (ARCHITECTURE §6). One validator process per key.
+- **One pinned block.** Every input is read at one block `P`, and the verdict's clock is `P`'s timestamp. `P` is the finalized head when the check runs, never below the request's block, the block this process's last response landed in, or the MandateRegistry's deployment block (ARCHITECTURE §6). One validator process per key.
 - **Checks.** Every rule is evaluated. Any failure scores 0, and the reasons are reported in this order:
   1. `MANDATE_MISSING`: the agent has no mandate in `MandateRegistry` (never set, or revoked).
   2. `MANDATE_OWNER_CHANGED`: the mandate was set by someone who no longer owns the agent.
@@ -157,7 +157,7 @@ attest8004/
   Without a mandate, only `MANDATE_MISSING`, `ACTION_EXPIRED`, `PERMISSION_CHANGED_AFTER_MANDATE` and `SIMULATION_FAILED` apply.
 - **Spend** is this validator's own `mandate-v1` approvals (score 100) of the agent's actions, **approved in the last 25 h** (`lastUpdate` after `P`'s time − 90,000 s).
   - The registry records when an action was approved, not when it ran. `mandate-v1` fixes the deadline horizon at 3,600 s, so an action runs at most 1 h after its approval, and 25 h of approvals covers every execution in the last 24 h. It can over-count by at most an hour.
-  - An approval counts if the gate consumed it, if it is unconsumed and its deadline hasn't passed at `P`, or if its `consumed()` read failed (fail closed). **One that expired unconsumed never counts**, because it can never run.
+  - An approval counts if the gate consumed it, if it is unconsumed and its deadline hasn't passed at `P`, or if its `consumed()` read gave no answer: it reverted, ran out of gas, or returned no bool, as a gate with no code does (fail closed). **One that expired unconsumed never counts**, because it can never run.
   - Which approvals exist comes from state at `P` (`getAgentValidations` and each status). Each one's amount comes from that approval's own posted evidence, used only if it hashes to the approval's `responseHash` and its request fields recompute to its `requestHash`. An evidence log that can't be found is never a verdict: the check fails and is retried later.
   - **Caps cover native MON only.** A mandate that allowlists token-moving selectors (`transfer`, `approve`, …) doesn't cap token amounts. This is on the P10 threat-model list.
 - **Permission changes** are read in the window `(P − N, P]`, with **N = 6,000 blocks** (about 30 minutes): the Identity Registry's `Transfer` and `Approval` of the agent and `ApprovalForAll` by its owner at `P`, the forwarder's `AgentKeySet` for the agent, and the MandateRegistry's `MandateSet` and `MandateRevoked` for the agent. An event after the current mandate's own `MandateSet`, comparing `(block, logIndex)`, fails the action: the owner never approved a mandate with that change in view.
