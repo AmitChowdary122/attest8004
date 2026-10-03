@@ -5,6 +5,7 @@ Every Attest8004 deployment is recorded here: chain, contract, address, the comm
 | Chain | Contract | Address | Commit | Date | Deploy tx |
 |---|---|---|---|---|---|
 | Monad testnet (10143) | `ValidationRegistry` | [`0xc4A4D0cEB3971cbE7a2536494aC106f2Cd9F9a8f`](https://monad-testnet.socialscan.io/address/0xc4a4d0ceb3971cbe7a2536494ac106f2cd9f9a8f) | `8dc8859` | 2026-10-02 | [`0x724f31e0…cf64d03`](https://monad-testnet.socialscan.io/tx/0x724f31e0efd09993f2d73581cb742e71d4bef52c0f4f2a30cccd43d79cf64d03) (block 67,604,893) |
+| Monad testnet (10143) | `AgentRequestForwarder` | [`0x1451F3C36545b191d3642f759D59f21DcFD657B2`](https://monad-testnet.socialscan.io/address/0x1451f3c36545b191d3642f759d59f21dcfd657b2) | `5f2f4a4` | 2026-10-03 | [`0x82883206…72a3cd7`](https://monad-testnet.socialscan.io/tx/0x828832065b96235728c1782e9be9b4b712e3f408f8755e20f554a210472a3cd7) (block 67,779,694) |
 | Monad testnet (10143) | `DemoAgentVault` (AttestGate) | [`0x7A5EC388CCbfD3B255CFa94fc2062c0807F2C4CD`](https://monad-testnet.socialscan.io/address/0x7a5ec388ccbfd3b255cfa94fc2062c0807f2c4cd) | `f826eec` | 2026-10-03 | [`0xd960c130…72b6a64`](https://monad-testnet.socialscan.io/tx/0xd960c1304d88b0352d2bdf054eac174c704fd356ae465eeb8df570a6572b6a64) (block 67,757,166) |
 
 ### ValidationRegistry (testnet) details
@@ -22,6 +23,21 @@ Every Attest8004 deployment is recorded here: chain, contract, address, the comm
   Differences from the EIP are listed in [spec-notes.md](./spec-notes.md).
 - **Not upgradeable, no owner.** Nobody can change this contract after deployment. It reads the canonical Identity Registry,
   which *is* an upgradeable proxy with an owner; see the trust model in ARCHITECTURE §7.
+
+### AgentRequestForwarder (testnet) details
+
+- **Constructor argument:** the ValidationRegistry above (`0xc4A4…F9a8f`). The forwarder reads the Identity Registry from
+  it (`identityRegistry()` returns the canonical `0x8004A818BFB912233c491871b3d84c89A494BD9e`).
+- **What it does:** an agent's owner approves it once with `setApprovalForAll(forwarder, true)` on the Identity Registry
+  and registers a hot key with `setAgentKey(agentId, key)`. The key can then call `request(...)`, which makes exactly one
+  call, `validationRequest`, on the ValidationRegistry, while the owner who registered it still owns the agent. See
+  ARCHITECTURE §5.2 and §7 (the approval covers all of the owner's agents; the forwarder only exposes `validationRequest`).
+- **How it was deployed:** `contracts/script/DeployAgentRequestForwarder.s.sol` via
+  `script/deploy-testnet.sh AgentRequestForwarder`, through the CREATE2 factory with salt
+  `keccak256("attest8004.AgentRequestForwarder.v1")`. The broadcast record is
+  `contracts/broadcast/DeployAgentRequestForwarder.s.sol/10143/run-latest.json`.
+- **Gas:** explicit limit 490,000 (Monad `eth_estimateGas` was 407,868; limit = ×1.2, rounded up to 10k).
+- **Not upgradeable, no owner, holds no funds.**
 
 ### DemoAgentVault (testnet) details
 
