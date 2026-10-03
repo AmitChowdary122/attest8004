@@ -3,6 +3,7 @@ export * from "./action.ts";
 export * from "./request.ts";
 export * from "./canonical.ts";
 export * from "./abi.ts";
+export * from "./admission.ts";
 export * from "./deployments.ts";
 export * from "./gas.ts";
 export * from "./logs.ts";
