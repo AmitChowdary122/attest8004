@@ -13,6 +13,7 @@
     "build": "pnpm -r --if-present build",
     "typecheck": "pnpm -r --if-present typecheck",
     "test": "pnpm -r --if-present test",
-    "test:contracts": "cd contracts && forge test"
+    "test:contracts": "cd contracts && forge test",
+    "attest8004": "node --conditions=@attest8004/source --env-file-if-exists=.env validators/mandate/src/cli.ts"
   }
 }

@@ -2,6 +2,7 @@ import {
   agentKeySetEvent,
   attestGateAbi,
   blockWindows,
+  deploymentsFor,
   identityRegistryAbi,
   mandateRegistryAbi,
   MAX_LOG_BLOCK_RANGE,
@@ -32,6 +33,27 @@ export interface MandateAddresses {
   identityRegistry: Address;
   forwarder: Address;
   mandateRegistry: Address;
+}
+
+/**
+ * The contracts `mandate-v1` reads on `chainId`, from the SDK's recorded deployment (`DEPLOYMENTS`):
+ * what the service runs with and what `verify` recomputes with. Throws for a chain with none.
+ */
+export function mandateAddressesFor(chainId: number): MandateAddresses {
+  const deployment = deploymentsFor(chainId);
+  return {
+    validationRegistry: deployment.validationRegistry,
+    identityRegistry: deployment.identityRegistry,
+    forwarder: deployment.agentRequestForwarder,
+    mandateRegistry: deployment.mandateRegistry,
+  };
+}
+
+/** A `ValidationResponse` log: its `responseURI`, and where it is. */
+export interface ResponseLog {
+  uri: string;
+  block: bigint;
+  logIndex: number;
 }
 
 /**
@@ -83,6 +105,15 @@ export interface MandateReader {
   requestUri(requestHash: Hex, block: bigint): Promise<string | null>;
 }
 
+/**
+ * What `verifyRequest` reads: a {@link MandateReader} that can also say which block a response landed
+ * in, so `verify` can check that the evidence's pinned block is no later than its own response.
+ */
+export interface VerifyReader extends MandateReader {
+  /** The log {@link MandateReader.responseEvidence} finds, with its block and log index; `null` when none is found. */
+  responseLog(requestHash: Hex, timestamp: bigint, notAfter: bigint): Promise<ResponseLog | null>;
+}
+
 const transferEvent = getAbiItem({ abi: identityRegistryAbi, name: "Transfer" });
 const approvalEvent = getAbiItem({ abi: identityRegistryAbi, name: "Approval" });
 const approvalForAllEvent = getAbiItem({ abi: identityRegistryAbi, name: "ApprovalForAll" });
@@ -99,7 +130,8 @@ const PERMISSION_EVENTS = [
 ] as const;
 
 /**
- * A `MandateReader` over viem, reading the given contracts.
+ * A `MandateReader` over viem, reading the given contracts. It is also the `VerifyReader` `verify`
+ * runs on: `responseEvidence` is `responseLog`'s URI.
  *
  * - **One RPC budget.** Every JSON-RPC request this reader sends, from any method and any number of
  *   concurrent callers (the collector reads spend and permission logs side by side), goes through
@@ -117,7 +149,7 @@ export function viemMandateReader(options: {
   addresses: MandateAddresses;
   /** The most JSON-RPC requests in flight at once, across every method (default 8). */
   concurrency?: number;
-}): MandateReader {
+}): VerifyReader {
   const { publicClient, concurrency = 8 } = options;
   const limited = concurrencyLimit(concurrency);
   const validationRegistry = getAddress(options.addresses.validationRegistry);
@@ -155,6 +187,30 @@ export function viemMandateReader(options: {
         ],
       }),
     );
+
+  const responseLog = async (requestHash: Hex, timestamp: bigint, notAfter: bigint): Promise<ResponseLog | null> => {
+    const range = await blocksWithTimestamp(async (n) => (await block(n)).timestamp, timestamp, notAfter);
+    if (range === null) return null;
+    let last: ResponseLog | null = null;
+    for (const window of blockWindows(range.fromBlock, range.toBlock, MAX_LOG_BLOCK_RANGE)) {
+      const logs = await limited(() =>
+        publicClient.getLogs({
+          address: validationRegistry,
+          event: validationResponseEvent,
+          args: { requestHash },
+          fromBlock: window.fromBlock,
+          toBlock: window.toBlock,
+        }),
+      );
+      for (const log of logs) {
+        const uri = log.args.responseURI;
+        if (uri === undefined || !sameHash(log.args.requestHash, requestHash)) continue;
+        const here = { uri, block: log.blockNumber, logIndex: log.logIndex };
+        if (last === null || byBlockThenLogIndex(last, here) < 0) last = here;
+      }
+    }
+    return last;
+  };
 
   return {
     chainId: () => limited(() => publicClient.getChainId()),
@@ -302,28 +358,10 @@ export function viemMandateReader(options: {
     },
 
     async responseEvidence(requestHash, timestamp, notAfter) {
-      const range = await blocksWithTimestamp(async (n) => (await block(n)).timestamp, timestamp, notAfter);
-      if (range === null) return null;
-      let last: { block: bigint; logIndex: number; uri: string } | null = null;
-      for (const window of blockWindows(range.fromBlock, range.toBlock, MAX_LOG_BLOCK_RANGE)) {
-        const logs = await limited(() =>
-          publicClient.getLogs({
-            address: validationRegistry,
-            event: validationResponseEvent,
-            args: { requestHash },
-            fromBlock: window.fromBlock,
-            toBlock: window.toBlock,
-          }),
-        );
-        for (const log of logs) {
-          const uri = log.args.responseURI;
-          if (uri === undefined || !sameHash(log.args.requestHash, requestHash)) continue;
-          const here = { block: log.blockNumber, logIndex: log.logIndex, uri };
-          if (last === null || byBlockThenLogIndex(last, here) < 0) last = here;
-        }
-      }
-      return last?.uri ?? null;
+      return (await responseLog(requestHash, timestamp, notAfter))?.uri ?? null;
     },
+
+    responseLog,
 
     async requestUri(requestHash, blockNumber) {
       const logs = await limited(() =>

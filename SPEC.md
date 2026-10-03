@@ -137,16 +137,36 @@ attest8004/
 - Register two demo agents in the canonical Identity Registry using the **agent0 SDK** (sdk.ag0.xyz). Check that it supports testnet 10143; if not, call `register()` directly. **P3:** agent0-sdk 1.7.1 has no defaults for 10143, so `register(string)` is called directly. The demo agents are **1984** and **1985**, owned by the deployer, each with its own hot key registered on the forwarder (`docs/deployments.md`).
 
 ### 4.5 Validator A — `mandate-v1` (deterministic)
-- **Checks:**
-  - A mandate exists and hasn't expired.
-  - The target is allowlisted.
-  - The selector is allowlisted.
-  - The value is within the per-transaction cap.
-  - The rolling 24h spend is within the daily cap (from the indexer or onchain history).
-  - **No permission or mandate change in the last N blocks without a passkey-approved mandate.** This is the Grok/Bankr pattern.
-  - An `eth_call` simulation at a **pinned block** doesn't revert.
-- **Output:** a score of 100 or 0, with tag `mandate-v1` and machine-readable reasons. The evidence JSON includes the pinned block number.
-- **Reproducibility:** `npx attest8004 verify <requestHash>` re-runs it and must give the same verdict. **This validator carries the "is it trust?" argument.** Lead with it in the docs and the demo.
+**This validator carries the "is it trust?" argument: anyone can re-run a verdict from chain data alone and get the same score and the same `responseHash`.** Lead with it in the docs and the demo. As built in P4 (`validators/mandate/`):
+
+- **One pinned block.** Every input is read at one block `P`, and the verdict's clock is `P`'s timestamp. `P` is the finalized head when the check runs, never below the request's block or the block this process's last response landed in (ARCHITECTURE §6). One validator process per key.
+- **Checks.** Every rule is evaluated. Any failure scores 0, and the reasons are reported in this order:
+  1. `MANDATE_MISSING`: the agent has no mandate in `MandateRegistry` (never set, or revoked).
+  2. `MANDATE_OWNER_CHANGED`: the mandate was set by someone who no longer owns the agent.
+  3. `MANDATE_EXPIRED`: the mandate's `validUntil` is before `P`'s time.
+  4. `ACTION_EXPIRED`: the action's deadline is before `P`'s time.
+  5. `DEADLINE_AFTER_MANDATE`: the action's deadline is after the mandate's `validUntil`.
+  6. `TARGET_NOT_ALLOWED`: the target isn't on the mandate's allowlist.
+  7. `SELECTOR_NOT_ALLOWED`: the calldata's selector isn't on the allowlist. **`0x00000000` in the allowlist means empty calldata only** (a plain MON transfer): non-empty data starting with `0x00000000`, or 1–3 bytes of data, never matches, and an empty allowlist allows nothing.
+  8. `VALUE_OVER_TX_CAP`: the value is above `maxValuePerTx`.
+  9. `DAILY_CAP_EXCEEDED`: the spend (below) plus the value is above `maxValuePerDay`.
+  10. `SPEND_HISTORY_UNREADABLE`: a past approval's evidence was found, but it doesn't hash to that approval's `responseHash`, isn't `mandate-v1` evidence, or its request fields recompute to another `requestHash`.
+  11. `PERMISSION_CHANGED_AFTER_MANDATE`: a permission change in the last N blocks (below) came after the current mandate was set. This is the Grok/Bankr pattern.
+  12. `SIMULATION_FAILED`: an `eth_call` of the action at `P`, from the gate, with its value and data and a 1,000,000 gas cap, reverts, runs out of gas or lacks funds.
+
+  Without a mandate, only `MANDATE_MISSING`, `ACTION_EXPIRED`, `PERMISSION_CHANGED_AFTER_MANDATE` and `SIMULATION_FAILED` apply.
+- **Spend** is this validator's own `mandate-v1` approvals (score 100) of the agent's actions, **approved in the last 25 h** (`lastUpdate` after `P`'s time − 90,000 s).
+  - The registry records when an action was approved, not when it ran. `mandate-v1` fixes the deadline horizon at 3,600 s, so an action runs at most 1 h after its approval, and 25 h of approvals covers every execution in the last 24 h. It can over-count by at most an hour.
+  - An approval counts if the gate consumed it, if it is unconsumed and its deadline hasn't passed at `P`, or if its `consumed()` read failed (fail closed). **One that expired unconsumed never counts**, because it can never run.
+  - Which approvals exist comes from state at `P` (`getAgentValidations` and each status). Each one's amount comes from that approval's own posted evidence, used only if it hashes to the approval's `responseHash` and its request fields recompute to its `requestHash`. An evidence log that can't be found is never a verdict: the check fails and is retried later.
+  - **Caps cover native MON only.** A mandate that allowlists token-moving selectors (`transfer`, `approve`, …) doesn't cap token amounts. This is on the P10 threat-model list.
+- **Permission changes** are read in the window `(P − N, P]`, with **N = 6,000 blocks** (about 30 minutes): the Identity Registry's `Transfer` and `Approval` of the agent and `ApprovalForAll` by its owner at `P`, the forwarder's `AgentKeySet` for the agent, and the MandateRegistry's `MandateSet` and `MandateRevoked` for the agent. An event after the current mandate's own `MandateSet`, comparing `(block, logIndex)`, fails the action: the owner never approved a mandate with that change in view.
+- **Output:** a score of 100 or 0, tag `mandate-v1`, the reasons, and canonical evidence JSON (ARCHITECTURE §6) with `block` (`P`'s number, hash and timestamp), `request`, `params` (N, the spend window, the deadline horizon, the simulation gas cap and the contracts read), `mandate`, `spend`, `permissions` and `simulation`. The evidence is an inline `data:` URI in public plaintext, because spend accounting and `verify` read it.
+- **Gas-spend policy.** `accepts()` decides whether to answer at all. A declined request gets no response, and one `warn` log line names the agent and the reason.
+  - It serves only its allowlisted gates (`MANDATE_V1_GATES`, by default the demo vault), and only agents with an unexpired mandate set by their current owner.
+  - Then a per-agent rate limit (20 requests an hour) and a validator-wide daily gas budget (10,000,000 gas, with each response reserving its 400,000 gas cap until it lands) apply. All three are configurable in env, and a restart resets the counters.
+  - Each response's gas limit is the estimate plus 20 %, capped at 400,000.
+- **Reproducibility:** `pnpm attest8004 verify <requestHash>`, from the repo root, re-runs the verdict at the evidence's `P` and must give the same score and the same `responseHash` (ARCHITECTURE §5.5). It is read-only and defaults to the public testnet RPC, so it needs no `.env`. It exits 0 on a match, 1 on a mismatch (public proof that the validator misbehaved) and 2 when it couldn't verify. `npx attest8004` will work only once the package is published, which it isn't yet.
 
 ### 4.6 Validator B — `risk-qwen-v1` (agentic, Qwen 3.8 Max)
 - Calls Qwen 3.8 Max through Alibaba Model Studio's international OpenAI-compatible endpoint. **Confirm the exact model ID in the console.**

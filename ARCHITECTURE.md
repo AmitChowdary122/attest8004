@@ -269,11 +269,28 @@ The same synced passkey gives the same PRF output on every device, so the phone 
 ### 5.5 Re-execute a verdict (why `mandate-v1` is "trust", not "opinion")
 
 ```
-npx attest8004 verify <requestHash>
+pnpm attest8004 verify <requestHash> [--rpc-url URL] [--json]
 ```
-1. Fetch the request and the evidence (with the pinned block number).
-2. Re-run the identical mandate, permission and simulation checks against chain state at that block.
-3. Compare with the onchain response. They must match. A mismatch is public proof that the validator misbehaved.
+Anyone can run this from the repo root. It re-runs a `mandate-v1` verdict from chain data alone, at the block its evidence pinned, and compares the result with what the validator posted. It is read-only and needs no `.env`: the RPC is `--rpc-url`, else `MONAD_TESTNET_RPC_URL`, else the public testnet RPC, and the URL is never printed. The code is `verifyRequest` in `validators/mandate/src/verify.ts`, behind the CLI in `src/cli.ts`. `npx attest8004` will work only once the package is published, which it isn't yet.
+
+It stops at the first problem:
+1. **Status.** It reads `getValidationStatus(requestHash)` at the finalized head. If the registry has no such request, that's `REQUEST_NOT_FOUND`; if the request has no response yet, `RESPONSE_NOT_FOUND`; if the tag isn't `mandate-v1`, `NOT_MANDATE_V1`.
+2. **Response log.** It finds the `ValidationResponse` log through the status's `lastUpdate` timestamp: an interpolation search for the blocks with that timestamp, then one `eth_getLogs`. This is the same lookup spend accounting uses. If none is found, that's `RESPONSE_NOT_FOUND`.
+3. **Keccak check.** The inline evidence must hash to the onchain `responseHash` (`EVIDENCE_HASH_MISMATCH` otherwise). `verify` never fetches a URI, and `mandate-v1` evidence is always a `data:` URI. The evidence must also name a pinned block and the request's block; a document that doesn't is no `mandate-v1` evidence at all (`RESPONSE_HASH_MISMATCH`).
+4. **The pin.** `P` is the evidence's `block.number`. It must be at or after the request's block and at or before the block the response landed in (`PIN_OUT_OF_RANGE`). "The request's block" is checked two ways: the evidence's own `request.block`, and the registry must already know the request at `P`.
+5. **Request log.** It reads the `ValidationRequest` log in the evidence's request block. Its request JSON must hash to `requestHash` and name the validator and agent the registry records (`REQUEST_NOT_FOUND` otherwise).
+6. **Re-run.** It runs `runMandateV1` at `P`, as that validator, with an **empty cache**: every past approval's amount is rebuilt from its own posted evidence, as a restarted validator would. It uses the contracts in the SDK's `DEPLOYMENTS` for the chain, so evidence that names other contracts doesn't reproduce. Then it rebuilds the document with `buildEvidence` and hashes its canonical JSON.
+7. **Compare.** The score must match (`SCORE_MISMATCH`), and so must the `responseHash` (`RESPONSE_HASH_MISMATCH`). The report lists the top-level evidence keys whose canonical JSON differs (`differingKeys`), such as `block` for a moved pin or `params` for another contract.
+
+| Exit | Verdict | When |
+|---|---|---|
+| 0 | `match` | The same score and the same `responseHash`. |
+| 1 | `mismatch` | `SCORE_MISMATCH`, `RESPONSE_HASH_MISMATCH`, `EVIDENCE_HASH_MISMATCH` or `PIN_OUT_OF_RANGE`. This is public proof that the validator misbehaved, because it signed both the score and the evidence's hash. |
+| 2 | could not verify | A usage or RPC error, `REQUEST_NOT_FOUND`, `RESPONSE_NOT_FOUND`, or an input log the re-run can't find. A missing log is lag, not evidence. `NOT_MANDATE_V1` also lands here: another validator's verdict, such as an agentic `risk-qwen-v1` one, isn't re-executable by design, and its tag proves nothing against it. |
+
+The output starts with the verdict (`match`, `MISMATCH` or `could not verify`), then shows the validator, the pinned block (number, hash and time), the posted and recomputed score and `responseHash`, the reasons, the spend entries, the number of permission events, the problems and the differing keys. `--json` prints the same report as one line, with bigints as decimal strings. Errors show viem's short message only.
+
+**History.** Every input is re-read from state at `P`, so the RPC must still serve that block. The public testnet RPC serves about 51 days of history (measured 3 Oct 2026); older blocks fail with `-32602`. Older verdicts need an archive RPC, passed with `--rpc-url`.
 
 ---
 

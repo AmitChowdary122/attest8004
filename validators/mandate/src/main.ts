@@ -4,7 +4,6 @@
 // knowing this key's last response. Logs are JSON lines; the key and the RPC URL are never logged.
 import {
   Admission,
-  deploymentsFor,
   jsonLineLog,
   mandateRegistryAbi,
   validationRegistryAbi,
@@ -19,8 +18,7 @@ import { privateKeyToAccount } from "viem/accounts";
 import { monadTestnet } from "viem/chains";
 import { parseServiceConfig } from "./config.ts";
 import { MANDATE_V1 } from "./params.ts";
-import type { MandateAddresses } from "./reader.ts";
-import { viemMandateReader } from "./reader.ts";
+import { mandateAddressesFor, viemMandateReader, type MandateAddresses } from "./reader.ts";
 import { MandateValidator } from "./validator.ts";
 
 const REPO_ROOT = fileURLToPath(new URL("../../../", import.meta.url));
@@ -37,13 +35,7 @@ const log = (level: "info" | "warn" | "error", msg: string, fields: Record<strin
 async function main(): Promise<void> {
   const config = parseServiceConfig(process.env, REPO_ROOT);
   const chain = monadTestnet;
-  const deployment = deploymentsFor(chain.id);
-  const addresses: MandateAddresses = {
-    validationRegistry: deployment.validationRegistry,
-    identityRegistry: deployment.identityRegistry,
-    forwarder: deployment.agentRequestForwarder,
-    mandateRegistry: deployment.mandateRegistry,
-  };
+  const addresses = mandateAddressesFor(chain.id);
   const account = privateKeyToAccount(config.privateKey);
   const transport = http(config.rpcUrl);
   const publicClient: PublicClient = createPublicClient({ chain, transport });

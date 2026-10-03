@@ -64,6 +64,13 @@ pnpm test:contracts     # forge test (fork tests skip unless MONAD_TESTNET_RPC_U
 pnpm test               # TypeScript tests
 ```
 
+Re-run any `mandate-v1` verdict from chain data alone. It is read-only, and uses the public testnet RPC unless
+`MONAD_TESTNET_RPC_URL` or `--rpc-url` names another ([ARCHITECTURE §5.5](./ARCHITECTURE.md)):
+
+```bash
+pnpm attest8004 verify <requestHash>   # exit 0 match, 1 mismatch, 2 could not verify; --json prints the report
+```
+
 Run the fork tests against the live testnet Identity Registry, and a full validation round trip on testnet (it needs
 `DEPLOYER_PRIVATE_KEY` and `VALIDATOR_A_PRIVATE_KEY` in `.env`, funded with testnet MON):
 
