@@ -12,7 +12,11 @@ evm_version = "osaka"
 optimizer = true
 optimizer_runs = 200
 # The shared requestHash vectors (SPEC §4.3) live with the SDK; test/ActionHash.t.sol reads them.
-fs_permissions = [{ access = "read", path = "../packages/sdk/test/vectors.json" }]
+fs_permissions = [
+    { access = "read", path = "../packages/sdk/test/vectors.json" },
+    # test/AgentRequestForwarder.t.sol pins the forwarder's compiled ABI.
+    { access = "read", path = "./out" },
+]
 remappings = [
     "@openzeppelin/contracts/=lib/openzeppelin-contracts/contracts/",
     "forge-std/=lib/forge-std/src/",
