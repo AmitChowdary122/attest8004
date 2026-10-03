@@ -741,6 +741,20 @@ describe("MandateValidator: the pinned block", () => {
     expect(text).toBe(canonicalJson(buildEvidence({ tag: "mandate-v1", requestHash: e.requestHash, result: rerun })));
   });
 
+  it("waits until the deadline is within 3,600 s of P's time: the base allowed it against a later cycle head", async () => {
+    // The base's horizon check ran at the cycle head (1,010); the first pins the lag gives are earlier than that.
+    chain.headBlock = { number: 1_010n, timestamp: tsOf(1_010n) };
+    const e = addRequest(requestJson({ deadline: tsOf(1_010n) + MANDATE_V1.maxDeadlineAheadSeconds }));
+    reader.heads = [1_010n, 1_004n, 1_009n, 1_010n].map(headFor); // accepts() reads the first
+
+    await validator().pollOnce();
+
+    const { doc } = posted(e.requestHash);
+    expect(doc.block.number).toBe("1010");
+    expect(BigInt(doc.request.deadline)).toBe(BigInt(doc.block.timestamp) + MANDATE_V1.maxDeadlineAheadSeconds);
+    expect(reader.heads).toEqual([headFor(1_010n)]);
+  });
+
   it("gives up after pinTimeoutMs without posting, and the base retries the request later", async () => {
     const first = addRequest(requestJson());
     const second = addRequest(requestJson());

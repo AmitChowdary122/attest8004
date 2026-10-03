@@ -193,7 +193,9 @@ const PROBLEM_TEXT: Record<VerifyProblem, string> = {
   REQUEST_NOT_FOUND:
     "the registry has no such request, or its ValidationRequest log wasn't returned for the block state confirms (retry later)",
   REQUEST_BLOCK_WRONG: "the evidence names a request block the request wasn't made in (the registry's state shows otherwise)",
-  REQUEST_INVALID: "the request's JSON doesn't hash to the requestHash or names another validator or agent; it must not be answered",
+  REQUEST_INVALID:
+    "the request's JSON doesn't hash to the requestHash, names another validator, agent or chain, or has a deadline more than " +
+    "3,600 s after the pinned block's time; it must not be answered",
   PIN_OUT_OF_RANGE: "the evidence's pinned block isn't between the request's block and the response's block",
   SCORE_MISMATCH: "the onchain score isn't the recomputed score",
   RESPONSE_HASH_MISMATCH: "the onchain responseHash isn't the hash of the recomputed evidence",

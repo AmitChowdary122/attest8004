@@ -38,8 +38,10 @@ import type { PermissionEvent, PinnedBlock, SpendEntry } from "./types.ts";
  *   block at which its status exists. A block before the registry was deployed is wrong without
  *   reading anything. A mismatch.
  * - `REQUEST_INVALID`: the request's own log carries a request JSON that doesn't parse, doesn't hash
- *   to `requestHash`, or names another validator or agent than the registry records. A
- *   `mandate-v1` validator must not answer such a request (the SDK's base never does), so a mismatch.
+ *   to `requestHash`, names another validator or agent than the registry records, names another chain
+ *   than the one `verify` reads, or has a deadline more than 3,600 s after `P`'s time. A `mandate-v1`
+ *   validator must not answer such a request (the SDK's base never does, and `MandateValidator` never
+ *   pins where its deadline is that far ahead), so a mismatch.
  * - `PIN_OUT_OF_RANGE`: the evidence's pinned block is before the request's block, after the block
  *   the response landed in, or before the MandateRegistry was deployed. A mismatch: an honest
  *   validator pins between the first two, and can't pin before the third (it reads the mandate there).
@@ -135,11 +137,13 @@ const UINT64_LIMIT = 2n ** 64n;
  *    block (→ `RESPONSE_HASH_MISMATCH`).
  * 3. `P` must be at or after the evidence's request block and the MandateRegistry's deployment, and
  *    at or before the response's own block (→ `PIN_OUT_OF_RANGE`, with no read at `P`).
- * 4. The evidence's request block must not be before `validationRegistryDeployBlock`
- *    (→ `REQUEST_BLOCK_WRONG`, with no read). Reads the `ValidationRequest` log in that block. If none
+ * 4. Reads block `P`'s header (its time). The evidence's request block must not be before
+ *    `validationRegistryDeployBlock` (→ `REQUEST_BLOCK_WRONG`, with no state read). Reads the
+ *    `ValidationRequest` log in that block. If none
  *    is returned, state decides: the request's status must exist at that block and not one block
  *    before (→ `REQUEST_BLOCK_WRONG` if not, else `REQUEST_NOT_FOUND`). The log's request JSON must
- *    hash to `requestHash` and name the validator and agent the registry records (→ `REQUEST_INVALID`).
+ *    hash to `requestHash`, name the validator and agent the registry records and the chain the reader is
+ *    on, and have a deadline at most 3,600 s after `P`'s time (→ `REQUEST_INVALID`).
  * 5. Runs `runMandateV1` at `P` as that validator, with an empty cache (so every past approval's
  *    amount is rebuilt from its own evidence) and `addresses`, rebuilds the evidence with
  *    `buildEvidence` and hashes its canonical JSON.
@@ -181,11 +185,11 @@ export async function verifyRequest(o: { reader: VerifyReader; requestHash: Hex 
     return report({ ...base, pinnedBlock }, ["PIN_OUT_OF_RANGE"]);
   }
 
-  const request = await requestAt(reader, requestHash, requestBlock, validationRegistryDeployBlock, status);
+  const pinned = await reader.block(pinnedBlock);
+  const request = await requestAt(reader, requestHash, requestBlock, validationRegistryDeployBlock, status, pinned);
   if ("problem" in request) return report({ ...base, pinnedBlock }, [request.problem]);
   const { json } = request;
 
-  const pinned = await reader.block(pinnedBlock);
   const cache: PreimageCache = new Map();
   const result = await runMandateV1({
     reader,
@@ -294,6 +298,10 @@ function postedEvidence(text: string): { doc: Record<string, unknown>; pinnedBlo
  * The request JSON in the `ValidationRequest` log at `block` (the evidence's request block), or why
  * there isn't one to re-run.
  *
+ * - The JSON must be one the SDK's base would answer at a head no later than `pinned`: it hashes to
+ *   `requestHash`, names the validator and agent the registry records and the chain the reader is on
+ *   (`WRONG_CHAIN` otherwise), and its deadline is at most `maxDeadlineAheadSeconds` (3,600 s) after
+ *   `pinned`'s time (`DEADLINE_TOO_FAR` otherwise). If not, `REQUEST_INVALID`.
  * - A block before the registry's deployment is wrong, and nothing is read: the contract had no code
  *   there, so a status read would return no data rather than revert `UnknownRequest`, and fail.
  * - When no log is returned, state decides whether the evidence named the wrong block: the registry
@@ -309,6 +317,7 @@ async function requestAt(
   block: bigint,
   deployBlock: bigint,
   status: ValidationStatus,
+  pinned: PinnedBlock,
 ): Promise<{ json: RequestJsonV1 } | { problem: VerifyProblem }> {
   if (block < deployBlock) return { problem: "REQUEST_BLOCK_WRONG" };
   const uri = await reader.requestUri(requestHash, block);
@@ -324,7 +333,10 @@ async function requestAt(
     requestHashOfJson(json) === requestHash &&
     json.validator.toLowerCase() === status.validator.toLowerCase() &&
     BigInt(json.agentId) === status.agentId;
-  return matches ? { json } : { problem: "REQUEST_INVALID" };
+  if (!matches) return { problem: "REQUEST_INVALID" };
+  if (json.chainId !== (await reader.chainId())) return { problem: "REQUEST_INVALID" };
+  if (BigInt(json.action.deadline) > pinned.timestamp + MANDATE_V1.maxDeadlineAheadSeconds) return { problem: "REQUEST_INVALID" };
+  return { json };
 }
 
 /**

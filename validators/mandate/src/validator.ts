@@ -89,7 +89,9 @@ export type MandateValidatorOptions = Omit<ValidatorOptions, "tag" | "maxDeadlin
  *   every log read at `P` stays under the head of an RPC node that lags the one that answered
  *   `finalized` by fewer blocks than that (a log range past a node's head comes back short, silently).
  *   `P` is never below the request's own block, the block this process's last response landed in, or
- *   the MandateRegistry's deployment block: until the head is that far ahead, it waits. And if this
+ *   the MandateRegistry's deployment block: until the head is that far ahead, it waits. It also waits
+ *   until `P`'s time is no more than 3,600 s before the action's deadline: the base checked that horizon
+ *   at the cycle head, which can be later than `P`, and `verify` checks it at `P`. And if this
  *   process's most recent approval is answered at `latest` but not yet at `P` (a send that landed but
  *   threw, so `onResponded` never ran), `P` waits until it is answered there. So two requests checked
  *   back to back always see each other's approval in their spend. It re-reads the head every
@@ -202,7 +204,7 @@ export class MandateValidator extends ValidatorBase {
 
   protected override async check(request: VerifiedRequest): Promise<CheckResult> {
     const { requestHash, blockNumber } = request.event;
-    const pinned = await this.pin(requestHash, blockNumber);
+    const pinned = await this.pin(requestHash, blockNumber, request.action.deadline);
     if (pinned.timestamp > this.lastPinTimestamp) this.lastPinTimestamp = pinned.timestamp;
 
     const mandateRequest = mandateRequestOf(request.json, requestHash, blockNumber);
@@ -241,32 +243,38 @@ export class MandateValidator extends ValidatorBase {
    * `P` for one check (see the class doc): {@link PIN_LAG_BLOCKS} below the finalized head, once that
    * is high enough and complete.
    */
-  private async pin(requestHash: Hex, requestBlock: bigint): Promise<PinnedBlock> {
+  private async pin(requestHash: Hex, requestBlock: bigint, deadline: bigint): Promise<PinnedBlock> {
     let floor = requestBlock;
     if (this.lastResponseBlock !== undefined && this.lastResponseBlock > floor) floor = this.lastResponseBlock;
     if (this.mandateRegistryDeployBlock > floor) floor = this.mandateRegistryDeployBlock;
     const approval = this.pendingApproval;
     // Only an approval that landed can be waited for; one that never landed has nothing to show at P.
     const mustSee = approval !== undefined && answered(await this.chain.status(approval)) ? approval : undefined;
+    // The base checked the deadline horizon against the cycle head's time, which can be later than P's:
+    // P's own time must allow it too, as `verify` checks (a later deadline is a request no validator answers).
+    const earliestTime = deadline - MANDATE_V1.maxDeadlineAheadSeconds;
     const giveUpAt = Date.now() + this.pinTimeoutMs;
     let waiting = false;
     for (;;) {
       const head = await this.reader.finalized();
       const at = head.number - PIN_LAG_BLOCKS;
       if (at >= floor && (mustSee === undefined || answered(await this.reader.status(mustSee, at)))) {
-        if (mustSee !== undefined && this.pendingApproval === mustSee) this.pendingApproval = undefined;
-        return this.reader.block(at);
+        const pinned = await this.reader.block(at);
+        if (pinned.timestamp >= earliestTime) {
+          if (mustSee !== undefined && this.pendingApproval === mustSee) this.pendingApproval = undefined;
+          return pinned;
+        }
       }
       if (Date.now() >= giveUpAt) {
         const missing = mustSee === undefined ? "" : ` with this validator's approval ${mustSee} answered there`;
         throw new Error(
-          `the finalized head (block ${head.number}) minus ${PIN_LAG_BLOCKS} blocks didn't reach block ${floor}${missing} ` +
-            `within ${this.pinTimeoutMs} ms; retry later`,
+          `the finalized head (block ${head.number}) minus ${PIN_LAG_BLOCKS} blocks didn't reach block ${floor}${missing}, ` +
+            `at a time no earlier than ${earliestTime}, within ${this.pinTimeoutMs} ms; retry later`,
         );
       }
       if (!waiting) {
         waiting = true;
-        this.logLine("info", "waiting for the finalized head", { requestHash, head: head.number, pin: at, floor, approval: mustSee });
+        this.logLine("info", "waiting for the finalized head", { requestHash, head: head.number, pin: at, floor, earliestTime, approval: mustSee });
       }
       await sleep(this.pinPollMs);
     }

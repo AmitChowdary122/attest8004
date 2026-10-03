@@ -260,16 +260,18 @@ function mandate(over: Partial<MandateRecord> = {}): MandateRecord {
 
 let saltCounter = 0;
 
-function requestJson(over: { gate?: Address; target?: Address; value?: bigint; validator?: Address } = {}): RequestJsonV1 {
+function requestJson(
+  over: { chainId?: number; gate?: Address; target?: Address; value?: bigint; validator?: Address; deadline?: bigint } = {},
+): RequestJsonV1 {
   return buildRequestJson({
-    chainId: CHAIN_ID,
+    chainId: over.chainId ?? CHAIN_ID,
     gate: over.gate ?? GATE,
     validator: over.validator ?? VALIDATOR,
     action: buildAction({
       agentId: AGENT,
       target: over.target ?? OWNER,
       value: over.value ?? 1_000n,
-      deadline: tsOf(1_004n) + 600n,
+      deadline: over.deadline ?? tsOf(1_004n) + 600n,
       salt: keccak256(toHex(`salt ${saltCounter++}`)),
     }),
   });
@@ -328,6 +330,20 @@ function landed(requestHash: Hex): Landed {
 
 /** Parsed evidence JSON, loosely typed for edits and assertions. */
 type Doc = Record<string, any>;
+
+/**
+ * A response from validator A that no honest `MandateValidator` would post (the base refuses the request), landed by
+ * hand in block 1,005 with minimal evidence pinned at `pinned`.
+ */
+function answerByHand(requestHash: Hex, pinned = 1_004n): void {
+  const status = { validator: VALIDATOR, agentId: AGENT, response: 100, responseHash: zeroHash, tag: "mandate-v1", lastUpdate: tsOf(1_005n) };
+  const { uri, hash } = encodeCanonicalJsonDataUri({
+    block: { number: pinned.toString(), hash: keccak256(toHex(`block ${pinned}`)), timestamp: tsOf(pinned) },
+    request: { block: "1000" },
+  });
+  chain.landed.set(requestHash, { block: 1_005n, logIndex: 0, uri, status: { ...status, responseHash: hash } });
+  chain.finalized = 1_005n;
+}
 
 function evidenceText(requestHash: Hex): string {
   const decoded = decodeJsonDataUri(landed(requestHash).uri, 1_000_000);
@@ -698,6 +714,27 @@ describe("verifyRequest: the request's block is a fact of state, so a wrong one 
 
     await expect(verify(e.requestHash)).resolves.toMatchObject({ verdict: "mismatch", problems: ["REQUEST_INVALID"] });
   });
+
+  it("a request JSON naming another chain than the one verify reads: REQUEST_INVALID (the base never answers it: WRONG_CHAIN)", async () => {
+    const e = addRequest(requestJson({ chainId: 1 }));
+    answerByHand(e.requestHash);
+
+    await expect(verify(e.requestHash)).resolves.toMatchObject({ verdict: "mismatch", problems: ["REQUEST_INVALID"], recomputed: null });
+  });
+
+  it("a deadline more than 3,600 s after P's time: REQUEST_INVALID (the base never answers it: DEADLINE_TOO_FAR at a head no later than P)", async () => {
+    const e = addRequest(requestJson({ deadline: tsOf(1_004n) + 3_601n }));
+    answerByHand(e.requestHash, 1_004n);
+
+    await expect(verify(e.requestHash)).resolves.toMatchObject({ verdict: "mismatch", problems: ["REQUEST_INVALID"], recomputed: null });
+  });
+
+  it("a deadline exactly 3,600 s after P's time is honest: match", async () => {
+    const e = addRequest(requestJson({ deadline: tsOf(1_004n) + 3_600n }));
+    await runValidator();
+
+    await expect(verify(e.requestHash)).resolves.toMatchObject({ verdict: "match", pinnedBlock: 1_004n });
+  });
 });
 
 describe("verifyRequest: what can't be found or re-run is never a mismatch", () => {
@@ -760,15 +797,8 @@ describe("verifyRequest: what can't be found or re-run is never a mismatch", () 
 
   it("a request JSON naming another validator than the registry records: REQUEST_INVALID (a validator must not answer it)", async () => {
     // Addressed onchain to validator A, but the JSON (and so the hash) names another validator.
-    const json = requestJson({ validator: OTHER_VALIDATOR });
-    const e = addRequest(json);
-    const response = { validator: VALIDATOR, agentId: AGENT, response: 100, responseHash: zeroHash, tag: "mandate-v1", lastUpdate: tsOf(1_005n) };
-    const { uri, hash } = encodeCanonicalJsonDataUri({
-      block: { number: "1004", hash: keccak256(toHex("block 1004")), timestamp: tsOf(1_004n) },
-      request: { block: "1000" },
-    });
-    chain.landed.set(e.requestHash, { block: 1_005n, logIndex: 0, uri, status: { ...response, responseHash: hash } });
-    chain.finalized = 1_005n;
+    const e = addRequest(requestJson({ validator: OTHER_VALIDATOR }));
+    answerByHand(e.requestHash);
 
     await expect(verify(e.requestHash)).resolves.toMatchObject({ verdict: "mismatch", problems: ["REQUEST_INVALID"] });
   });
