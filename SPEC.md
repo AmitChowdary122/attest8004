@@ -192,7 +192,7 @@ attest8004/
 ### 4.7 Mera findings inbox (web `/inbox`) — the Mera bounty
 - **Salt:** `sha256("attest8004.inbox.v1")`. Get the 32-byte PRF output with `getPasskeyPrfOutput`, run **HKDF-SHA256**, and get an **X25519** private key. It lives **in memory only**; zero the buffers after use.
 - The public key is published with `MandateRegistry.setInboxKey`, using the passkey assertion. That is a separate ceremony from the PRF prompt, because Mera evaluates one salt per ceremony.
-- **Validators encrypt** findings with X25519 ECDH, HKDF and AES-256-GCM (or a libsodium sealed box) to that public key. The ciphertext is served at `responseURI`; `responseHash` is the keccak of the ciphertext.
+- **Validators encrypt** findings with X25519 ECDH, HKDF and AES-256-GCM (or a libsodium sealed box) to that public key. The ciphertext is served at **a URI of its own, never `responseURI`**: that field stays each validator's public plaintext evidence (§4.5, §4.6), which `verify` and spend accounting depend on, and P7 must not replace it. Where the findings URI is announced (a field inside the evidence, a separate event, or the indexer) is P7's decision.
 - **The `/inbox` page:** tap the passkey, derive the key, fetch, decrypt and display. **Nothing is written to localStorage or any server.**
 - **Cross-device test:** the same Google Password Manager passkey on an Android phone decrypts the same findings live.
 - **rpId gotcha:** passkeys are bound to the domain. Deploy the web app to its final domain early (e.g. Vercel) and create the demo passkeys there, not on localhost.

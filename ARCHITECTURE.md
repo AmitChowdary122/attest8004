@@ -259,10 +259,10 @@ sequenceDiagram
   participant W as Web /inbox
   VB->>MR: read inbox public key (X25519)
   VB->>VB: ephemeral X25519 → ECDH → HKDF → AES-256-GCM(findings)
-  VB->>S: store ciphertext at responseURI (responseHash = keccak(ciphertext))
+  VB->>S: store ciphertext at its own URI (never responseURI, which stays the public plaintext evidence; P7 decides how this URI is announced)
   Op->>W: open /inbox, tap passkey
   W->>W: Mera PRF(salt = sha256("attest8004.inbox.v1")) → HKDF → X25519 private key (memory only)
-  W->>S: fetch ciphertext, verify keccak == responseHash
+  W->>S: fetch ciphertext, verify its hash
   W->>W: decrypt, show findings, zero key buffers
 ```
 
@@ -367,7 +367,7 @@ Validators **must** recompute `requestHash` from this JSON (§4.3) and reject it
 
 Because spend accounting and `verify` read it, `mandate-v1`'s evidence stays public plaintext at `responseURI`.
 
-**Findings envelope.** Encrypted to the operator's inbox key.
+**Findings envelope.** Encrypted to the operator's inbox key, served at a URI of its own — **never `responseURI`**, which stays each validator's public plaintext evidence (`mandate-v1`'s and `risk-v1`'s alike; `verify` and spend accounting depend on it, so P7 must not replace it). How that URI is announced (a field inside the evidence, a separate event, or the indexer) is P7's decision, not yet made.
 ```json
 { "schema": "attest8004.findings.v1", "epk": "<x25519 ephemeral pub>", "nonce": "…", "ct": "…" }
 ```
