@@ -22,3 +22,34 @@ export async function mapWithConcurrency<T, R>(items: readonly T[], limit: numbe
   await Promise.all(Array.from({ length: Math.min(limit, items.length) }, worker));
   return results;
 }
+
+/**
+ * A limiter: wraps tasks so at most `limit` run at once, starting the waiting ones first-in,
+ * first-out. A task's slot is freed when it settles, whether it resolves or rejects. Wrap single
+ * requests, never a task that itself waits on the same limiter, or it can deadlock.
+ */
+export function concurrencyLimit(limit: number): <T>(task: () => Promise<T>) => Promise<T> {
+  if (!Number.isSafeInteger(limit) || limit < 1) throw new RangeError(`concurrency must be a positive integer, got ${limit}`);
+  let active = 0;
+  const waiting: Array<() => void> = [];
+  const acquire = (): Promise<void> => {
+    if (active < limit) {
+      active++;
+      return Promise.resolve();
+    }
+    return new Promise((resolve) => waiting.push(resolve));
+  };
+  const release = (): void => {
+    const next = waiting.shift();
+    if (next) next(); // the slot passes straight to the next task
+    else active--;
+  };
+  return async <T>(task: () => Promise<T>): Promise<T> => {
+    await acquire();
+    try {
+      return await task();
+    } finally {
+      release();
+    }
+  };
+}

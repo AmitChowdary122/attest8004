@@ -15,13 +15,14 @@ import {
   encodeFunctionData,
   getAbiItem,
   getAddress,
+  toHex,
   zeroHash,
   type Address,
   type Hex,
   type PublicClient,
 } from "viem";
 import { blocksWithTimestamp } from "./blocks.ts";
-import { mapWithConcurrency } from "./concurrency.ts";
+import { concurrencyLimit, mapWithConcurrency } from "./concurrency.ts";
 import { MANDATE_V1 } from "./params.ts";
 import type { MandateRecord, PermissionEvent, PinnedBlock, Simulation } from "./types.ts";
 
@@ -37,7 +38,8 @@ export interface MandateAddresses {
  * Everything `mandate-v1` reads from the chain. Every state read takes `at`, the pinned block `P`,
  * and reads exactly that block; every log read ends at or before the block it is given. A transient
  * RPC failure (HTTP 429, a timeout, history the node no longer serves) always throws, so it can
- * never turn into a verdict. `viemMandateReader` is the real one.
+ * never turn into a verdict. `viemMandateReader` is the real one; callers may call its methods
+ * concurrently, and it bounds the requests it sends itself.
  */
 export interface MandateReader {
   chainId(): Promise<number>;
@@ -96,14 +98,28 @@ const PERMISSION_EVENTS = [
   mandateRevokedEvent,
 ] as const;
 
-/** A `MandateReader` over viem, reading the given contracts. */
+/**
+ * A `MandateReader` over viem, reading the given contracts.
+ *
+ * - **One RPC budget.** Every JSON-RPC request this reader sends, from any method and any number of
+ *   concurrent callers (the collector reads spend and permission logs side by side), goes through
+ *   one first-in, first-out limiter of `concurrency` requests (default 8), so a rate-limited public
+ *   RPC never sees more than that many at once.
+ * - **Raw `eth_call`, so CCIP-Read never runs.** Every state read, `consumed()` and `simulate()` is a
+ *   plain `eth_call` request at `P`, never viem's `call`/`readContract`. Those follow an EIP-3668
+ *   `OffchainLookup` revert: they fetch the URLs the revert names and call the contract back at
+ *   `latest`, without `from`, `value` or `gas`. That would make an outcome depend on an HTTP server
+ *   and on `latest` instead of `P` (so `verify` could disagree), turn a revert into a success, and let
+ *   whoever controls a call target make this process send requests to URLs of their choosing.
+ */
 export function viemMandateReader(options: {
   publicClient: PublicClient;
   addresses: MandateAddresses;
-  /** How many `eth_getLogs` windows run at once (default 8). */
+  /** The most JSON-RPC requests in flight at once, across every method (default 8). */
   concurrency?: number;
 }): MandateReader {
   const { publicClient, concurrency = 8 } = options;
+  const limited = concurrencyLimit(concurrency);
   const validationRegistry = getAddress(options.addresses.validationRegistry);
   const identityRegistry = getAddress(options.addresses.identityRegistry);
   const forwarder = getAddress(options.addresses.forwarder);
@@ -118,27 +134,47 @@ export function viemMandateReader(options: {
   };
 
   const block = async (blockNumber: bigint): Promise<PinnedBlock> => {
-    const b = await publicClient.getBlock({ blockNumber });
+    const b = await limited(() => publicClient.getBlock({ blockNumber }));
     return { number: b.number, hash: b.hash, timestamp: b.timestamp };
   };
 
+  /** One raw `eth_call` at block `at` (see above: never viem's `call`). Errors are the node's, unwrapped. */
+  const ethCall = (call: { to: Address; data: Hex; from?: Address; value?: bigint; gas?: bigint }, at: bigint): Promise<Hex> =>
+    limited(() =>
+      publicClient.request({
+        method: "eth_call",
+        params: [
+          {
+            to: call.to,
+            data: call.data,
+            ...(call.from !== undefined ? { from: call.from } : {}),
+            ...(call.value !== undefined ? { value: toHex(call.value) } : {}),
+            ...(call.gas !== undefined ? { gas: toHex(call.gas) } : {}),
+          },
+          toHex(at),
+        ],
+      }),
+    );
+
   return {
-    chainId: () => publicClient.getChainId(),
+    chainId: () => limited(() => publicClient.getChainId()),
 
     async finalized() {
-      const b = await publicClient.getBlock({ blockTag: "finalized" });
+      const b = await limited(() => publicClient.getBlock({ blockTag: "finalized" }));
       return { number: b.number, hash: b.hash, timestamp: b.timestamp };
     },
 
     block,
 
     async mandate(agentId, at) {
-      const [mandate, mandateHash, owner, setAtBlock] = await publicClient.readContract({
-        address: mandateRegistry,
+      const data = await ethCall(
+        { to: mandateRegistry, data: encodeFunctionData({ abi: mandateRegistryAbi, functionName: "getMandate", args: [agentId] }) },
+        at,
+      );
+      const [mandate, mandateHash, owner, setAtBlock] = decodeFunctionResult({
         abi: mandateRegistryAbi,
         functionName: "getMandate",
-        args: [agentId],
-        blockNumber: at,
+        data,
       });
       if (mandateHash === zeroHash) return null;
       return {
@@ -154,65 +190,72 @@ export function viemMandateReader(options: {
     },
 
     async ownerOf(agentId, at) {
-      const owner = await publicClient.readContract({
-        address: identityRegistry,
-        abi: identityRegistryAbi,
-        functionName: "ownerOf",
-        args: [agentId],
-        blockNumber: at,
-      });
-      return getAddress(owner);
+      const data = await ethCall(
+        { to: identityRegistry, data: encodeFunctionData({ abi: identityRegistryAbi, functionName: "ownerOf", args: [agentId] }) },
+        at,
+      );
+      return getAddress(decodeFunctionResult({ abi: identityRegistryAbi, functionName: "ownerOf", data }));
     },
 
     async agentValidations(agentId, at) {
-      const hashes = await publicClient.readContract({
-        address: validationRegistry,
-        abi: validationRegistryAbi,
-        functionName: "getAgentValidations",
-        args: [agentId],
-        blockNumber: at,
-      });
-      return [...hashes];
+      const data = await ethCall(
+        {
+          to: validationRegistry,
+          data: encodeFunctionData({ abi: validationRegistryAbi, functionName: "getAgentValidations", args: [agentId] }),
+        },
+        at,
+      );
+      return [...decodeFunctionResult({ abi: validationRegistryAbi, functionName: "getAgentValidations", data })];
     },
 
     async status(requestHash, at) {
-      const [validator, agentId, response, responseHash, tag, lastUpdate] = await publicClient.readContract({
-        address: validationRegistry,
+      const data = await ethCall(
+        {
+          to: validationRegistry,
+          data: encodeFunctionData({ abi: validationRegistryAbi, functionName: "getValidationStatus", args: [requestHash] }),
+        },
+        at,
+      );
+      const [validator, agentId, response, responseHash, tag, lastUpdate] = decodeFunctionResult({
         abi: validationRegistryAbi,
         functionName: "getValidationStatus",
-        args: [requestHash],
-        blockNumber: at,
+        data,
       });
       return { validator: getAddress(validator), agentId, response, responseHash, tag, lastUpdate };
     },
 
     async consumed(gate, actionHash, at) {
-      let data: Hex | undefined;
+      let data: Hex;
       try {
-        ({ data } = await publicClient.call({
-          to: gate,
-          data: encodeFunctionData({ abi: attestGateAbi, functionName: "consumed", args: [actionHash] }),
-          gas: MANDATE_V1.consumedCallGas,
-          blockNumber: at,
-        }));
+        data = await ethCall(
+          {
+            to: gate,
+            data: encodeFunctionData({ abi: attestGateAbi, functionName: "consumed", args: [actionHash] }),
+            gas: MANDATE_V1.consumedCallGas,
+          },
+          at,
+        );
       } catch (error) {
         const outcome = callOutcome(error);
         if (outcome?.error === "REVERTED" || outcome?.error === "OUT_OF_GAS") return null;
         throw error;
       }
       // A call that succeeded but returned no bool (no `consumed()` at that address) throws here.
-      return decodeFunctionResult({ abi: attestGateAbi, functionName: "consumed", data: data ?? "0x" });
+      return decodeFunctionResult({ abi: attestGateAbi, functionName: "consumed", data });
     },
 
     async permissionLogs(fromBlock, toBlock, filter) {
       const windows = blockWindows(fromBlock, toBlock, MAX_LOG_BLOCK_RANGE);
+      // The limiter bounds the requests; mapping at the same width also stops new windows after a failure.
       const perWindow = await mapWithConcurrency(windows, concurrency, (window) =>
-        publicClient.getLogs({
-          address: [identityRegistry, forwarder, mandateRegistry],
-          events: PERMISSION_EVENTS,
-          fromBlock: window.fromBlock,
-          toBlock: window.toBlock,
-        }),
+        limited(() =>
+          publicClient.getLogs({
+            address: [identityRegistry, forwarder, mandateRegistry],
+            events: PERMISSION_EVENTS,
+            fromBlock: window.fromBlock,
+            toBlock: window.toBlock,
+          }),
+        ),
       );
       const owner = getAddress(filter.owner);
       const events: Omit<PermissionEvent, "afterMandate">[] = [];
@@ -249,7 +292,7 @@ export function viemMandateReader(options: {
 
     async simulate({ from, to, value, data, gas }, at) {
       try {
-        await publicClient.call({ account: from, to, value, data, gas, blockNumber: at });
+        await ethCall({ from, to, value, data, gas }, at);
         return { ok: true };
       } catch (error) {
         const outcome = callOutcome(error);
@@ -263,13 +306,15 @@ export function viemMandateReader(options: {
       if (range === null) return null;
       let last: { block: bigint; logIndex: number; uri: string } | null = null;
       for (const window of blockWindows(range.fromBlock, range.toBlock, MAX_LOG_BLOCK_RANGE)) {
-        const logs = await publicClient.getLogs({
-          address: validationRegistry,
-          event: validationResponseEvent,
-          args: { requestHash },
-          fromBlock: window.fromBlock,
-          toBlock: window.toBlock,
-        });
+        const logs = await limited(() =>
+          publicClient.getLogs({
+            address: validationRegistry,
+            event: validationResponseEvent,
+            args: { requestHash },
+            fromBlock: window.fromBlock,
+            toBlock: window.toBlock,
+          }),
+        );
         for (const log of logs) {
           const uri = log.args.responseURI;
           if (uri === undefined || !sameHash(log.args.requestHash, requestHash)) continue;
@@ -281,13 +326,15 @@ export function viemMandateReader(options: {
     },
 
     async requestUri(requestHash, blockNumber) {
-      const logs = await publicClient.getLogs({
-        address: validationRegistry,
-        event: validationRequestEvent,
-        args: { requestHash },
-        fromBlock: blockNumber,
-        toBlock: blockNumber,
-      });
+      const logs = await limited(() =>
+        publicClient.getLogs({
+          address: validationRegistry,
+          event: validationRequestEvent,
+          args: { requestHash },
+          fromBlock: blockNumber,
+          toBlock: blockNumber,
+        }),
+      );
       const matching = logs
         .filter((log) => log.args.requestURI !== undefined && sameHash(log.args.requestHash, requestHash))
         .map((log) => ({ block: log.blockNumber, logIndex: log.logIndex, uri: log.args.requestURI as string }))
@@ -310,7 +357,8 @@ function sameHash(a: Hex | undefined, b: Hex): boolean {
 type CallOutcome = { error: "REVERTED"; revertSelector: Hex | null } | { error: "INSUFFICIENT_FUNDS" | "OUT_OF_GAS"; revertSelector: null };
 
 /**
- * Classifies a failed `eth_call` by the node's JSON-RPC error, found by walking viem's `cause` chain:
+ * Classifies a failed raw `eth_call` by the node's JSON-RPC error, found by walking the `cause` chain
+ * of the error viem's transport threw:
  *
  * - code 3 (execution reverted) → `REVERTED`, with the first 4 bytes of the revert data (or `null`);
  * - a message matching `/insufficient funds/i` (Monad: `-32003 "Insufficient funds for gas * price

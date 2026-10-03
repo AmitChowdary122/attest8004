@@ -1,6 +1,9 @@
 import {
   attestGateAbi,
   agentKeySetEvent,
+  computeActionHashFromParts,
+  computeRequestHashFromParts,
+  encodeCanonicalJsonDataUri,
   identityRegistryAbi,
   mandateRegistryAbi,
   validationRegistryAbi,
@@ -10,6 +13,7 @@ import {
 import {
   BaseError,
   encodeAbiParameters,
+  encodeErrorResult,
   encodeEventTopics,
   getAbiItem,
   getAddress,
@@ -24,10 +28,12 @@ import {
   type Hex,
 } from "viem";
 import { generatePrivateKey, privateKeyToAccount } from "viem/accounts";
-import { beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { FakeRpc, RevertError, revert, type RpcLog } from "../../../packages/sdk/test/helpers/fake-rpc.ts";
+import { collectInputs, type PreimageCache } from "../src/collect.ts";
 import { MANDATE_V1 } from "../src/params.ts";
 import { viemMandateReader, type MandateAddresses } from "../src/reader.ts";
+import type { MandateInputs } from "../src/types.ts";
 
 const ADDRESSES: MandateAddresses = {
   validationRegistry: getAddress("0xc4a4d0ceb3971cbe7a2536494ac106f2cd9f9a8f"),
@@ -569,5 +575,181 @@ describe("viemMandateReader: approval evidence and request logs", () => {
     expect(BigInt(filter?.fromBlock ?? "0x0")).toBe(block);
     expect(BigInt(filter?.toBlock ?? "0x0")).toBe(block);
     expect(filter?.topics[3]).toBe(HASH);
+  });
+});
+
+describe("viemMandateReader: CCIP-Read is never followed", () => {
+  // EIP-3668: a contract reverts with OffchainLookup to ask the caller to fetch from these URLs and
+  // call it back. Following it would fetch attacker-chosen URLs and re-call at `latest`, not at P.
+  const offchainLookupAbi = [
+    {
+      type: "error",
+      name: "OffchainLookup",
+      inputs: [
+        { name: "sender", type: "address" },
+        { name: "urls", type: "string[]" },
+        { name: "callData", type: "bytes" },
+        { name: "callbackFunction", type: "bytes4" },
+        { name: "extraData", type: "bytes" },
+      ],
+    },
+  ] as const;
+  const CALLBACK = "0xdeadbeef";
+  const lookup = (sender: Address) =>
+    encodeErrorResult({
+      abi: offchainLookupAbi,
+      errorName: "OffchainLookup",
+      args: [sender, ["http://127.0.0.1:9/{sender}/{data}.json"], "0x1234", CALLBACK, "0x"],
+    });
+
+  let fetchSpy: ReturnType<typeof vi.spyOn>;
+  beforeEach(() => {
+    fetchSpy = vi
+      .spyOn(globalThis, "fetch")
+      .mockImplementation(async () => new Response(JSON.stringify({ data: "0x" }), { status: 200, headers: { "content-type": "application/json" } }));
+  });
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  /** `to` reverts with OffchainLookup, and would answer its callback with `callbackAnswer`. */
+  function offchainLookupAt(to: Address, callbackAnswer: Hex) {
+    rpc.intercept = (method, params) => {
+      if (method !== "eth_call") return undefined;
+      const call = params[0] as { to: Address; data?: Hex; input?: Hex };
+      if (getAddress(call.to) !== to) return undefined;
+      if ((call.data ?? call.input ?? "0x").startsWith(CALLBACK)) return callbackAnswer;
+      throw new RevertError(lookup(to));
+    };
+  }
+
+  function expectNoFollowUp() {
+    expect(fetchSpy).not.toHaveBeenCalled();
+    expect(ethCalls()).toHaveLength(1);
+    for (const call of ethCalls()) expect(call.params[1]).toBe(toHex(P));
+  }
+
+  it("simulate: an OffchainLookup revert is REVERTED with its selector, with no fetch and no second call", async () => {
+    offchainLookupAt(TARGET, "0x");
+    await expect(reader().simulate({ from: GATE, to: TARGET, value: 1n, data: "0x12345678", gas: 1_000_000n }, P)).resolves.toEqual({
+      ok: false,
+      error: "REVERTED",
+      revertSelector: "0x556f1830",
+    });
+    expectNoFollowUp();
+  });
+
+  it("consumed: an OffchainLookup revert reads as null (a revert), with no fetch and no second call", async () => {
+    offchainLookupAt(GATE, encodeAbiParameters([{ type: "bool" }], [false]));
+    await expect(reader().consumed(GATE, HASH, P)).resolves.toBeNull();
+    expectNoFollowUp();
+  });
+
+  it("a registry read that reverts with OffchainLookup throws, with no fetch and no second call", async () => {
+    offchainLookupAt(ADDRESSES.identityRegistry, encodeAbiParameters([{ type: "address" }], [OWNER]));
+    await expect(reader().ownerOf(AGENT, P)).rejects.toThrow();
+    expectNoFollowUp();
+  });
+});
+
+describe("viemMandateReader: one RPC budget across a whole collection", () => {
+  const BASE_TS = 1_790_000_000n;
+  const tsOf = (n: bigint) => BASE_TS + (n * 10n) / 33n;
+  const pinned = { number: P, hash: keccak256(toHex(P)), timestamp: tsOf(P) };
+
+  /** collectInputs over the viem reader: 12 approvals (2 needing evidence lookups), 60 log windows, a simulation. */
+  async function collectWith(concurrency: number | undefined): Promise<MandateInputs> {
+    rpc.blockTimestamp = tsOf;
+    rpc.delayMs = 1;
+    const statuses = new Map<Hex, readonly unknown[]>();
+    const hashes: Hex[] = [];
+    const cache: PreimageCache = new Map();
+    for (let i = 0; i < 12; i++) {
+      const parts = {
+        chainId: 10_143,
+        gate: GATE,
+        agentId: AGENT,
+        target: TARGET,
+        value: 10n,
+        dataHash: keccak256("0x"),
+        deadline: pinned.timestamp,
+        salt: keccak256(toHex(`budget ${i}`)),
+      };
+      const requestHash = computeRequestHashFromParts({ ...parts, validator: VALIDATOR });
+      const approvedAt = P - 1_000n - BigInt(i) * 50n;
+      const evidence = encodeCanonicalJsonDataUri({
+        schema: "attest8004.evidence.v1",
+        validator: "mandate-v1",
+        requestHash,
+        score: 100,
+        reasons: [],
+        request: {
+          block: (approvedAt - 1n).toString(),
+          chainId: parts.chainId,
+          gate: parts.gate,
+          agentId: parts.agentId.toString(),
+          target: parts.target,
+          value: parts.value.toString(),
+          dataHash: parts.dataHash,
+          selector: "0x00000000",
+          deadline: parts.deadline.toString(),
+          salt: parts.salt,
+        },
+      });
+      hashes.push(requestHash);
+      statuses.set(requestHash, [VALIDATOR, AGENT, 100, evidence.hash, "mandate-v1", tsOf(approvedAt)]);
+      if (i < 10) {
+        cache.set(requestHash, parts);
+      } else {
+        rpc.logs.push(
+          eventLog(
+            ADDRESSES.validationRegistry,
+            validationResponseEvent,
+            { validatorAddress: VALIDATOR, agentId: AGENT, requestHash, response: 100, responseURI: evidence.uri, responseHash: evidence.hash, tag: "mandate-v1" },
+            approvedAt,
+            0,
+          ),
+        );
+      }
+      expect(computeActionHashFromParts(parts)).toMatch(/^0x/);
+    }
+    rpc
+      .onCall(ADDRESSES.identityRegistry, identityRegistryAbi, "ownerOf", () => OWNER)
+      .onCall(ADDRESSES.mandateRegistry, mandateRegistryAbi, "getMandate", () => [
+        { allowedTargets: [TARGET], allowedSelectors: ["0x00000000"], maxValuePerTx: 100n, maxValuePerDay: 1_000n, validUntil: pinned.timestamp + 86_400n },
+        MANDATE_HASH,
+        OWNER,
+        P - 10_000n,
+      ])
+      .onCall(ADDRESSES.validationRegistry, validationRegistryAbi, "getAgentValidations", () => hashes)
+      .onCall(ADDRESSES.validationRegistry, validationRegistryAbi, "getValidationStatus", ([hash]) => statuses.get(hash as Hex))
+      .onCall(GATE, attestGateAbi, "consumed", () => true);
+    answerRawCall(TARGET, () => "0x");
+
+    const { publicClient } = rpc.clients(account, { retryCount: 0 });
+    const r = viemMandateReader({ publicClient, addresses: ADDRESSES, ...(concurrency ? { concurrency } : {}) });
+    const request = {
+      block: P - 3n,
+      requestHash: keccak256(toHex("the request being checked")),
+      chainId: 10_143,
+      gate: GATE,
+      agentId: AGENT,
+      target: TARGET,
+      value: 10n,
+      data: "0x" as Hex,
+      deadline: pinned.timestamp + 60n,
+      salt: keccak256(toHex("salt")),
+    };
+    return collectInputs({ reader: r, validator: VALIDATOR, request, pinned, cache });
+  }
+
+  it.each([
+    [undefined, 8],
+    [3, 3],
+  ] as const)("with concurrency %s, at most %i RPCs are ever in flight", async (concurrency, limit) => {
+    const inputs = await collectWith(concurrency);
+    expect(inputs.spend).toEqual({ since: pinned.timestamp - MANDATE_V1.spendWindowSeconds, entries: expect.any(Array), total: 120n });
+    expect(rpc.calls.filter((c) => c.method === "eth_getLogs").length).toBeGreaterThanOrEqual(62); // 60 windows + 2 evidence lookups
+    expect(rpc.peakInFlight).toBe(limit);
   });
 });

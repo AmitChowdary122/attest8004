@@ -24,7 +24,10 @@ export type PreimageCache = Map<Hex, Omit<RequestParts, "validator">>;
 /** The largest approval evidence URI `collectInputs` decodes. */
 export const MAX_EVIDENCE_URI_BYTES = 131_072;
 
-/** How many approvals' status, evidence and `consumed()` reads run at once. */
+/**
+ * How many approvals are worked on at once. It bounds queued work, not requests: the reader bounds
+ * the RPCs it sends (`viemMandateReader`'s single limiter covers spend and permission reads alike).
+ */
 const SPEND_READ_CONCURRENCY = 8;
 
 /**
@@ -95,35 +98,50 @@ const bytes32 = z
   .regex(/^0x[0-9a-fA-F]{64}$/, "must be 32 bytes of 0x-prefixed hex")
   .transform((s) => s.toLowerCase() as Hex);
 
-/**
- * The part of a `mandate-v1` evidence document the spend history reads. `request` is strict (an
- * unknown key is rejected); the document's other keys (`block`, `params`, `mandate`, `spend`,
- * `permissions`, `simulation`) explain the verdict and aren't read here.
- */
-const approvalEvidenceSchema = z.object({
-  schema: z.literal(EVIDENCE_SCHEMA_V1),
-  validator: z.literal(MANDATE_V1.tag),
-  requestHash: bytes32,
-  score: z.number().int(),
-  reasons: z.array(z.string()),
-  request: z.strictObject({
-    block: decimal(UINT64_MAX),
-    chainId: z.number().int().positive().refine(Number.isSafeInteger, "must be a safe integer"),
-    gate: address,
-    agentId: decimal(UINT256_MAX),
-    target: address,
-    value: decimal(UINT256_MAX),
-    dataHash: bytes32,
-    selector: z.union([z.string().regex(/^0x[0-9a-fA-F]{8}$/, "must be 4 bytes of 0x-prefixed hex"), z.null()]),
-    deadline: decimal(UINT64_MAX),
-    salt: bytes32,
-  }),
-});
+const evidenceSchemaField = z.literal(EVIDENCE_SCHEMA_V1);
+const validatorField = z.literal(MANDATE_V1.tag);
+const scoreField = z.number().int();
+const reasonsField = z.array(z.string());
+const block = decimal(UINT64_MAX);
+const chainId = z.number().int().positive().refine(Number.isSafeInteger, "must be a safe integer");
+const uint256 = decimal(UINT256_MAX);
+const uint64 = decimal(UINT64_MAX);
+const selector = z.union([z.string().regex(/^0x[0-9a-fA-F]{8}$/, "must be 4 bytes of 0x-prefixed hex"), z.null()]);
+
+/** The keys of an evidence document's `request`, in the order they are checked. */
+const REQUEST_KEYS = ["block", "chainId", "gate", "agentId", "target", "value", "dataHash", "selector", "deadline", "salt"];
+
+const INVALID = Symbol("invalid");
+
+/** `value` parsed by `schema`, or {@link INVALID}. A refinement that throws on hostile input is invalid too. */
+function check<S extends z.ZodType>(schema: S, value: unknown): z.output<S> | typeof INVALID {
+  try {
+    const result = schema.safeParse(value);
+    return result.success ? result.data : INVALID;
+  } catch {
+    return INVALID;
+  }
+}
+
+function isJsonObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
 
 /**
  * Parses a `mandate-v1` evidence document (its JSON text) strictly, into the `requestHash` it names
  * and the request parts it logged: everything `computeRequestHashFromParts` needs except the
  * validator. Never throws; anything else is `{ error }`.
+ *
+ * The top level must have `schema` (`attest8004.evidence.v1`), `validator` (`mandate-v1`),
+ * `requestHash` (bytes32), `score` (an integer) and `reasons` (strings); its other keys explain the
+ * verdict and aren't read here. `request` is strict: `block`, `agentId`, `value` and `deadline` as
+ * decimal strings, `chainId` as a JSON number, `gate` and `target` as addresses (lower-case or EIP-55),
+ * `dataHash` and `salt` as bytes32, `selector` as 4 bytes or `null`, and no other key.
+ *
+ * The error is one of a fixed set of our own strings, never a library's message: `not JSON`,
+ * `not a JSON object`, `invalid at <field>` naming the first failing field in the order above, or
+ * `unknown key in request`. It can end up in hashed evidence, so it must not change with a
+ * dependency upgrade.
  */
 export function parseApprovalParts(
   json: string,
@@ -132,31 +150,51 @@ export function parseApprovalParts(
   try {
     doc = JSON.parse(json);
   } catch {
-    return { error: "the evidence is not JSON" };
+    return { error: "not JSON" };
   }
-  let parsed: ReturnType<typeof approvalEvidenceSchema.safeParse>;
-  try {
-    parsed = approvalEvidenceSchema.safeParse(doc);
-  } catch (error) {
-    // Defence in depth: a refinement that throws on hostile input is still a schema rejection.
-    return { error: error instanceof Error ? error.message : String(error) };
-  }
-  if (!parsed.success) {
-    const issue = parsed.error.issues[0];
-    return { error: issue ? `${issue.path.join(".") || "(root)"}: ${issue.message}` : "invalid" };
-  }
-  const { requestHash, request } = parsed.data;
+  if (!isJsonObject(doc)) return { error: "not a JSON object" };
+  const invalid = (field: string) => ({ error: `invalid at ${field}` });
+
+  if (check(evidenceSchemaField, doc.schema) === INVALID) return invalid("schema");
+  if (check(validatorField, doc.validator) === INVALID) return invalid("validator");
+  const requestHash = check(bytes32, doc.requestHash);
+  if (requestHash === INVALID) return invalid("requestHash");
+  if (check(scoreField, doc.score) === INVALID) return invalid("score");
+  if (check(reasonsField, doc.reasons) === INVALID) return invalid("reasons");
+
+  const request = doc.request;
+  if (!isJsonObject(request)) return invalid("request");
+  if (check(block, request.block) === INVALID) return invalid("request.block");
+  const parsedChainId = check(chainId, request.chainId);
+  if (parsedChainId === INVALID) return invalid("request.chainId");
+  const gate = check(address, request.gate);
+  if (gate === INVALID) return invalid("request.gate");
+  const agentId = check(uint256, request.agentId);
+  if (agentId === INVALID) return invalid("request.agentId");
+  const target = check(address, request.target);
+  if (target === INVALID) return invalid("request.target");
+  const value = check(uint256, request.value);
+  if (value === INVALID) return invalid("request.value");
+  const dataHash = check(bytes32, request.dataHash);
+  if (dataHash === INVALID) return invalid("request.dataHash");
+  if (check(selector, request.selector) === INVALID) return invalid("request.selector");
+  const deadline = check(uint64, request.deadline);
+  if (deadline === INVALID) return invalid("request.deadline");
+  const salt = check(bytes32, request.salt);
+  if (salt === INVALID) return invalid("request.salt");
+  if (Object.keys(request).some((key) => !REQUEST_KEYS.includes(key))) return { error: "unknown key in request" };
+
   return {
     requestHash,
     parts: {
-      chainId: request.chainId,
-      gate: request.gate,
-      agentId: BigInt(request.agentId),
-      target: request.target,
-      value: BigInt(request.value),
-      dataHash: request.dataHash,
-      deadline: BigInt(request.deadline),
-      salt: request.salt,
+      chainId: parsedChainId,
+      gate,
+      agentId: BigInt(agentId),
+      target,
+      value: BigInt(value),
+      dataHash,
+      deadline: BigInt(deadline),
+      salt,
     },
   };
 }
@@ -182,7 +220,12 @@ export function parseApprovalParts(
  * - **Simulation.** The action as the gate would make it: from `gate` to `target` with `value` and
  *   `data`, capped at `MANDATE_V1.simulationGas`.
  *
- * Any reader failure rejects, so a transient RPC error never becomes a verdict.
+ * Any reader failure rejects, so a transient RPC error never becomes a verdict. Spend, permission
+ * and simulation reads run side by side; the reader bounds how many requests are in flight.
+ *
+ * An `unreadable` reason is built only from our own fixed text, hashes and the URI rejection code,
+ * never from a library's message, because it is part of the hashed evidence: the validator and a
+ * later `verify` must produce the same bytes.
  */
 export async function collectInputs(o: {
   reader: MandateReader;
@@ -273,23 +316,19 @@ async function authenticatedParts(
 ): Promise<Omit<RequestParts, "validator"> | { unreadable: string }> {
   const uri = await reader.responseEvidence(requestHash, status.lastUpdate, notAfter);
   if (uri === null) throw new SpendLogNotFoundError(requestHash, status.lastUpdate);
-  const unreadable = (why: string) => ({ unreadable: `${requestHash}: ${why}` });
+  // Fixed text only (see collectInputs): the URI's rejection code, never its detail message.
+  const unreadable = (why: string) => ({ unreadable: `${requestHash.toLowerCase()}: ${why}` });
 
   const decoded = decodeJsonDataUri(uri, MAX_EVIDENCE_URI_BYTES);
-  if (!decoded.ok) return unreadable(`the response URI is not a JSON data: URI (${decoded.reason}: ${decoded.detail})`);
+  if (!decoded.ok) return unreadable(`response URI rejected (${decoded.reason})`);
   const evidenceHash = keccak256(stringToBytes(decoded.text));
-  if (evidenceHash !== status.responseHash.toLowerCase()) {
-    return unreadable(`the evidence hashes to ${evidenceHash}, not the responseHash ${status.responseHash}`);
-  }
+  const responseHash = status.responseHash.toLowerCase();
+  if (evidenceHash !== responseHash) return unreadable(`evidence hash ${evidenceHash} is not the responseHash ${responseHash}`);
   const parsed = parseApprovalParts(decoded.text);
-  if ("error" in parsed) return unreadable(`not mandate-v1 evidence with request parts (${parsed.error})`);
-  if (parsed.requestHash !== requestHash.toLowerCase()) {
-    return unreadable(`the evidence is for requestHash ${parsed.requestHash}`);
-  }
+  if ("error" in parsed) return unreadable(`not mandate-v1 evidence (${parsed.error})`);
+  if (parsed.requestHash !== requestHash.toLowerCase()) return unreadable(`evidence names requestHash ${parsed.requestHash}`);
   const recomputed = computeRequestHashFromParts({ ...parsed.parts, validator: status.validator });
-  if (recomputed !== requestHash.toLowerCase()) {
-    return unreadable(`the evidence's request parts recompute to requestHash ${recomputed}`);
-  }
+  if (recomputed !== requestHash.toLowerCase()) return unreadable(`evidence request parts recompute to requestHash ${recomputed}`);
   return parsed.parts;
 }
 

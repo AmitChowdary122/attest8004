@@ -69,6 +69,11 @@ export class FakeRpc {
    * an RPC error), return a value to answer it, or return undefined to fall through.
    */
   intercept: ((method: string, params: unknown[]) => unknown) | undefined;
+  /** Milliseconds every request waits before it is answered (default 0), to observe concurrency. */
+  delayMs = 0;
+  /** The most requests that were in flight at once. */
+  peakInFlight = 0;
+  private inFlight = 0;
   private readonly handlers = new Map<string, { abi: Abi; fn: string; handler: CallHandler }>();
 
   /** Answers eth_call to `to` for `fn` (decoded with `abi`). Return a RevertError to revert. */
@@ -95,6 +100,17 @@ export class FakeRpc {
 
   private async handle(method: string, params: unknown[]): Promise<unknown> {
     this.calls.push({ method, params });
+    this.inFlight++;
+    this.peakInFlight = Math.max(this.peakInFlight, this.inFlight);
+    try {
+      if (this.delayMs > 0) await new Promise((resolve) => setTimeout(resolve, this.delayMs));
+      return await this.answer(method, params);
+    } finally {
+      this.inFlight--;
+    }
+  }
+
+  private async answer(method: string, params: unknown[]): Promise<unknown> {
     const intercepted = this.intercept?.(method, params);
     if (intercepted !== undefined) return intercepted;
     switch (method) {

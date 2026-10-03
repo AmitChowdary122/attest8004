@@ -356,10 +356,12 @@ describe("collectInputs: preimage cache and evidence authentication", () => {
 
   it("evidence whose keccak isn't the approval's responseHash is unreadable", async () => {
     const a = approval({ value: 400n, deadline: P.timestamp });
-    a.status = { ...a.status, responseHash: keccak256(toHex("something else")) };
+    const evidenceHash = a.status.responseHash;
+    const posted = keccak256(toHex("something else"));
+    a.status = { ...a.status, responseHash: posted };
     add(reader, a);
     const { spend } = await collect();
-    expect(spend).toEqual({ unreadable: expect.stringMatching(new RegExp(`^${a.requestHash}: .*responseHash`)) });
+    expect(spend).toEqual({ unreadable: `${a.requestHash}: evidence hash ${evidenceHash} is not the responseHash ${posted}` });
     expect(cache.has(a.requestHash)).toBe(false);
   });
 
@@ -370,7 +372,7 @@ describe("collectInputs: preimage cache and evidence authentication", () => {
     a.status = { ...a.status, responseHash: notMandate.hash };
     add(reader, a);
     const { spend } = await collect();
-    expect(spend).toEqual({ unreadable: expect.stringMatching(new RegExp(`^${a.requestHash}: `)) });
+    expect(spend).toEqual({ unreadable: `${a.requestHash}: not mandate-v1 evidence (invalid at validator)` });
   });
 
   it("evidence that hashes correctly but isn't JSON is unreadable", async () => {
@@ -380,7 +382,7 @@ describe("collectInputs: preimage cache and evidence authentication", () => {
     a.status = { ...a.status, responseHash: notJson.hash };
     add(reader, a);
     const { spend } = await collect();
-    expect(spend).toEqual({ unreadable: expect.stringMatching(new RegExp(`^${a.requestHash}: `)) });
+    expect(spend).toEqual({ unreadable: `${a.requestHash}: not mandate-v1 evidence (not JSON)` });
   });
 
   it("a response URI that isn't a JSON data: URI is unreadable", async () => {
@@ -388,7 +390,7 @@ describe("collectInputs: preimage cache and evidence authentication", () => {
     a.uri = "https://example.com/evidence.json";
     add(reader, a);
     const { spend } = await collect();
-    expect(spend).toEqual({ unreadable: expect.stringMatching(new RegExp(`^${a.requestHash}: `)) });
+    expect(spend).toEqual({ unreadable: `${a.requestHash}: response URI rejected (URI_NOT_DATA)` });
   });
 
   it("request parts that hash to another requestHash are unreadable", async () => {
@@ -400,7 +402,8 @@ describe("collectInputs: preimage cache and evidence authentication", () => {
     a.status = { ...a.status, responseHash: edited.hash };
     add(reader, a);
     const { spend } = await collect();
-    expect(spend).toEqual({ unreadable: expect.stringMatching(new RegExp(`^${a.requestHash}: .*requestHash`)) });
+    const recomputed = computeRequestHashFromParts({ ...a.parts, value: 1n, validator: VALIDATOR });
+    expect(spend).toEqual({ unreadable: `${a.requestHash}: evidence request parts recompute to requestHash ${recomputed}` });
   });
 
   it("evidence that names another requestHash is unreadable", async () => {
@@ -412,19 +415,22 @@ describe("collectInputs: preimage cache and evidence authentication", () => {
     a.status = { ...a.status, responseHash: edited.hash };
     add(reader, a);
     const { spend } = await collect();
-    expect(spend).toEqual({ unreadable: expect.stringMatching(new RegExp(`^${a.requestHash}: `)) });
+    expect(spend).toEqual({ unreadable: `${a.requestHash}: evidence names requestHash ${other.requestHash}` });
   });
 
   it("reports the first unreadable approval in getAgentValidations order", async () => {
     add(reader, approval({ value: 1n, deadline: P.timestamp }));
     const first = approval({ value: 2n, deadline: P.timestamp });
+    const firstEvidenceHash = first.status.responseHash;
     first.status = { ...first.status, responseHash: keccak256(toHex("x")) };
     add(reader, first);
     const second = approval({ value: 3n, deadline: P.timestamp });
     second.status = { ...second.status, responseHash: keccak256(toHex("y")) };
     add(reader, second);
     const { spend } = await collect();
-    expect(spend).toEqual({ unreadable: expect.stringMatching(new RegExp(`^${first.requestHash}: `)) });
+    expect(spend).toEqual({
+      unreadable: `${first.requestHash}: evidence hash ${firstEvidenceHash} is not the responseHash ${keccak256(toHex("x"))}`,
+    });
   });
 
   it("test_SpendLogLookupFailsTransiently_Throws_ThenSucceeds", async () => {
@@ -474,26 +480,37 @@ describe("parseApprovalParts", () => {
     expect(parseApprovalParts(canonicalJson(valid()))).toEqual({ requestHash: a.requestHash, parts: a.parts });
   });
 
-  it.each<[string, (doc: ReturnType<typeof valid>) => unknown]>([
-    ["not JSON", () => "{"],
-    ["another schema", (doc) => ({ ...doc, schema: "attest8004.evidence.v2" })],
-    ["another validator tag", (doc) => ({ ...doc, validator: "risk-qwen-v1" })],
-    ["no request", (doc) => ({ ...doc, request: undefined })],
-    ["no score", (doc) => ({ ...doc, score: undefined })],
-    ["an unknown key in request", (doc) => ({ ...doc, request: { ...doc.request, data: "0x" } })],
-    ["a missing request key", (doc) => ({ ...doc, request: { ...doc.request, salt: undefined } })],
-    ["value as a JSON number", (doc) => ({ ...doc, request: { ...doc.request, value: 123 } })],
-    ["value with a leading zero", (doc) => ({ ...doc, request: { ...doc.request, value: "0123" } })],
-    ["chainId as a string", (doc) => ({ ...doc, request: { ...doc.request, chainId: "10143" } })],
-    ["a deadline above uint64", (doc) => ({ ...doc, request: { ...doc.request, deadline: (2n ** 64n).toString() } })],
-    ["a bad address checksum", (doc) => ({ ...doc, request: { ...doc.request, gate: "0x23bfbd12545ccd1501dda1b65a54518fd6212A96" } })],
-    ["a short salt", (doc) => ({ ...doc, request: { ...doc.request, salt: "0x1234" } })],
-    ["a malformed selector", (doc) => ({ ...doc, request: { ...doc.request, selector: "0x1234" } })],
-    ["a malformed requestHash", (doc) => ({ ...doc, requestHash: "0x1234" })],
-  ])("rejects %s", (_, edit) => {
+  // The error text is ours, never a library's: it can end up in hashed evidence (`unreadable`), so
+  // it must not change when a dependency is upgraded. With several faults, the first field in a fixed
+  // order is the one named.
+  it.each<[string, (doc: ReturnType<typeof valid>) => unknown, string]>([
+    ["not JSON", () => "{", "not JSON"],
+    ["a JSON array", () => "[1,2]", "not a JSON object"],
+    ["JSON null", () => "null", "not a JSON object"],
+    ["another schema", (doc) => ({ ...doc, schema: "attest8004.evidence.v2" }), "invalid at schema"],
+    ["another validator tag", (doc) => ({ ...doc, validator: "risk-qwen-v1" }), "invalid at validator"],
+    ["no request", (doc) => ({ ...doc, request: undefined }), "invalid at request"],
+    ["request as an array", (doc) => ({ ...doc, request: [] }), "invalid at request"],
+    ["no score", (doc) => ({ ...doc, score: undefined }), "invalid at score"],
+    ["a fractional score", (doc) => ({ ...doc, score: 99.5 }), "invalid at score"],
+    ["reasons that aren't strings", (doc) => ({ ...doc, reasons: [1] }), "invalid at reasons"],
+    ["an unknown key in request", (doc) => ({ ...doc, request: { ...doc.request, data: "0x" } }), "unknown key in request"],
+    ["a missing request key", (doc) => ({ ...doc, request: { ...doc.request, salt: undefined } }), "invalid at request.salt"],
+    ["value as a JSON number", (doc) => ({ ...doc, request: { ...doc.request, value: 123 } }), "invalid at request.value"],
+    ["value with a leading zero", (doc) => ({ ...doc, request: { ...doc.request, value: "0123" } }), "invalid at request.value"],
+    ["chainId as a string", (doc) => ({ ...doc, request: { ...doc.request, chainId: "10143" } }), "invalid at request.chainId"],
+    ["a deadline above uint64", (doc) => ({ ...doc, request: { ...doc.request, deadline: (2n ** 64n).toString() } }), "invalid at request.deadline"],
+    ["a bad address checksum", (doc) => ({ ...doc, request: { ...doc.request, gate: "0x23bfbd12545ccd1501dda1b65a54518fd6212A96" } }), "invalid at request.gate"],
+    ["a short salt", (doc) => ({ ...doc, request: { ...doc.request, salt: "0x1234" } }), "invalid at request.salt"],
+    ["a malformed selector", (doc) => ({ ...doc, request: { ...doc.request, selector: "0x1234" } }), "invalid at request.selector"],
+    ["a malformed requestHash", (doc) => ({ ...doc, requestHash: "0x1234" }), "invalid at requestHash"],
+    ["a bad value and a bad gate (gate comes first)", (doc) => ({ ...doc, request: { ...doc.request, value: "x", gate: "0x12" } }), "invalid at request.gate"],
+    ["a bad request field and a bad requestHash (requestHash comes first)", (doc) => ({ ...doc, requestHash: "0x", request: { ...doc.request, value: "x" } }), "invalid at requestHash"],
+    ["an unknown key and a bad value (known fields come first)", (doc) => ({ ...doc, request: { ...doc.request, value: "x", extra: 1 } }), "invalid at request.value"],
+  ])("rejects %s", (_, edit, error) => {
     const edited = edit(valid());
     const text = typeof edited === "string" ? edited : JSON.stringify(edited);
-    expect(parseApprovalParts(text)).toEqual({ error: expect.any(String) });
+    expect(parseApprovalParts(text)).toEqual({ error });
   });
 
   it("accepts a null selector (data too short for one)", () => {
