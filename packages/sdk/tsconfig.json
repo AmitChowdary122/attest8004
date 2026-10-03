@@ -4,7 +4,9 @@
     "noEmit": true,
     // Source imports use .ts extensions, so Node's type stripping can run src/ directly
     // (workspace packages import it through the "@attest8004/source" export condition).
-    "allowImportingTsExtensions": true
+    "allowImportingTsExtensions": true,
+    // Node's type stripping runs this source as is, so only erasable TypeScript syntax is allowed.
+    "erasableSyntaxOnly": true
   },
   "include": ["src", "test"]
 }

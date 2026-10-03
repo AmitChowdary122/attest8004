@@ -114,7 +114,8 @@ attest8004/
   - `buildAction()` and `computeRequestHash()`.
   - `requestValidation({validators[], action})`. Puts the request JSON in `requestURI` as a `data:` URI (no hosting; the reference validators accept nothing else), then calls the registry.
   - `awaitVerdict()` and `isValidated()`.
-  - `getAgentTrust(agentId)`, which reads from the Envio GraphQL API.
+  - `getAgentTrust(agentId)`, which reads from the Envio GraphQL API (P8).
+  - As built in P3 (`packages/sdk/src/client.ts`): `requestValidation` goes through the `AgentRequestForwarder` when one is configured (the wallet is then the agent's hot key), else straight to the registry. `awaitVerdict` scans `ValidationResponse` logs in windows of at most 100 blocks (Monad testnet's `eth_getLogs` limit). `isValidated` mirrors `AttestGate`: the deadline, consumption, and each requirement's stored validator, agentId and score. Every transaction goes through `writeWithGasGuard`: simulate, estimate, refuse if the estimate is above the explicit limit, then send with that limit and with fees and nonce set, so the node never fills the gas.
 - **Validator base class:**
   - Subscribe to `ValidationRequest` where `validatorAddress == self`.
   - Load the request and check that its action hashes to `requestHash`.
