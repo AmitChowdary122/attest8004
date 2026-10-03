@@ -14,11 +14,27 @@ import {
   type ValidationStatus,
   type ValidatorChain,
 } from "@attest8004/sdk";
-import { encodeErrorResult, getAddress, keccak256, stringToBytes, toHex, zeroAddress, zeroHash, type Address, type Hash, type Hex } from "viem";
+import {
+  encodeErrorResult,
+  getAddress,
+  HttpRequestError,
+  keccak256,
+  RpcRequestError,
+  stringToBytes,
+  toHex,
+  UnknownRpcError,
+  zeroAddress,
+  zeroHash,
+  type Address,
+  type Hash,
+  type Hex,
+} from "viem";
+import { generatePrivateKey, privateKeyToAccount } from "viem/accounts";
 import { beforeEach, describe, expect, it } from "vitest";
-import { SpendLogNotFoundError } from "../src/collect.ts";
+import { FakeRpc, revert } from "../../../packages/sdk/test/helpers/fake-rpc.ts";
+import { MAX_EVIDENCE_URI_BYTES, SpendLogNotFoundError } from "../src/collect.ts";
 import { MANDATE_V1 } from "../src/params.ts";
-import { mandateAddressesFor, type MandateAddresses, type ResponseLog, type VerifyReader } from "../src/reader.ts";
+import { mandateAddressesFor, viemMandateReader, type MandateAddresses, type ResponseLog, type VerifyReader } from "../src/reader.ts";
 import type { MandateRecord, PermissionEvent, PinnedBlock, Simulation } from "../src/types.ts";
 import { MandateValidator } from "../src/validator.ts";
 import { verifyRequest, type VerifyReport } from "../src/verify.ts";
@@ -44,6 +60,25 @@ function unknownRequest(requestHash: Hex): Error {
     data: encodeErrorResult({ abi: validationRegistryAbi, errorName: "UnknownRequest", args: [requestHash] }),
   });
 }
+
+/**
+ * The shapes the registry's `UnknownRequest` revert reaches the reader in: the raw provider error,
+ * viem's HTTP `RpcRequestError` (code 3 at the top), and viem's `UnknownRpcError` wrapping a custom
+ * transport's error (code -1, the revert as its cause).
+ */
+const UNKNOWN_REQUEST_SHAPES: Array<{ shape: string; wrap: (raw: Error) => unknown }> = [
+  { shape: "a flat { code: 3, data }", wrap: (raw) => raw },
+  {
+    shape: "viem's HTTP RpcRequestError",
+    wrap: (raw) =>
+      new RpcRequestError({
+        body: { method: "eth_call" },
+        url: "https://rpc.example/key",
+        error: { code: 3, message: raw.message, data: (raw as unknown as { data: Hex }).data },
+      }),
+  },
+  { shape: "viem's UnknownRpcError around a custom transport's error", wrap: (raw) => new UnknownRpcError(raw) },
+];
 
 type Landed = { block: bigint; logIndex: number; uri: string; status: ValidationStatus };
 
@@ -118,9 +153,16 @@ class FakeReader implements VerifyReader {
   ];
   /** Responses whose log this reader can't find (RPC or log-index lag). */
   readonly hiddenResponses = new Set<Hex>();
+  /** Requests whose `ValidationRequest` log this reader can't find. */
+  readonly hiddenRequests = new Set<Hex>();
   /** Every `responseLog` lookup, by requestHash (`responseEvidence` goes through it). */
   readonly responseLogCalls: Hex[] = [];
-  statusError: Error | undefined;
+  /** Every block a status was read at. */
+  readonly statusReads: bigint[] = [];
+  /** A failure for the status read at `at` (thrown instead of reading), or undefined to read. */
+  statusFailure: ((at: bigint) => unknown) | undefined;
+  /** How an `UnknownRequest` revert reaches the caller. */
+  unknownRequestAs: (raw: Error) => unknown = (raw) => raw;
 
   constructor(chain: FakeChain) {
     this.chain = chain;
@@ -145,8 +187,14 @@ class FakeReader implements VerifyReader {
     return this.chain.events.filter((e) => e.agentId === agentId && e.blockNumber <= at).map((e) => e.requestHash);
   }
   async status(requestHash: Hex, at: bigint): Promise<ValidationStatus> {
-    if (this.statusError) throw this.statusError;
-    return this.chain.statusAt(requestHash, at);
+    this.statusReads.push(at);
+    const failure = this.statusFailure?.(at);
+    if (failure !== undefined) throw failure;
+    try {
+      return this.chain.statusAt(requestHash, at);
+    } catch (error) {
+      throw this.unknownRequestAs(error as Error);
+    }
   }
   async consumed() {
     return false;
@@ -169,6 +217,7 @@ class FakeReader implements VerifyReader {
   }
   async requestUri(requestHash: Hex, block: bigint) {
     const key = requestHash.toLowerCase() as Hex;
+    if (this.hiddenRequests.has(key)) return null;
     return this.chain.events.find((e) => e.requestHash === key && e.blockNumber === block)?.requestURI ?? null;
   }
 }
@@ -410,14 +459,6 @@ describe("verifyRequest: a tampered or drifted verdict is a mismatch", () => {
     expect(report).toMatchObject({ verdict: "mismatch", problems: ["EVIDENCE_HASH_MISMATCH"], recomputed: null, pinnedBlock: null });
   });
 
-  it("a response URI that isn't inline JSON (never fetched): EVIDENCE_HASH_MISMATCH", async () => {
-    const e = addRequest(requestJson());
-    await runValidator();
-    landed(e.requestHash).uri = "https://evidence.example/verdict.json";
-
-    await expect(verify(e.requestHash)).resolves.toMatchObject({ verdict: "mismatch", problems: ["EVIDENCE_HASH_MISMATCH"] });
-  });
-
   it("evidence re-signed with another pinned block: RESPONSE_HASH_MISMATCH, naming block among the differing keys", async () => {
     const e = addRequest(requestJson());
     await runValidator();
@@ -478,16 +519,55 @@ describe("verifyRequest: a tampered or drifted verdict is a mismatch", () => {
 
     await expect(verify(e.requestHash)).resolves.toMatchObject({ verdict: "mismatch", problems: ["PIN_OUT_OF_RANGE"], pinnedBlock: 1_006n });
   });
+});
 
-  it("a pin before the request with the evidence's request block moved back to match: PIN_OUT_OF_RANGE (no request at P)", async () => {
+describe("verifyRequest: the request's block is a fact of state, so a wrong one is a mismatch", () => {
+  it.each([
+    { name: "one block after the real one", requestBlock: "1001", pinned: "1004" },
+    { name: "one block before the real one", requestBlock: "999", pinned: "1004" },
+    { name: "moved back with a pin before the request", requestBlock: "990", pinned: "995" },
+    { name: "block 0", requestBlock: "0", pinned: "1004" },
+  ])("evidence naming a request block $name: REQUEST_BLOCK_WRONG", async ({ requestBlock, pinned }) => {
     const e = addRequest(requestJson());
     await runValidator();
     resign(e.requestHash, (doc) => {
-      doc.block.number = "995";
-      doc.request.block = "990";
+      doc.request.block = requestBlock;
+      doc.block.number = pinned;
     });
+    const reader = new FakeReader(chain);
 
-    await expect(verify(e.requestHash)).resolves.toMatchObject({ verdict: "mismatch", problems: ["PIN_OUT_OF_RANGE"], pinnedBlock: 995n });
+    const report = await verify(e.requestHash, reader);
+
+    expect(report).toMatchObject({ verdict: "mismatch", match: false, problems: ["REQUEST_BLOCK_WRONG"], recomputed: null });
+    expect(reader.statusReads.every((at) => at >= 0n)).toBe(true);
+  });
+
+  it.each(UNKNOWN_REQUEST_SHAPES)("reads UnknownRequest as 'not made yet' in any shape ($shape)", async ({ wrap }) => {
+    const e = addRequest(requestJson());
+    await runValidator();
+    resign(e.requestHash, (doc) => {
+      doc.request.block = "999";
+    });
+    const reader = new FakeReader(chain);
+    reader.unknownRequestAs = wrap;
+
+    await expect(verify(e.requestHash, reader)).resolves.toMatchObject({ verdict: "mismatch", problems: ["REQUEST_BLOCK_WRONG"] });
+  });
+
+  it("a request URI that doesn't hash to the requestHash: REQUEST_INVALID (a validator must not answer it)", async () => {
+    const e = addRequest(requestJson());
+    await runValidator();
+    e.requestURI = encodeJsonDataUri(requestJson()).uri; // another salt, so another hash
+
+    await expect(verify(e.requestHash)).resolves.toMatchObject({ verdict: "mismatch", problems: ["REQUEST_INVALID"] });
+  });
+
+  it("a request URI that isn't request JSON: REQUEST_INVALID", async () => {
+    const e = addRequest(requestJson());
+    await runValidator();
+    e.requestURI = "https://request.example/1";
+
+    await expect(verify(e.requestHash)).resolves.toMatchObject({ verdict: "mismatch", problems: ["REQUEST_INVALID"] });
   });
 });
 
@@ -534,30 +614,22 @@ describe("verifyRequest: what can't be found or re-run is never a mismatch", () 
     await expect(verify(e.requestHash, reader)).resolves.toMatchObject({ verdict: "unverifiable", problems: ["RESPONSE_NOT_FOUND"] });
   });
 
-  it("no request log in the evidence's request block: REQUEST_NOT_FOUND", async () => {
+  it("state confirms the evidence's request block but its log isn't returned: REQUEST_NOT_FOUND", async () => {
     const e = addRequest(requestJson());
     await runValidator();
-    resign(e.requestHash, (doc) => {
-      doc.request.block = "1001";
-    });
+    const reader = new FakeReader(chain);
+    reader.hiddenRequests.add(e.requestHash);
 
-    await expect(verify(e.requestHash)).resolves.toMatchObject({
+    await expect(verify(e.requestHash, reader)).resolves.toMatchObject({
       verdict: "unverifiable",
       problems: ["REQUEST_NOT_FOUND"],
       pinnedBlock: 1_004n,
       recomputed: null,
     });
+    expect(reader.statusReads).toEqual([1_005n, 1_000n, 999n]); // the head, then the request block and the one before
   });
 
-  it("a request URI that doesn't hash to the requestHash: REQUEST_NOT_FOUND", async () => {
-    const e = addRequest(requestJson());
-    await runValidator();
-    e.requestURI = encodeJsonDataUri(requestJson()).uri; // another salt, so another hash
-
-    await expect(verify(e.requestHash)).resolves.toMatchObject({ verdict: "unverifiable", problems: ["REQUEST_NOT_FOUND"] });
-  });
-
-  it("a request JSON naming another validator than the registry records: REQUEST_NOT_FOUND", async () => {
+  it("a request JSON naming another validator than the registry records: REQUEST_INVALID (a validator must not answer it)", async () => {
     // Addressed onchain to validator A, but the JSON (and so the hash) names another validator.
     const json = requestJson({ validator: OTHER_VALIDATOR });
     const e = addRequest(json);
@@ -569,11 +641,15 @@ describe("verifyRequest: what can't be found or re-run is never a mismatch", () 
     chain.landed.set(e.requestHash, { block: 1_005n, logIndex: 0, uri, status: { ...response, responseHash: hash } });
     chain.finalized = 1_005n;
 
-    await expect(verify(e.requestHash)).resolves.toMatchObject({ verdict: "unverifiable", problems: ["REQUEST_NOT_FOUND"] });
+    await expect(verify(e.requestHash)).resolves.toMatchObject({ verdict: "mismatch", problems: ["REQUEST_INVALID"] });
   });
 
-  it("a requestHash the registry doesn't know: REQUEST_NOT_FOUND", async () => {
-    const report = await verify(keccak256(toHex("no such request")));
+  it.each(UNKNOWN_REQUEST_SHAPES)("a requestHash the registry doesn't know ($shape): REQUEST_NOT_FOUND", async ({ wrap }) => {
+    const reader = new FakeReader(chain);
+    reader.unknownRequestAs = wrap;
+
+    const report = await verify(keccak256(toHex("no such request")), reader);
+
     expect(report).toMatchObject({
       verdict: "unverifiable",
       problems: ["REQUEST_NOT_FOUND"],
@@ -581,6 +657,55 @@ describe("verifyRequest: what can't be found or re-run is never a mismatch", () 
       pinnedBlock: null,
       recomputed: null,
     });
+  });
+
+  it("a requestHash the registry doesn't know, through the real viem reader: REQUEST_NOT_FOUND", async () => {
+    const rpc = new FakeRpc();
+    rpc.blockNumber = 1_004n;
+    const unknown = keccak256(toHex("no such request"));
+    rpc.onCall(ADDRESSES.validationRegistry, validationRegistryAbi, "getValidationStatus", () =>
+      revert(validationRegistryAbi, "UnknownRequest", [unknown]),
+    );
+    const { publicClient } = rpc.clients(privateKeyToAccount(generatePrivateKey()), { retryCount: 0 });
+
+    const report = await verifyRequest({ reader: viemMandateReader({ publicClient, addresses: ADDRESSES }), requestHash: unknown, addresses: ADDRESSES });
+
+    expect(report).toMatchObject({ verdict: "unverifiable", problems: ["REQUEST_NOT_FOUND"] });
+  });
+
+  it.each([
+    { name: "a transport failure", failure: () => new HttpRequestError({ url: "https://rpc.example/key", status: 429 }) },
+    {
+      name: "a revert other than UnknownRequest",
+      failure: () => Object.assign(new Error("execution reverted"), { code: 3, data: "0x08c379a0" }),
+    },
+  ])("$name while proving the request block rejects (exit 2), never a mismatch", async ({ failure }) => {
+    const e = addRequest(requestJson());
+    await runValidator();
+    const reader = new FakeReader(chain);
+    reader.hiddenRequests.add(e.requestHash);
+    reader.statusFailure = (at) => (at === 999n ? failure() : undefined);
+
+    await expect(verify(e.requestHash, reader)).rejects.toBeDefined();
+  });
+
+  it("evidence that won't decode as inline JSON (not a data: URI, never fetched): EVIDENCE_NOT_DECODED, unverifiable", async () => {
+    const e = addRequest(requestJson());
+    await runValidator();
+    landed(e.requestHash).uri = "https://evidence.example/verdict.json";
+
+    await expect(verify(e.requestHash)).resolves.toMatchObject({ verdict: "unverifiable", problems: ["EVIDENCE_NOT_DECODED"], recomputed: null });
+  });
+
+  it("evidence over 128 KiB, even with a matching hash: EVIDENCE_NOT_DECODED, unverifiable (an honest validator could post it)", async () => {
+    const e = addRequest(requestJson());
+    await runValidator();
+    resign(e.requestHash, (doc) => {
+      doc.note = "x".repeat(MAX_EVIDENCE_URI_BYTES);
+    });
+    expect(landed(e.requestHash).uri.length).toBeGreaterThan(MAX_EVIDENCE_URI_BYTES);
+
+    await expect(verify(e.requestHash)).resolves.toMatchObject({ verdict: "unverifiable", problems: ["EVIDENCE_NOT_DECODED"] });
   });
 
   it("a spend approval whose log can't be found during the re-run rejects (retry later), never a report", async () => {
@@ -597,7 +722,7 @@ describe("verifyRequest: what can't be found or re-run is never a mismatch", () 
     const e = addRequest(requestJson());
     await runValidator();
     const reader = new FakeReader(chain);
-    reader.statusError = Object.assign(new Error("HTTP request failed"), { status: 429 });
+    reader.statusFailure = () => Object.assign(new Error("HTTP request failed"), { status: 429 });
 
     await expect(verify(e.requestHash, reader)).rejects.toThrow(/HTTP request failed/);
   });

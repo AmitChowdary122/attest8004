@@ -1,6 +1,6 @@
 import { HttpRequestError, InvalidParamsRpcError, keccak256, RpcRequestError, getAddress, toHex, type Hex } from "viem";
 import { describe, expect, it } from "vitest";
-import { DEFAULT_RPC_URL, main, type CliDeps } from "../src/cli.ts";
+import { DEFAULT_RPC_URL, main, USAGE, type CliDeps } from "../src/cli.ts";
 import { SpendLogNotFoundError } from "../src/collect.ts";
 import { mandateAddressesFor, type VerifyReader } from "../src/reader.ts";
 import type { VerifyReport } from "../src/verify.ts";
@@ -224,8 +224,14 @@ describe("attest8004 CLI: exit codes and output", () => {
       },
     });
     await expect(h.run(["verify", HASH])).resolves.toBe(2);
-    expect(h.err.join("\n")).toContain("--rpc-url");
     expect(h.err.join("\n")).toMatch(/archive RPC/);
+    expect(h.err.join("\n")).toContain("MONAD_TESTNET_RPC_URL=<url> pnpm attest8004 verify <requestHash>");
+  });
+
+  it("the usage steers a URL with an API key away from --rpc-url, which pnpm echoes", () => {
+    expect(USAGE).toContain("MONAD_TESTNET_RPC_URL=<url> pnpm attest8004 verify <requestHash>");
+    expect(USAGE).toContain("pnpm -s");
+    expect(USAGE).toMatch(/pnpm echoes its arguments/);
   });
 });
 
@@ -283,18 +289,52 @@ describe("attest8004 CLI: the RPC", () => {
       argv: ["verify", HASH],
       deps: {
         verify: async () => {
-          throw new Error(`fetch failed for ${SECRET_URL} (${SECRET_HOST})`);
+          throw new Error(`fetch failed for ${SECRET_URL}`);
         },
       },
     },
   ];
 
-  it.each(outcomes)("never prints the RPC URL or its host: $name", async ({ argv, deps }) => {
+  it.each(outcomes)("its own output never prints the RPC URL it was given: $name", async ({ argv, deps }) => {
     const h = harness(deps);
     await h.run(argv, { MONAD_TESTNET_RPC_URL: SECRET_URL });
     expect(h.all().length).toBeGreaterThan(0);
     expect(h.all()).not.toContain(SECRET_URL);
     expect(h.all()).not.toContain(SECRET_HOST);
     expect(h.all()).not.toContain("not-a-real-key");
+  });
+
+  it("an error quoting host:port of a URL with a port has it removed", async () => {
+    const h = harness({
+      verify: async () => {
+        throw new Error("connect ECONNREFUSED rpc.secret-provider.example:8545");
+      },
+    });
+    await expect(h.run(["verify", HASH], { MONAD_TESTNET_RPC_URL: "http://rpc.secret-provider.example:8545/not-a-real-key-42" })).resolves.toBe(2);
+    expect(h.err.join("\n")).not.toContain("rpc.secret-provider.example:8545");
+  });
+
+  // A hostname of a few hex letters must never rewrite a hash: the report carries no URL, and only
+  // the full URL (or host:port) is removed from error text.
+  // (A digits-only hostname such as http://34 parses as an IPv4 address, 0.0.0.34, so these use letters.)
+  it.each(["http://cdcd", "http://cdcd:8545", "http://abab"])("never rewrites report fields or hashes in errors (%s)", async (rpcUrl) => {
+    const json = harness();
+    await expect(json.run(["verify", HASH, "--json"], { MONAD_TESTNET_RPC_URL: rpcUrl })).resolves.toBe(0);
+    expect(JSON.parse(json.out[0] as string)).toEqual(
+      JSON.parse(JSON.stringify(matchReport, (_key, value: unknown) => (typeof value === "bigint" ? value.toString() : value))),
+    );
+
+    const human = harness();
+    await human.run(["verify", HASH], { MONAD_TESTNET_RPC_URL: rpcUrl });
+    expect(human.out.join("\n")).toContain(RESPONSE_HASH);
+    expect(human.out.join("\n")).toContain(HASH);
+
+    const failing = harness({
+      verify: async () => {
+        throw new SpendLogNotFoundError(RESPONSE_HASH, 1_789_990_000n);
+      },
+    });
+    await failing.run(["verify", HASH], { MONAD_TESTNET_RPC_URL: rpcUrl });
+    expect(failing.err.join("\n")).toContain(`could not verify ${HASH}: no ValidationResponse log found for approval ${RESPONSE_HASH}`);
   });
 });

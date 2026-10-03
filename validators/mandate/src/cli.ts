@@ -1,8 +1,9 @@
 // `attest8004 verify <requestHash> [--rpc-url URL] [--json]` (SPEC §4.5): re-runs a `mandate-v1`
 // verdict at the block its evidence pins, from chain data alone, and compares the score and
 // responseHash with the ones posted onchain. From the repo root: `pnpm attest8004 verify <requestHash>`.
-// Read-only: it never sends a transaction. The RPC URL is never printed, not even its host, because
-// it can carry an API key; errors show viem's short message only.
+// Read-only: it never sends a transaction. Its own output never prints the RPC URL it was given,
+// which can carry an API key: errors show viem's short message only. pnpm, though, echoes the command
+// line it runs, so a keyed URL belongs in MONAD_TESTNET_RPC_URL (or `pnpm -s` with --rpc-url).
 import { realpathSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { BaseError, createPublicClient, formatEther, http } from "viem";
@@ -20,7 +21,10 @@ export const USAGE = [
   "",
   "  <requestHash>   the request's hash: 0x and 64 hex digits",
   "  --rpc-url URL   a Monad testnet RPC (default: $MONAD_TESTNET_RPC_URL, else the public RPC).",
-  "                  The public RPC serves about 51 days of history; older verdicts need an archive RPC.",
+  "                  pnpm echoes its arguments, so give a URL with an API key as",
+  "                  MONAD_TESTNET_RPC_URL=<url> pnpm attest8004 verify <requestHash>, or in .env,",
+  "                  or run pnpm -s. The public RPC serves about 51 days of history; older",
+  "                  verdicts need an archive RPC.",
   "  --json          print the report as one JSON object",
   "",
   "exit codes: 0 match; 1 mismatch (public proof that the validator misbehaved);",
@@ -41,7 +45,8 @@ export interface CliDeps {
 const EXIT_CODES: Record<VerifyVerdict, number> = { match: 0, mismatch: 1, unverifiable: 2 };
 const REQUEST_HASH = /^0x[0-9a-fA-F]{64}$/;
 const HISTORY_HINT =
-  "If the pinned block is older than the RPC's history (the public RPC serves about 51 days), pass an archive RPC with --rpc-url.";
+  "If the pinned block is older than the RPC's history (the public RPC serves about 51 days), use an archive RPC: " +
+  "MONAD_TESTNET_RPC_URL=<url> pnpm attest8004 verify <requestHash> (pnpm would echo a URL passed with --rpc-url).";
 
 /** Runs the CLI on `argv` (the arguments after the script) and returns its exit code. Never throws. */
 export async function main(argv: readonly string[], env: Record<string, string | undefined>, deps: CliDeps): Promise<number> {
@@ -65,10 +70,11 @@ export async function main(argv: readonly string[], env: Record<string, string |
     const { reader, addresses } = await deps.connect(rpc.url);
     report = await (deps.verify ?? verifyRequest)({ reader, requestHash: command.requestHash, addresses });
   } catch (error) {
-    deps.stderr(printable(redact(`could not verify ${command.requestHash}: ${errorText(error)}`, rpc.url)));
+    deps.stderr(printable(`could not verify ${command.requestHash}: ${redact(errorText(error), rpc.url)}`));
     return 2;
   }
-  deps.stdout(printable(redact(command.json ? jsonText(report) : humanText(report), rpc.url)));
+  // The report is built from chain data and our own text, never from the URL, so it is printed as is.
+  deps.stdout(printable(command.json ? jsonText(report) : humanText(report)));
   return EXIT_CODES[report.verdict];
 }
 
@@ -149,16 +155,15 @@ function hasRpcCode(error: unknown, code: number): boolean {
   return false;
 }
 
-/** Belt and braces: whatever a message quotes, the RPC URL and its host never reach the output. */
+/**
+ * Belt and braces for error text only: removes the RPC URL (as given, and as `URL` normalizes it) and,
+ * when it names a port, its `host:port`. Never a bare hostname, which could be a few hex letters
+ * inside a hash the message quotes; never the report, which carries no URL.
+ */
 function redact(text: string, rpcUrl: string): string {
-  let out = text.split(rpcUrl).join("<rpc>");
   const url = URL.parse(rpcUrl);
-  if (url !== null) {
-    out = out.split(url.href).join("<rpc>");
-    if (url.host !== "") out = out.split(url.host).join("<rpc host>");
-    if (url.hostname !== "") out = out.split(url.hostname).join("<rpc host>");
-  }
-  return out;
+  const secrets = [rpcUrl, url?.href, url !== null && url.port !== "" ? url.host : undefined];
+  return secrets.reduce<string>((out, secret) => (secret ? out.split(secret).join("<rpc>") : out), text);
 }
 
 /**
@@ -180,9 +185,13 @@ function jsonText(report: VerifyReport): string {
 const PROBLEM_TEXT: Record<VerifyProblem, string> = {
   NOT_MANDATE_V1: "the response isn't tagged mandate-v1, so there is no mandate-v1 run to repeat",
   RESPONSE_NOT_FOUND: "no response yet, or its ValidationResponse log wasn't found (retry later)",
+  EVIDENCE_NOT_DECODED:
+    "the response URI isn't inline JSON verify decodes (not a data: URI, over 128 KiB, or malformed); verify never fetches",
   EVIDENCE_HASH_MISMATCH: "the evidence at responseURI doesn't hash to the onchain responseHash",
   REQUEST_NOT_FOUND:
-    "the registry has no such request, or its ValidationRequest log wasn't found in the evidence's request block, or doesn't match it",
+    "the registry has no such request, or its ValidationRequest log wasn't returned for the block state confirms (retry later)",
+  REQUEST_BLOCK_WRONG: "the evidence names a request block the request wasn't made in (the registry's state shows otherwise)",
+  REQUEST_INVALID: "the request's JSON doesn't hash to the requestHash or names another validator or agent; it must not be answered",
   PIN_OUT_OF_RANGE: "the evidence's pinned block isn't between the request's block and the response's block",
   SCORE_MISMATCH: "the onchain score isn't the recomputed score",
   RESPONSE_HASH_MISMATCH: "the onchain responseHash isn't the hash of the recomputed evidence",

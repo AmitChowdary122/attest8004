@@ -65,10 +65,12 @@ pnpm test               # TypeScript tests
 ```
 
 Re-run any `mandate-v1` verdict from chain data alone. It is read-only, and uses the public testnet RPC unless
-`MONAD_TESTNET_RPC_URL` or `--rpc-url` names another ([ARCHITECTURE §5.5](./ARCHITECTURE.md)):
+`MONAD_TESTNET_RPC_URL` names another. pnpm echoes its arguments, so pass a URL with an API key through that variable
+(or `.env`), not `--rpc-url` ([ARCHITECTURE §5.5](./ARCHITECTURE.md)):
 
 ```bash
 pnpm attest8004 verify <requestHash>   # exit 0 match, 1 mismatch, 2 could not verify; --json prints the report
+MONAD_TESTNET_RPC_URL=<archive-rpc-url> pnpm attest8004 verify <requestHash>   # pins older than ~51 days
 ```
 
 Run the fork tests against the live testnet Identity Registry, and a full validation round trip on testnet (it needs
