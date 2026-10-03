@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.37;
 
-import {Test, Vm} from "forge-std/Test.sol";
+import {Test} from "forge-std/Test.sol";
+import {VmSafe} from "forge-std/Vm.sol";
 import {IERC721} from "@openzeppelin/contracts/token/ERC721/IERC721.sol";
 import {IERC721Errors} from "@openzeppelin/contracts/interfaces/draft-IERC6093.sol";
 import {AgentRequestForwarder} from "../src/AgentRequestForwarder.sol";
@@ -255,14 +256,14 @@ contract AgentRequestForwarderTest is Test {
         vm.startStateDiffRecording();
         vm.prank(key1);
         forwarder.request(validator, agent1, URI, HASH);
-        Vm.AccountAccess[] memory accesses = vm.stopAndReturnStateDiff();
+        VmSafe.AccountAccess[] memory accesses = vm.stopAndReturnStateDiff();
 
         uint256 calls;
         uint256 staticCalls;
         for (uint256 i; i < accesses.length; ++i) {
-            Vm.AccountAccess memory a = accesses[i];
-            if (a.accessor != address(forwarder) || a.kind == Vm.AccountAccessKind.Resume) continue;
-            if (a.kind == Vm.AccountAccessKind.Call) {
+            VmSafe.AccountAccess memory a = accesses[i];
+            if (a.accessor != address(forwarder) || a.kind == VmSafe.AccountAccessKind.Resume) continue;
+            if (a.kind == VmSafe.AccountAccessKind.Call) {
                 ++calls;
                 assertEq(a.account, address(registry), "call target");
                 assertEq(a.value, 0, "call value");
@@ -271,9 +272,12 @@ contract AgentRequestForwarderTest is Test {
                     abi.encodeCall(IValidationRegistry.validationRequest, (validator, agent1, URI, HASH)),
                     "call data"
                 );
+            } else if (a.kind == VmSafe.AccountAccessKind.Extcodesize) {
+                // Solidity checks that a call target has code before calling it; that's a read, not a call.
+                assertTrue(a.account == address(registry) || a.account == address(identity), "extcodesize target");
             } else {
                 ++staticCalls;
-                assertEq(uint256(a.kind), uint256(Vm.AccountAccessKind.StaticCall), "only static reads");
+                assertEq(uint256(a.kind), uint256(VmSafe.AccountAccessKind.StaticCall), "only static reads");
                 assertEq(a.account, address(identity), "static read target");
                 assertEq(bytes4(a.data), IIdentityRegistry.ownerOf.selector, "static read selector");
             }

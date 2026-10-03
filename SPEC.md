@@ -52,7 +52,7 @@ The diagrams, step-by-step flows, data formats, trust model and key-custody tabl
 ```
 attest8004/
   ARCHITECTURE.md       how it works: diagrams, flows, data formats, trust model
-  contracts/            Foundry: ValidationRegistry, MandateRegistry, AttestGate, DemoAgentVault, script/, test/
+  contracts/            Foundry: ValidationRegistry, AgentRequestForwarder, MandateRegistry, AttestGate, DemoAgentVault, script/, test/
   packages/sdk/         @attest8004/sdk — client + validator base + shared types + hash test vectors
   validators/mandate/   deterministic validator service
   validators/qwen/      agentic Qwen validator service
@@ -120,6 +120,12 @@ attest8004/
   - Load the request and check that its action hashes to `requestHash`.
   - Run `check()`, then post `validationResponse` with an evidence JSON hash.
   - Handle retries and idempotency, and use **explicit gas limits** (Monad charges on the gas limit, not gas used).
+- **`AgentRequestForwarder.sol`** (in `contracts/src/`; added in P3). It lets an agent's hot key request validations without any power over the agent itself. EIP-8004 accepts `validationRequest` only from the owner or an ERC-721 operator, and an operator can also transfer the agent.
+  - The agent's owner calls `setApprovalForAll(forwarder, true)` once on the Identity Registry, then `setAgentKey(agentId, key)` on the forwarder. Only the current `ownerOf(agentId)` may set or revoke (`key = address(0)`) the key, and the record stores that owner.
+  - `request(validator, agentId, requestURI, requestHash)` works only when called by that agent's key, and only while the recorded owner is still `ownerOf(agentId)`. It makes exactly one call: `validationRequest` on the fixed ValidationRegistry.
+  - Immutable, no admin, holds no funds. Deployed through the CREATE2 factory with the estimate guard.
+  - **Tests:** wrong key, a key set by a previous owner and used after the agent is transferred, a revoked key, and that the forwarder can do nothing except `validationRequest`.
+  - **Done when:** deployed on testnet, and a demo agent's hot key requests through it in the end-to-end script.
 - Request JSON schema v1: `{ "schema":"attest8004.request.v1", "chainId", "gate", "validator", "agentId", "action":{…} }`, one per validator (ARCHITECTURE §6).
 - Register two demo agents in the canonical Identity Registry using the **agent0 SDK** (sdk.ag0.xyz). Check that it supports testnet 10143; if not, call `register()` directly.
 
