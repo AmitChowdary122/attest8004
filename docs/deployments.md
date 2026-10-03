@@ -7,7 +7,9 @@ Every Attest8004 deployment is recorded here: chain, contract, address, the comm
 | Monad testnet (10143) | `ValidationRegistry` | [`0xc4A4D0cEB3971cbE7a2536494aC106f2Cd9F9a8f`](https://monad-testnet.socialscan.io/address/0xc4a4d0ceb3971cbe7a2536494ac106f2cd9f9a8f) | `8dc8859` | 2026-10-02 | [`0x724f31e0…cf64d03`](https://monad-testnet.socialscan.io/tx/0x724f31e0efd09993f2d73581cb742e71d4bef52c0f4f2a30cccd43d79cf64d03) (block 67,604,893) |
 | Monad testnet (10143) | `AgentRequestForwarder` | [`0x1451F3C36545b191d3642f759D59f21DcFD657B2`](https://monad-testnet.socialscan.io/address/0x1451f3c36545b191d3642f759d59f21dcfd657b2) | `5f2f4a4` | 2026-10-03 | [`0x82883206…72a3cd7`](https://monad-testnet.socialscan.io/tx/0x828832065b96235728c1782e9be9b4b712e3f408f8755e20f554a210472a3cd7) (block 67,779,694) |
 | Monad testnet (10143) | `MandateRegistry` | [`0x2523197373ef813E19b5b14Ef2984130868cD17c`](https://monad-testnet.socialscan.io/address/0x2523197373ef813e19b5b14ef2984130868cd17c) | `6e08223` | 2026-10-03 | [`0x1222b700…3ca0b84`](https://monad-testnet.socialscan.io/tx/0x1222b700027bc1e03676ed0f986a31ee2d5ac06ea5c5b1847672ca05b3ca0b84) (block 67,842,487) |
-| Monad testnet (10143) | `DemoAgentVault` (AttestGate), agent 1984 | [`0x23BfBD12545CCd1501ddA1B65a54518FD6212a96`](https://monad-testnet.socialscan.io/address/0x23bfbd12545ccd1501dda1b65a54518fd6212a96) | `319006a` | 2026-10-03 | [`0x2fed0cee…a14bf80`](https://monad-testnet.socialscan.io/tx/0x2fed0ceeec43384305a6cf095dc22be83a28c0d5b54e0b9055c467227a14bf80) (block 67,784,294) |
+| Monad testnet (10143) | `DemoAgentVault` (AttestGate), agent 1984, mandate-v1 + risk-v1 | [`0x12fAb3E3cA810Cc44bD9f537613a230a2be8D614`](https://monad-testnet.socialscan.io/address/0x12fab3e3ca810cc44bd9f537613a230a2be8d614) | `7380fdc` | 2026-10-04 | [`0x65125575…61b990e`](https://monad-testnet.socialscan.io/tx/0x651255753f1d100da6b8e99bdfdbe3da60748c2297d9cffeb6554ca6161b990e) (block 67,943,657) |
+| Monad testnet (10143) | `DemoPassThrough` (AttestGate demo target, forwards to `SINK`) | [`0xEEEBBa55620afC42E9c88b5d962476367b8da338`](https://monad-testnet.socialscan.io/address/0xeeebba55620afc42e9c88b5d962476367b8da338) | `7380fdc` | 2026-10-04 | [`0x0be882c3…65128bc`](https://monad-testnet.socialscan.io/tx/0x0be882c31c27d98e93934e71a573bf65f4be450759420de02a2101d8a65128bc) (block 67,943,539) |
+| Monad testnet (10143) | `DemoAgentVault` (AttestGate), agent 1984, validator A only — **superseded** | [`0x23BfBD12545CCd1501ddA1B65a54518FD6212a96`](https://monad-testnet.socialscan.io/address/0x23bfbd12545ccd1501dda1b65a54518fd6212a96) | `319006a` | 2026-10-03 | [`0x2fed0cee…a14bf80`](https://monad-testnet.socialscan.io/tx/0x2fed0ceeec43384305a6cf095dc22be83a28c0d5b54e0b9055c467227a14bf80) (block 67,784,294) |
 | Monad testnet (10143) | `DemoAgentVault` (AttestGate), agent 1982 — **superseded** | [`0x7A5EC388CCbfD3B255CFa94fc2062c0807F2C4CD`](https://monad-testnet.socialscan.io/address/0x7a5ec388ccbfd3b255cfa94fc2062c0807f2c4cd) | `f826eec` | 2026-10-03 | [`0xd960c130…72b6a64`](https://monad-testnet.socialscan.io/tx/0xd960c1304d88b0352d2bdf054eac174c704fd356ae465eeb8df570a6572b6a64) (block 67,757,166) |
 
 ### ValidationRegistry (testnet) details
@@ -62,15 +64,53 @@ Every Attest8004 deployment is recorded here: chain, contract, address, the comm
   this deployment requires the agent's current owner (`msg.sender == ownerOf(agentId)`). P6 puts a WebAuthn assertion
   in that hook, which is a new deployment, so this one never changes in place.
 
-### DemoAgentVault (testnet, P3, agent 1984) details
+### DemoAgentVault (testnet, two validators, agent 1984) details
+
+- **Constructor arguments:** the ValidationRegistry above (`0xc4A4…F9a8f`), demo agent **1984** (owned by the deployer;
+  its hot key requests through the AgentRequestForwarder), and two requirements: validator A
+  `0xa62DaB21E0C0F57e94B3ed6e675F214199989e92` (`mandate-v1`) with `minScore` 100 and tag `keccak256("mandate-v1")`
+  (`0x77de68d6…6d0b`), and validator B `0x780df855b48AeC7A3907433b0b5984A2fe5dca5E` (`risk-v1`) with `minScore` 80 and
+  tag `keccak256("risk-v1")` (`0x5eda0c9f…3025`). Read them back with `validationRegistry()`, `agentId()` (1984) and
+  `requirements()`.
+- **Requires both validators, each under its own tag**, since this redeploy. The P3 vault below, requiring validator A
+  only, is superseded; a different constructor argument (the second requirement) gives this vault a new address.
+- **Holds 0 MON.** The e2e script (`scripts/src/e2e.ts`) funds it before a run; its logic still assumes a
+  single-requirement vault (Task 14 updates it for the second validator).
+- **How it was deployed:** `contracts/script/DeployDemoAgentVault.s.sol` via `script/deploy-testnet.sh DemoAgentVault`
+  from commit `7380fdc` (the deploy-gas commit; the contract itself is from `47dfdf0`), through the CREATE2 factory
+  with salt `keccak256("attest8004.DemoAgentVault.v1")`. The broadcast record is
+  `contracts/broadcast/DeployDemoAgentVault.s.sol/10143/run-latest.json` (the P2 and P3 records are in git history).
+- **Gas:** explicit limit 1,090,000 (Monad `eth_estimateGas` was 903,163; limit = ×1.2, rounded up to 10k).
+
+### DemoPassThrough (testnet) details
+
+- **Constructor argument:** `SINK` (`0xC8702cA01e934f0568ea43B354C17ec7749d313f`,
+  `address(uint160(uint256(keccak256("attest8004.demo.sink"))))`), an address nobody holds the key for. Read it back
+  with `sink()`.
+- **What it is.** The P5 "risky but mandated" demo target (SPEC §4.6, decision 34): a fresh "payment router" that
+  forwards every payment straight to `SINK`. `mandate-v1`'s simulation sees the value keep moving on to `SINK`, so a
+  plain transfer to this contract can pass mandate-v1 even though the funds are unrecoverable; it is demo-only and is
+  **not yet allowlisted in any mandate** (Task 15 adds it to demo agent 1984's mandate, next to the deployer).
+- **How it was deployed:** `contracts/script/DeployDemoPassThrough.s.sol` via `script/deploy-testnet.sh
+  DemoPassThrough` from commit `7380fdc` (the deploy-gas commit; the contract itself is from `47dfdf0`), through the
+  CREATE2 factory with salt `keccak256("attest8004.DemoPassThrough.v1")`. The broadcast record is
+  `contracts/broadcast/DeployDemoPassThrough.s.sol/10143/run-latest.json`.
+- **Gas:** explicit limit 180,000 (Monad `eth_estimateGas` was 141,975; limit = ×1.2, rounded up to 10k).
+- **Not upgradeable, no owner, holds no funds of its own.** Every payment it receives moves on to `SINK` in the same
+  call.
+
+### DemoAgentVault (testnet, P3, agent 1984) details — superseded
+
+**Superseded on 2026-10-04 by the two-validator vault above.** It stays deployed and can't be changed. It still holds
+0.006 MON, which can leave only through an A-only validated execute.
 
 - **Constructor arguments:** the ValidationRegistry above (`0xc4A4…F9a8f`), demo agent **1984** (owned by the deployer;
   its hot key requests through the AgentRequestForwarder), and one requirement: validator A
   `0xa62DaB21E0C0F57e94B3ed6e675F214199989e92` (`mandate-v1`) with `minScore` 100.
-- **Requires validator A only, for now.** P5 redeploys the vault requiring both validators.
+- **Required validator A only.** The two-validator vault above requires both `mandate-v1` and `risk-v1`.
 - **How it was deployed:** `script/deploy-testnet.sh DemoAgentVault` from commit `319006a`, through the CREATE2 factory
-  with salt `keccak256("attest8004.DemoAgentVault.v1")`. The broadcast record is
-  `contracts/broadcast/DeployDemoAgentVault.s.sol/10143/run-latest.json` (the P2 record is in git history).
+  with salt `keccak256("attest8004.DemoAgentVault.v1")`. The broadcast record is in git history (superseded by the
+  current `contracts/broadcast/DeployDemoAgentVault.s.sol/10143/run-latest.json`; the P2 record is in git history too).
 - **Gas:** explicit limit 1,000,000 (Monad `eth_estimateGas` was 829,476).
 
 ### DemoAgentVault (testnet, P2, agent 1982) details — superseded

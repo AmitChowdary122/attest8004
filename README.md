@@ -2,7 +2,7 @@
 
 > **The missing ERC-8004 Validation layer for Monad.**
 > Built for Monad Metropolis, Track 04 (Trust, Identity & AI Infrastructure).
-> **Status: work in progress.** On Monad testnet, the ValidationRegistry, the AgentRequestForwarder, the MandateRegistry and a demo AttestGate consumer (`DemoAgentVault`) are live. The deterministic validator **`mandate-v1`** runs end to end against them: it approved an action inside demo agent 1984's mandate, which executed, and scored 0 an action outside it, which the gate refuses (checked by simulation). Anyone can re-run those verdicts with `pnpm attest8004 verify <requestHash>` (see [Deployments](#deployments)). Mandates are set by the agent owner's wallet for now; passkey approval, the agentic validator `risk-v1`, the findings inbox and the indexer are being built. Progress is in [STATUS.md](./STATUS.md).
+> **Status: work in progress.** On Monad testnet, the ValidationRegistry, the AgentRequestForwarder, the MandateRegistry, a two-validator demo AttestGate consumer (`DemoAgentVault`, requiring both `mandate-v1` and `risk-v1`) and a demo "risky but mandated" target (`DemoPassThrough`) are live. The deterministic validator **`mandate-v1`** runs end to end against the vault: it approved an action inside demo agent 1984's mandate, which executed, and scored 0 an action outside it, which the gate refuses (checked by simulation). Anyone can re-run those verdicts with `pnpm attest8004 verify <requestHash>` (see [Deployments](#deployments)). Mandates are set by the agent owner's wallet for now; passkey approval, the agentic validator `risk-v1` (not yet running), the findings inbox and the indexer are being built. Progress is in [STATUS.md](./STATUS.md).
 
 ## What
 
@@ -131,7 +131,9 @@ budget; a restart resets both.
 | Monad testnet (10143) | `ValidationRegistry` (spec-conformant, **not canonical**) | [`0xc4A4D0cEB3971cbE7a2536494aC106f2Cd9F9a8f`](https://monad-testnet.socialscan.io/address/0xc4a4d0ceb3971cbe7a2536494ac106f2cd9f9a8f) |
 | Monad testnet (10143) | `AgentRequestForwarder` (agent hot keys request through it) | [`0x1451F3C36545b191d3642f759D59f21DcFD657B2`](https://monad-testnet.socialscan.io/address/0x1451f3c36545b191d3642f759d59f21dcfd657b2) |
 | Monad testnet (10143) | `MandateRegistry` (per-agent spending mandates; owner-set until P6) | [`0x2523197373ef813E19b5b14Ef2984130868cD17c`](https://monad-testnet.socialscan.io/address/0x2523197373ef813e19b5b14ef2984130868cd17c) |
-| Monad testnet (10143) | `DemoAgentVault` (AttestGate demo, demo agent 1984, requires validator A) | [`0x23BfBD12545CCd1501ddA1B65a54518FD6212a96`](https://monad-testnet.socialscan.io/address/0x23bfbd12545ccd1501dda1b65a54518fd6212a96) |
+| Monad testnet (10143) | `DemoAgentVault` (AttestGate demo, demo agent 1984, requires `mandate-v1` and `risk-v1`) | [`0x12fAb3E3cA810Cc44bD9f537613a230a2be8D614`](https://monad-testnet.socialscan.io/address/0x12fab3e3ca810cc44bd9f537613a230a2be8d614) |
+| Monad testnet (10143) | `DemoPassThrough` (AttestGate demo target, forwards every payment to `SINK`) | [`0xEEEBBa55620afC42E9c88b5d962476367b8da338`](https://monad-testnet.socialscan.io/address/0xeeebba55620afc42e9c88b5d962476367b8da338) |
+| Monad testnet (10143) | `DemoAgentVault`, agent 1984, validator A only (**superseded**) | [`0x23BfBD12545CCd1501ddA1B65a54518FD6212a96`](https://monad-testnet.socialscan.io/address/0x23bfbd12545ccd1501dda1b65a54518fd6212a96) |
 | Monad testnet (10143) | `DemoAgentVault`, P2, agent 1982 (**superseded**) | [`0x7A5EC388CCbfD3B255CFa94fc2062c0807F2C4CD`](https://monad-testnet.socialscan.io/address/0x7a5ec388ccbfd3b255cfa94fc2062c0807f2c4cd) |
 | Vercel | Web app, production (the WebAuthn rpId for P6; never a preview URL) | [`attest8004.vercel.app`](https://attest8004.vercel.app) |
 
