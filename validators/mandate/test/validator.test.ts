@@ -7,6 +7,7 @@ import {
   decodeJsonDataUri,
   DEPLOYMENTS,
   encodeJsonDataUri,
+  MAX_REQUEST_URI_BYTES,
   MemoryCursorStore,
   requestHashOfJson,
   type RequestEvent,
@@ -350,6 +351,30 @@ describe("MandateValidator: verdicts", () => {
     ]);
     expect(posted(near.requestHash).response.tag).toBe("mandate-v1");
     expect(posted(near.requestHash).doc.validator).toBe("mandate-v1");
+  });
+
+  it("keeps the request size limit at the SDK's 16,384 bytes, whatever the options say (verify decodes no larger request)", async () => {
+    const big = addRequest(
+      buildRequestJson({
+        chainId: CHAIN_ID,
+        gate: GATE,
+        validator: VALIDATOR,
+        action: buildAction({
+          agentId: AGENT,
+          target: OWNER,
+          data: `0x${"ab".repeat(9_000)}`,
+          deadline: tsOf(1_004n) + 600n,
+          salt: keccak256(toHex("a large request")),
+        }),
+      }),
+    );
+    expect(big.requestURI.length).toBeGreaterThan(MAX_REQUEST_URI_BYTES);
+    expect(big.requestURI.length).toBeLessThan(65_536);
+
+    const { outcomes } = await validator({ maxRequestBytes: 65_536 }).pollOnce();
+
+    expect(outcomes).toEqual([expect.objectContaining({ kind: "skipped", requestHash: big.requestHash, reason: "URI_TOO_LARGE" })]);
+    expect(chain.respondCalls).toBe(0);
   });
 
   it("caches the checked request's parts under its lower-case hash, whatever the score", async () => {

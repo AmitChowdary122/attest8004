@@ -4,6 +4,12 @@ import type { Address } from "viem";
 export interface Deployment {
   identityRegistry: Address;
   validationRegistry: Address;
+  /**
+   * The block the ValidationRegistry was deployed in. Before it the address has no code, so a call
+   * there returns no data instead of reverting; `verify` uses it to reject a request block from
+   * before the registry existed without reading the chain there.
+   */
+  validationRegistryDeployBlock: bigint;
   agentRequestForwarder: Address;
   mandateRegistry: Address;
   demoAgents: readonly bigint[];
@@ -20,6 +26,8 @@ export const DEPLOYMENTS = {
   10143: {
     identityRegistry: "0x8004A818BFB912233c491871b3d84c89A494BD9e",
     validationRegistry: "0xc4A4D0cEB3971cbE7a2536494aC106f2Cd9F9a8f",
+    /** Deploy tx 0x724f31e0…cf64d03 (docs/deployments.md). */
+    validationRegistryDeployBlock: 67_604_893n,
     /** Forwards validationRequest for an agent's registered hot key (SPEC §4.4). */
     agentRequestForwarder: "0x1451F3C36545b191d3642f759D59f21DcFD657B2",
     /** Per-agent spending mandate (SPEC §4.2): owner-set until P6 adds the WebAuthn hook. */

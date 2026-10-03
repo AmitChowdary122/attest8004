@@ -1,3 +1,4 @@
+import { DEPLOYMENTS } from "@attest8004/sdk";
 import { HttpRequestError, InvalidParamsRpcError, keccak256, RpcRequestError, getAddress, toHex, type Hex } from "viem";
 import { describe, expect, it } from "vitest";
 import { DEFAULT_RPC_URL, main, USAGE, type CliDeps } from "../src/cli.ts";
@@ -86,12 +87,13 @@ function harness(over: Partial<CliDeps> & { report?: VerifyReport } = {}) {
     main(argv, env, {
       connect: async (rpcUrl) => {
         urls.push(rpcUrl);
-        return { reader: unusedReader, addresses: ADDRESSES };
+        return { reader: unusedReader, addresses: ADDRESSES, validationRegistryDeployBlock: DEPLOYMENTS[10143].validationRegistryDeployBlock };
       },
       verify: async (o) => {
         verifyCalls.push({ requestHash: o.requestHash });
         expect(o.reader).toBe(unusedReader);
         expect(o.addresses).toEqual(ADDRESSES);
+        expect(o.validationRegistryDeployBlock).toBe(67_604_893n);
         return report;
       },
       stdout: (text) => out.push(text),

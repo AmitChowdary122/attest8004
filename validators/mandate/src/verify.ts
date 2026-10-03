@@ -34,7 +34,8 @@ import type { PermissionEvent, PinnedBlock, SpendEntry } from "./types.ts";
  *   lag). Unverifiable.
  * - `REQUEST_BLOCK_WRONG`: the evidence names a request block in which the request wasn't made. The
  *   registry refuses to reuse a `requestHash`, so a request's block is a fact of state: the first
- *   block at which its status exists. A mismatch.
+ *   block at which its status exists. A block before the registry was deployed is wrong without
+ *   reading anything. A mismatch.
  * - `REQUEST_INVALID`: the request's own log carries a request JSON that doesn't parse, doesn't hash
  *   to `requestHash`, or names another validator or agent than the registry records. A
  *   `mandate-v1` validator must not answer such a request (the SDK's base never does), so a mismatch.
@@ -115,10 +116,11 @@ const UINT64_LIMIT = 2n ** 64n;
  *    block (→ `RESPONSE_HASH_MISMATCH`).
  * 3. `P` must be at or after the evidence's request block and at or before the response's own block
  *    (→ `PIN_OUT_OF_RANGE`).
- * 4. Reads the `ValidationRequest` log in the evidence's request block. If none is returned, state
- *    decides: the request's status must exist at that block and not one block before
- *    (→ `REQUEST_BLOCK_WRONG` if not, else `REQUEST_NOT_FOUND`). The log's request JSON must hash
- *    to `requestHash` and name the validator and agent the registry records (→ `REQUEST_INVALID`).
+ * 4. The evidence's request block must not be before `validationRegistryDeployBlock`
+ *    (→ `REQUEST_BLOCK_WRONG`, with no read). Reads the `ValidationRequest` log in that block. If none
+ *    is returned, state decides: the request's status must exist at that block and not one block
+ *    before (→ `REQUEST_BLOCK_WRONG` if not, else `REQUEST_NOT_FOUND`). The log's request JSON must
+ *    hash to `requestHash` and name the validator and agent the registry records (→ `REQUEST_INVALID`).
  * 5. Runs `runMandateV1` at `P` as that validator, with an empty cache (so every past approval's
  *    amount is rebuilt from its own evidence) and `addresses`, rebuilds the evidence with
  *    `buildEvidence` and hashes its canonical JSON.
@@ -130,8 +132,15 @@ const UINT64_LIMIT = 2n ** 64n;
  * can't find (`SpendLogNotFoundError`, `MandateSetLogNotFoundError`). Like the validator, it never
  * turns a failed read into a verdict, let alone a mismatch; retry later or use another RPC.
  */
-export async function verifyRequest(o: { reader: VerifyReader; requestHash: Hex; addresses: MandateAddresses }): Promise<VerifyReport> {
-  const { reader, addresses } = o;
+export async function verifyRequest(o: {
+  reader: VerifyReader;
+  requestHash: Hex;
+  /** The contracts to re-run with: the SDK's recorded deployment for the chain (`mandateAddressesFor`). */
+  addresses: MandateAddresses;
+  /** The block the ValidationRegistry was deployed in (`deploymentsFor(chainId).validationRegistryDeployBlock`). */
+  validationRegistryDeployBlock: bigint;
+}): Promise<VerifyReport> {
+  const { reader, addresses, validationRegistryDeployBlock } = o;
   const requestHash = o.requestHash.toLowerCase() as Hex;
   const head = await reader.finalized();
 
@@ -158,7 +167,7 @@ export async function verifyRequest(o: { reader: VerifyReader; requestHash: Hex;
   const { doc, pinnedBlock, requestBlock } = posted;
   if (pinnedBlock < requestBlock || pinnedBlock > response.block) return report({ ...base, pinnedBlock }, ["PIN_OUT_OF_RANGE"]);
 
-  const request = await requestAt(reader, requestHash, requestBlock, status);
+  const request = await requestAt(reader, requestHash, requestBlock, validationRegistryDeployBlock, status);
   if ("problem" in request) return report({ ...base, pinnedBlock }, [request.problem]);
   const { json } = request;
 
@@ -271,23 +280,27 @@ function postedEvidence(text: string): { doc: Record<string, unknown>; pinnedBlo
  * The request JSON in the `ValidationRequest` log at `block` (the evidence's request block), or why
  * there isn't one to re-run.
  *
- * When no log is returned, state decides whether the evidence named the wrong block: the registry
- * refuses to reuse a `requestHash` (`RequestExists`), so the request was made in exactly one block,
- * the first at which its status exists. If the status exists at `block` and not at `block − 1`, the
- * block is right and only the log is missing (`REQUEST_NOT_FOUND`: lag, not evidence); otherwise the
- * evidence is wrong (`REQUEST_BLOCK_WRONG`). A failed status read rejects, so a transport error is
- * never a mismatch.
+ * - A block before the registry's deployment is wrong, and nothing is read: the contract had no code
+ *   there, so a status read would return no data rather than revert `UnknownRequest`, and fail.
+ * - When no log is returned, state decides whether the evidence named the wrong block: the registry
+ *   refuses to reuse a `requestHash` (`RequestExists`), so the request was made in exactly one block,
+ *   the first at which its status exists. If the status exists at `block` and not at `block − 1` (or
+ *   `block` is the deployment block itself), the block is right and only the log is missing
+ *   (`REQUEST_NOT_FOUND`: lag, not evidence); otherwise the evidence is wrong (`REQUEST_BLOCK_WRONG`).
+ *   A failed status read rejects, so a transport error is never a mismatch.
  */
 async function requestAt(
   reader: VerifyReader,
   requestHash: Hex,
   block: bigint,
+  deployBlock: bigint,
   status: ValidationStatus,
 ): Promise<{ json: RequestJsonV1 } | { problem: VerifyProblem }> {
+  if (block < deployBlock) return { problem: "REQUEST_BLOCK_WRONG" };
   const uri = await reader.requestUri(requestHash, block);
   if (uri === null) {
     const existsAtBlock = (await statusOrUnknown(reader, requestHash, block)) !== null;
-    const existedBefore = existsAtBlock && block > 0n && (await statusOrUnknown(reader, requestHash, block - 1n)) !== null;
+    const existedBefore = existsAtBlock && block > deployBlock && (await statusOrUnknown(reader, requestHash, block - 1n)) !== null;
     return { problem: existsAtBlock && !existedBefore ? "REQUEST_NOT_FOUND" : "REQUEST_BLOCK_WRONG" };
   }
   const parsed = parseRequestUri(uri);

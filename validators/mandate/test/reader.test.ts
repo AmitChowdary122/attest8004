@@ -216,6 +216,15 @@ describe("viemMandateReader: state reads at P", () => {
     await expect(r.chainId()).resolves.toBe(10_143);
   });
 
+  it("a status read before the registry has code (eth_call returns 0x) throws a decode error, not a revert", async () => {
+    rpc.intercept = (method) => (method === "eth_call" ? "0x" : undefined);
+    const failure = await reader()
+      .status(HASH, P)
+      .then(() => null, (error: unknown) => error);
+    expect(failure).toBeInstanceOf(BaseError);
+    expect((failure as BaseError).name).toBe("AbiDecodingZeroDataError");
+  });
+
   it("a -32602 history error from any state read throws, never a value", async () => {
     rpc.intercept = (method) => {
       if (method === "eth_call") throw rpcError(-32602, "Block requested not found. Request might be querying historical state that is not available");

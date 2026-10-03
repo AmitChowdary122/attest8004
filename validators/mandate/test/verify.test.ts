@@ -15,6 +15,7 @@ import {
   type ValidatorChain,
 } from "@attest8004/sdk";
 import {
+  AbiDecodingZeroDataError,
   encodeErrorResult,
   getAddress,
   HttpRequestError,
@@ -92,6 +93,11 @@ class FakeChain implements ValidatorChain {
   readonly headBlock = { number: 1_004n, timestamp: tsOf(1_004n) };
   /** The finalized head every reader reports. */
   finalized = 1_004n;
+  /**
+   * The block the ValidationRegistry was deployed in. Before it the contract has no code, so a status
+   * read returns no data (`"0x"`), which doesn't decode, rather than reverting `UnknownRequest`.
+   */
+  deployBlock = 900n;
   readonly events: RequestEvent[] = [];
   readonly landed = new Map<Hex, Landed>();
 
@@ -109,6 +115,7 @@ class FakeChain implements ValidatorChain {
   }
   /** `getValidationStatus` at block `at`: it reverts `UnknownRequest` before the request was made. */
   statusAt(requestHash: Hex, at: bigint): ValidationStatus {
+    if (at < this.deployBlock) throw new AbiDecodingZeroDataError(); // what viem's decode of "0x" throws
     const key = requestHash.toLowerCase() as Hex;
     const event = this.events.find((e) => e.requestHash === key && e.blockNumber <= at);
     if (!event) throw unknownRequest(key);
@@ -159,6 +166,8 @@ class FakeReader implements VerifyReader {
   readonly responseLogCalls: Hex[] = [];
   /** Every block a status was read at. */
   readonly statusReads: bigint[] = [];
+  /** Every block a request log was looked up in. */
+  readonly requestUriCalls: bigint[] = [];
   /** A failure for the status read at `at` (thrown instead of reading), or undefined to read. */
   statusFailure: ((at: bigint) => unknown) | undefined;
   /** How an `UnknownRequest` revert reaches the caller. */
@@ -216,6 +225,7 @@ class FakeReader implements VerifyReader {
     return { uri: landed.uri, block: landed.block, logIndex: landed.logIndex };
   }
   async requestUri(requestHash: Hex, block: bigint) {
+    this.requestUriCalls.push(block);
     const key = requestHash.toLowerCase() as Hex;
     if (this.hiddenRequests.has(key)) return null;
     return this.chain.events.find((e) => e.requestHash === key && e.blockNumber === block)?.requestURI ?? null;
@@ -320,7 +330,7 @@ function resign(requestHash: Hex, edit: (doc: Doc) => void): void {
 }
 
 function verify(requestHash: Hex, reader: FakeReader = new FakeReader(chain)): Promise<VerifyReport> {
-  return verifyRequest({ reader, requestHash, addresses: ADDRESSES });
+  return verifyRequest({ reader, requestHash, addresses: ADDRESSES, validationRegistryDeployBlock: chain.deployBlock });
 }
 
 describe("verifyRequest: an honest verdict reproduces", () => {
@@ -526,7 +536,6 @@ describe("verifyRequest: the request's block is a fact of state, so a wrong one 
     { name: "one block after the real one", requestBlock: "1001", pinned: "1004" },
     { name: "one block before the real one", requestBlock: "999", pinned: "1004" },
     { name: "moved back with a pin before the request", requestBlock: "990", pinned: "995" },
-    { name: "block 0", requestBlock: "0", pinned: "1004" },
   ])("evidence naming a request block $name: REQUEST_BLOCK_WRONG", async ({ requestBlock, pinned }) => {
     const e = addRequest(requestJson());
     await runValidator();
@@ -540,6 +549,40 @@ describe("verifyRequest: the request's block is a fact of state, so a wrong one 
 
     expect(report).toMatchObject({ verdict: "mismatch", match: false, problems: ["REQUEST_BLOCK_WRONG"], recomputed: null });
     expect(reader.statusReads.every((at) => at >= 0n)).toBe(true);
+  });
+
+  it("the fake chain, like the real one, answers a status read before the registry's deployment with zero data, not a revert", async () => {
+    const e = addRequest(requestJson());
+    await expect(new FakeReader(chain).status(e.requestHash, chain.deployBlock - 1n)).rejects.toBeInstanceOf(AbiDecodingZeroDataError);
+  });
+
+  it.each([
+    { name: "0", requestBlock: () => "0" },
+    { name: "the block before the registry's deployment", requestBlock: () => (chain.deployBlock - 1n).toString() },
+  ])("evidence naming a request block before the registry existed ($name): REQUEST_BLOCK_WRONG, read from nowhere", async ({ requestBlock }) => {
+    const e = addRequest(requestJson());
+    await runValidator();
+    resign(e.requestHash, (doc) => {
+      doc.request.block = requestBlock(); // an honest pin (1,004) stays in range
+    });
+    const reader = new FakeReader(chain);
+
+    const report = await verify(e.requestHash, reader);
+
+    expect(report).toMatchObject({ verdict: "mismatch", problems: ["REQUEST_BLOCK_WRONG"], pinnedBlock: 1_004n, recomputed: null });
+    expect(reader.requestUriCalls).toEqual([]);
+    expect(reader.statusReads).toEqual([1_005n]); // only the head: nothing before the deployment is read
+  });
+
+  it("a request made in the registry's deployment block, its log missing: REQUEST_NOT_FOUND, with no read before deployment", async () => {
+    chain.deployBlock = 1_000n;
+    const e = addRequest(requestJson()); // block 1,000
+    await runValidator();
+    const reader = new FakeReader(chain);
+    reader.hiddenRequests.add(e.requestHash);
+
+    await expect(verify(e.requestHash, reader)).resolves.toMatchObject({ verdict: "unverifiable", problems: ["REQUEST_NOT_FOUND"] });
+    expect(reader.statusReads).toEqual([1_005n, 1_000n]);
   });
 
   it.each(UNKNOWN_REQUEST_SHAPES)("reads UnknownRequest as 'not made yet' in any shape ($shape)", async ({ wrap }) => {
@@ -668,7 +711,12 @@ describe("verifyRequest: what can't be found or re-run is never a mismatch", () 
     );
     const { publicClient } = rpc.clients(privateKeyToAccount(generatePrivateKey()), { retryCount: 0 });
 
-    const report = await verifyRequest({ reader: viemMandateReader({ publicClient, addresses: ADDRESSES }), requestHash: unknown, addresses: ADDRESSES });
+    const report = await verifyRequest({
+      reader: viemMandateReader({ publicClient, addresses: ADDRESSES }),
+      requestHash: unknown,
+      addresses: ADDRESSES,
+      validationRegistryDeployBlock: 900n,
+    });
 
     expect(report).toMatchObject({ verdict: "unverifiable", problems: ["REQUEST_NOT_FOUND"] });
   });

@@ -1,5 +1,6 @@
 import {
   jsonLineLog,
+  MAX_REQUEST_URI_BYTES,
   ValidatorBase,
   type Admission,
   type CheckResult,
@@ -21,11 +22,16 @@ export const DEFAULT_PIN_TIMEOUT_MS = 30_000;
 /** How often `check()` re-reads the finalized head while it waits. */
 export const DEFAULT_PIN_POLL_MS = 250;
 
-export type MandateValidatorOptions = Omit<ValidatorOptions, "tag" | "maxDeadlineAheadSeconds"> & {
+export type MandateValidatorOptions = Omit<ValidatorOptions, "tag" | "maxDeadlineAheadSeconds" | "maxRequestBytes"> & {
   /** Ignored: a `MandateValidator` always tags its responses `mandate-v1`. */
   tag?: string;
   /** Ignored: always `MANDATE_V1.maxDeadlineAheadSeconds` (3,600 s), which the spend window relies on. */
   maxDeadlineAheadSeconds?: bigint;
+  /**
+   * Ignored: always the SDK's `MAX_REQUEST_URI_BYTES` (16,384), the largest request `verify` decodes,
+   * so this validator never answers a request that `verify` would call invalid.
+   */
+  maxRequestBytes?: number;
   reader: MandateReader;
   addresses: MandateAddresses;
   /** The gates (e.g. a DemoAgentVault) whose requests this validator answers. Compared case-insensitively. */
@@ -62,7 +68,8 @@ export type MandateValidatorOptions = Omit<ValidatorOptions, "tag" | "maxDeadlin
  * - **`onResponded()`** records the response's block for the pin and settles the admission reservation
  *   to the gas limit actually sent. It never throws.
  *
- * The tag is always `mandate-v1` and the deadline horizon always 3,600 s, whatever the options say.
+ * The tag is always `mandate-v1`, the deadline horizon always 3,600 s and the request size limit always
+ * 16,384 bytes (what `verify` decodes), whatever the options say.
  * Logs are JSON lines on stdout by default (the SDK's `jsonLineLog`, bigints as decimal strings).
  */
 export class MandateValidator extends ValidatorBase {
@@ -87,7 +94,13 @@ export class MandateValidator extends ValidatorBase {
   constructor(options: MandateValidatorOptions) {
     const { reader, addresses, gates, admission, pinTimeoutMs, pinPollMs, cache, ...base } = options;
     const log = options.log ?? jsonLineLog;
-    super({ ...base, log, tag: MANDATE_V1.tag, maxDeadlineAheadSeconds: MANDATE_V1.maxDeadlineAheadSeconds });
+    super({
+      ...base,
+      log,
+      tag: MANDATE_V1.tag,
+      maxDeadlineAheadSeconds: MANDATE_V1.maxDeadlineAheadSeconds,
+      maxRequestBytes: MAX_REQUEST_URI_BYTES,
+    });
     if (gates.length === 0) throw new Error("a MandateValidator needs at least one gate to serve");
     this.chain = options.chain;
     this.cursorStore = options.cursor;
