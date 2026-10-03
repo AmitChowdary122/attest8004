@@ -1,6 +1,5 @@
 import { readFileSync } from "node:fs";
 import {
-  AbiEncodingBytesSizeMismatchError,
   IntegerOutOfRangeError,
   InvalidAddressError,
   getAddress,
@@ -112,12 +111,23 @@ describe("computeActionHash / computeRequestHash", () => {
     });
 
     it("a salt that is not 32 bytes", () => {
-      expect(() => computeRequestHash(withAction({ salt: `0x${"11".repeat(31)}` }))).toThrow(
-        AbiEncodingBytesSizeMismatchError,
-      );
-      expect(() => computeRequestHash(withAction({ salt: `0x${"11".repeat(33)}` }))).toThrow(
-        AbiEncodingBytesSizeMismatchError,
-      );
+      expect(() => computeRequestHash(withAction({ salt: `0x${"11".repeat(31)}` }))).toThrow(/action\.salt/);
+      expect(() => computeRequestHash(withAction({ salt: `0x${"11".repeat(33)}` }))).toThrow(/action\.salt/);
+    });
+
+    // viem rounds the size up (63 digits pass as 32 bytes, padded) and reads non-hex as UTF-8 text.
+    it("a salt with 63 hex digits", () => {
+      expect(() => computeRequestHash(withAction({ salt: `0x${"1".repeat(63)}` }))).toThrow(/action\.salt/);
+      expect(() => computeActionHash(withAction({ salt: `0x${"1".repeat(63)}` }))).toThrow(/action\.salt/);
+    });
+
+    it("a non-hex salt", () => {
+      expect(() => computeRequestHash(withAction({ salt: `0x${"zz".repeat(32)}` as Hex }))).toThrow(/action\.salt/);
+    });
+
+    it("a chainId number that isn't a safe integer", () => {
+      expect(() => computeRequestHash({ ...baseArgs, chainId: 2 ** 53 })).toThrow(/chainId/);
+      expect(() => computeRequestHash({ ...baseArgs, chainId: 10143.5 })).toThrow(/chainId/);
     });
 
     it("a deadline above uint64", () => {
