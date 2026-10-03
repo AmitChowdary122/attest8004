@@ -6,7 +6,8 @@ Every Attest8004 deployment is recorded here: chain, contract, address, the comm
 |---|---|---|---|---|---|
 | Monad testnet (10143) | `ValidationRegistry` | [`0xc4A4D0cEB3971cbE7a2536494aC106f2Cd9F9a8f`](https://monad-testnet.socialscan.io/address/0xc4a4d0ceb3971cbe7a2536494ac106f2cd9f9a8f) | `8dc8859` | 2026-10-02 | [`0x724f31e0…cf64d03`](https://monad-testnet.socialscan.io/tx/0x724f31e0efd09993f2d73581cb742e71d4bef52c0f4f2a30cccd43d79cf64d03) (block 67,604,893) |
 | Monad testnet (10143) | `AgentRequestForwarder` | [`0x1451F3C36545b191d3642f759D59f21DcFD657B2`](https://monad-testnet.socialscan.io/address/0x1451f3c36545b191d3642f759d59f21dcfd657b2) | `5f2f4a4` | 2026-10-03 | [`0x82883206…72a3cd7`](https://monad-testnet.socialscan.io/tx/0x828832065b96235728c1782e9be9b4b712e3f408f8755e20f554a210472a3cd7) (block 67,779,694) |
-| Monad testnet (10143) | `DemoAgentVault` (AttestGate) | [`0x7A5EC388CCbfD3B255CFa94fc2062c0807F2C4CD`](https://monad-testnet.socialscan.io/address/0x7a5ec388ccbfd3b255cfa94fc2062c0807f2c4cd) | `f826eec` | 2026-10-03 | [`0xd960c130…72b6a64`](https://monad-testnet.socialscan.io/tx/0xd960c1304d88b0352d2bdf054eac174c704fd356ae465eeb8df570a6572b6a64) (block 67,757,166) |
+| Monad testnet (10143) | `DemoAgentVault` (AttestGate), agent 1984 | [`0x23BfBD12545CCd1501ddA1B65a54518FD6212a96`](https://monad-testnet.socialscan.io/address/0x23bfbd12545ccd1501dda1b65a54518fd6212a96) | `319006a` | 2026-10-03 | [`0x2fed0cee…a14bf80`](https://monad-testnet.socialscan.io/tx/0x2fed0ceeec43384305a6cf095dc22be83a28c0d5b54e0b9055c467227a14bf80) (block 67,784,294) |
+| Monad testnet (10143) | `DemoAgentVault` (AttestGate), agent 1982 — **superseded** | [`0x7A5EC388CCbfD3B255CFa94fc2062c0807F2C4CD`](https://monad-testnet.socialscan.io/address/0x7a5ec388ccbfd3b255cfa94fc2062c0807f2c4cd) | `f826eec` | 2026-10-03 | [`0xd960c130…72b6a64`](https://monad-testnet.socialscan.io/tx/0xd960c1304d88b0352d2bdf054eac174c704fd356ae465eeb8df570a6572b6a64) (block 67,757,166) |
 
 ### ValidationRegistry (testnet) details
 
@@ -39,7 +40,22 @@ Every Attest8004 deployment is recorded here: chain, contract, address, the comm
 - **Gas:** explicit limit 490,000 (Monad `eth_estimateGas` was 407,868; limit = ×1.2, rounded up to 10k).
 - **Not upgradeable, no owner, holds no funds.**
 
-### DemoAgentVault (testnet) details
+### DemoAgentVault (testnet, P3, agent 1984) details
+
+- **Constructor arguments:** the ValidationRegistry above (`0xc4A4…F9a8f`), demo agent **1984** (owned by the deployer;
+  its hot key requests through the AgentRequestForwarder), and one requirement: validator A
+  `0xa62DaB21E0C0F57e94B3ed6e675F214199989e92` (`mandate-v1`) with `minScore` 100.
+- **Requires validator A only, for now.** P5 redeploys the vault requiring both validators.
+- **How it was deployed:** `script/deploy-testnet.sh DemoAgentVault` from commit `319006a`, through the CREATE2 factory
+  with salt `keccak256("attest8004.DemoAgentVault.v1")`. The broadcast record is
+  `contracts/broadcast/DeployDemoAgentVault.s.sol/10143/run-latest.json` (the P2 record is in git history).
+- **Gas:** explicit limit 1,000,000 (Monad `eth_estimateGas` was 829,476).
+
+### DemoAgentVault (testnet, P2, agent 1982) details — superseded
+
+**Superseded on 2026-10-03 by the agent-1984 vault above.** It stays deployed and can't be changed. It still holds
+0.009 MON, which can leave only through a validated execute for agent 1982; `scripts/src/gated-execute.ts` still runs
+against it.
 
 - **Constructor arguments:** the ValidationRegistry above (`0xc4A4…F9a8f`), agent **1982** (the P1 test agent, owned by
   the deployer), and one requirement: validator A `0xa62DaB21E0C0F57e94B3ed6e675F214199989e92` (`mandate-v1`) with
@@ -98,7 +114,7 @@ onchain. The response is a smoke test of the registry, not a validation verdict;
 ## Verified gated executes
 
 `scripts/src/gated-execute.ts` (`pnpm --filter @attest8004/scripts gated-execute`) runs one validated action through
-`DemoAgentVault` for agent 1982. It checks that the SDK's `actionHash` and `requestHash` equal the vault's own
+the P2 `DemoAgentVault` (now superseded) for agent 1982. It checks that the SDK's `actionHash` and `requestHash` equal the vault's own
 (`actionHashOf`, `requestHashOf`). The deployer, as the agent's owner, requests validation from validator A with the
 request JSON v1 as a `data:` URI, validator A responds 100, and the deployer calls `execute`. Before and after, it
 **simulates** (never sends) the cases the gate must refuse. The response is a smoke test of the gate, not a

@@ -13,8 +13,10 @@ export const DEPLOYMENTS = {
     agentRequestForwarder: "0x1451F3C36545b191d3642f759D59f21DcFD657B2",
     /** The two demo agents, owned by the deployer; their hot keys request through the forwarder. */
     demoAgents: [1984n, 1985n] as readonly bigint[],
-    /** Bound to agent 1982; requires validator A (mandate-v1) at 100 until the P5 redeploy. */
-    demoAgentVault: "0x7A5EC388CCbfD3B255CFa94fc2062c0807F2C4CD",
+    /** Bound to demo agent 1984; requires validator A (mandate-v1) at 100 until the P5 redeploy. */
+    demoAgentVault: "0x23BfBD12545CCd1501ddA1B65a54518FD6212a96",
+    /** The P2 vault, bound to test agent 1982. Superseded in P3; gated-execute still uses it. */
+    demoAgentVaultP2: "0x7A5EC388CCbfD3B255CFa94fc2062c0807F2C4CD",
   },
 } as const satisfies Record<number, {
   identityRegistry: Address;
@@ -22,4 +24,5 @@ export const DEPLOYMENTS = {
   agentRequestForwarder: Address;
   demoAgents: readonly bigint[];
   demoAgentVault: Address;
+  demoAgentVaultP2: Address;
 }>;

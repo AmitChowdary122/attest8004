@@ -1,5 +1,7 @@
 /**
- * One validated execute on Monad testnet through the deployed DemoAgentVault (SPEC §4.3, GAMEPLAN P2):
+ * One validated execute on Monad testnet through the P2 DemoAgentVault for test agent 1982 (SPEC §4.3,
+ * GAMEPLAN P2). That vault is superseded by the P3 vault for demo agent 1984 (scripts/src/e2e.ts), but
+ * it stays deployed, and this script is how its remaining MON can leave:
  *
  *   1. Preflight: the chain, the vault's registry, agent and requirements, and agent 1982's owner.
  *   2. Fund the vault with 0.01 MON if it holds less than the action's value.
@@ -115,7 +117,7 @@ const rpcUrl = requireEnv("MONAD_TESTNET_RPC_URL");
 const deployment = DEPLOYMENTS[chain.id];
 const identityRegistry = deployment.identityRegistry;
 const validationRegistry = getAddress(process.env.VALIDATION_REGISTRY || deployment.validationRegistry);
-const vault = getAddress(process.env.DEMO_AGENT_VAULT || deployment.demoAgentVault);
+const vault = getAddress(deployment.demoAgentVaultP2);
 
 const owner = privateKeyToAccount(requireEnv("DEPLOYER_PRIVATE_KEY") as Hex);
 const validator = privateKeyToAccount(requireEnv("VALIDATOR_A_PRIVATE_KEY") as Hex);
