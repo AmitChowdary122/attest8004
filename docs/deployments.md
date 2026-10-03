@@ -102,9 +102,10 @@ forwarder and nothing else; it can't move the agent.
 | **1984** | `attest8004-demo-agent-1` | `0xa43427fF51eEE66cc67C94Cb55f04C9432a96787` | [`0xa86940e7…46be517`](https://monad-testnet.socialscan.io/tx/0xa86940e7360007713ca0091180443bc430afdf1ea25bb3e94796b938946be517) | [`0x9b6e701e…5f2aab1`](https://monad-testnet.socialscan.io/tx/0x9b6e701e9ce49f9959ca74681cf68f207e714dce5df670b6d945bb6fe5f2aab1) | 0.152256 MON, [`0x34577b38…80cc382`](https://monad-testnet.socialscan.io/tx/0x34577b383c9391f87ac191a40bd9f4e5abfdef04ff29be7cd7717012d80cc382) |
 | **1985** | `attest8004-demo-agent-2` | `0xa72774719C6C7c8E83B3eCb98F64e38F26C327D8` | [`0xd6b458cf…04ab597`](https://monad-testnet.socialscan.io/tx/0xd6b458cf9e5fb1fc973222dc9666408b5e1dccd1c54bf4e8d1ff32c1904ab597) | [`0x44a346e9…306b1f4`](https://monad-testnet.socialscan.io/tx/0x44a346e959718cdc5506cb9a1818f6735aaee0e9431cbb791a26bf9ff306b1f4) | 0.152256 MON, [`0x56eed479…e4f8ab2`](https://monad-testnet.socialscan.io/tx/0x56eed479bcdff4f784e90d32bd8a14668498efa51030b99b5f798ee67e4f8ab2) |
 
-- **One approval covers both:** the deployer called `setApprovalForAll(forwarder, true)` once,
-  [`0x49085ec3…6fd396a`](https://monad-testnet.socialscan.io/tx/0x49085ec3a53f793a4dbc4ea72d75b3d121560b08014c6e1c06b9b78006fd396a). It makes the forwarder an operator for all
-  of the deployer's agents (including 1982); the forwarder only exposes `validationRequest` (ARCHITECTURE §7).
+- **Approval history.** The deployer first called `setApprovalForAll(forwarder, true)` once,
+  [`0x49085ec3…6fd396a`](https://monad-testnet.socialscan.io/tx/0x49085ec3a53f793a4dbc4ea72d75b3d121560b08014c6e1c06b9b78006fd396a), making the forwarder an operator for all of the deployer's agents (including 1982). **That blanket
+  approval is now revoked** and replaced with a per-token `approve(forwarder, agentId)` for each demo agent; see
+  "Least privilege switch" below. The forwarder only exposes `validationRequest` either way (ARCHITECTURE §7).
 - **Registered with `register(string)` directly**, not the agent0 SDK: agent0-sdk 1.7.1 (the latest, 16 Mar 2026) has
   no defaults for Monad (its `DEFAULT_REGISTRIES` cover chains 1, 137, 8453, 11155111 and 84532). The registration
   files are `data:` URIs that say these are demo agents (`services: []`, `active: false`).
@@ -113,6 +114,38 @@ forwarder and nothing else; it can't move the agent.
 - **Gas limits (all explicit):** register 494,000 (estimate 411,546); setApprovalForAll 86,000 (71,523); setAgentKey
   130,000 (118,742 and 107,899; the script now uses 143,000); fund 26,000 (21,000). A forwarded request from a hot
   key estimated 251,331 to 262,217; the SDK's limit is 315,000.
+
+## Least privilege switch and agent 1984's mandate (testnet)
+
+On 2026-10-03, `pnpm --filter @attest8004/scripts setup-demo-agents -- --fund --fund-validator` moved both demo
+agents from the deployer's blanket `setApprovalForAll` to a per-token `approve(forwarder, agentId)` each (ARCHITECTURE
+§7), then revoked the blanket approval; `pnpm --filter @attest8004/scripts set-mandate` then set the end-to-end
+spending mandate for agent 1984 on the MandateRegistry. Gas limits are each the Monad `eth_estimateGas` measured
+from the deployer on 3 Oct 2026, × 1.2, rounded up to 1k.
+
+| Step | Tx | Block | Gas limit (estimate) |
+|---|---|---|---|
+| `approve(forwarder, 1984)` | [`0xdd51f04b…c0da491`](https://monad-testnet.socialscan.io/tx/0xdd51f04b4acc12f45fcf2542ddc5c869a6a754cd284e069eb4dd161f3c0da491) | 67,889,819 | 96,000 (79,523) |
+| `approve(forwarder, 1985)` | [`0x0445510c…040b4f2`](https://monad-testnet.socialscan.io/tx/0x0445510c533675fab72e9d0081762830c8fd4415cb758f5720e92c2b9040b4f2) | 67,889,825 | 96,000 (79,523) |
+| `setApprovalForAll(forwarder, false)` | [`0x27c2245b…a7036c8`](https://monad-testnet.socialscan.io/tx/0x27c2245b7a32a3559cb49ef07f4af029f57f3bfd4f5e1a94d246c2837a7036c8) | 67,889,831 | 66,000 (54,444) |
+| fund agent 1984's hot key (0.097854 MON) | [`0x8a6a68c0…f5f0c95`](https://monad-testnet.socialscan.io/tx/0x8a6a68c0cd0aebd184d85eec1b352854d429c3ec6aba8d440d189ec28f5f0c95) | 67,889,842 | 26,000 (21,000) |
+| fund agent 1985's hot key (0.001464 MON) | [`0x77e0ff03…504afdd`](https://monad-testnet.socialscan.io/tx/0x77e0ff0310adc4b088e443c61b1186de97381668fb1da21e35fa433f1504afdd) | 67,889,847 | 26,000 (21,000) |
+| fund validator A (1.55865 MON, to 2 MON) | [`0x4a15f7b0…5033054`](https://monad-testnet.socialscan.io/tx/0x4a15f7b034693dbc9a57e73cadc7437350de88ce9d48d6b3b9cc081015033054) | 67,889,852 | 26,000 (21,000) |
+| `setMandate(1984, mandate)` | [`0x0b961153…ff5f167`](https://monad-testnet.socialscan.io/tx/0x0b9611534dbec9b2c0b348c495f495a5d6c0d85bc60e3728855042aa5ff5f167) | 67,890,013 | 306,000 (254,362) |
+
+- **Checked afterwards (`cast call`/`cast balance`):** `getApproved(1984) == getApproved(1985) == forwarder`;
+  `isApprovedForAll(deployer, forwarder) == false`; validator A's balance is exactly 2 MON. A forwarder.request
+  simulation (eth_call, not sent) from agent 1984's hot key still estimates successfully under the per-token
+  approval (251,903 gas, under the SDK's 315,000 limit).
+- **Agent 1984's mandate** (`getMandate(1984)` on the MandateRegistry `0x2523197373ef813E19b5b14Ef2984130868cD17c`):
+  `allowedTargets = [0x3EFEB3Cf2FB54A7D99abE90AaB786cE5A831a8CF]` (the deployer only), `allowedSelectors =
+  [0x00000000]` (plain MON transfers only), `maxValuePerTx = 0.002 MON`, `maxValuePerDay = 0.005 MON`, `validUntil =
+  1,793,404,800` (2026-10-31T00:00:00Z). `mandateHash`
+  `0xf6da3f3fff691ad9baca0d193f3c1754e462f08f54ef460ebb95acb5e7cfbdfe`, `owner` the deployer, `setAtBlock`
+  **67,890,013** — after the per-token approvals (67,889,819 / 67,889,825) and the blanket-approval revoke
+  (67,889,831) above, so those permission changes predate the mandate.
+- Check it yourself:
+  `cast call 0x2523197373ef813E19b5b14Ef2984130868cD17c "getMandate(uint256)((address[],bytes4[],uint256,uint256,uint64),bytes32,address,uint64)" 1984 --rpc-url https://testnet-rpc.monad.xyz`
 
 ## Verified round trips
 

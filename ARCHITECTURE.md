@@ -186,7 +186,7 @@ sequenceDiagram
   participant MR as MandateRegistry
   participant P as P256 @ 0x0100
   Op->>ID: register agent (owner = operator wallet)
-  Op->>ID: setApprovalForAll(AgentRequestForwarder, true)  [once per owner]
+  Op->>ID: approve(AgentRequestForwarder, agentId)  [per agent; the demo's choice, §7]
   Op->>F: setAgentKey(agentId, agent hot key)  [owner wallet tx]
   Op->>W: create passkey (Google Password Manager / iCloud)
   W->>MR: setPasskey(agentId, qx, qy)  [owner wallet tx]
@@ -201,7 +201,9 @@ sequenceDiagram
   W->>MR: setInboxKey(agentId, x25519Pub, webauthnAuth)
 ```
 
-> **P4 vs. P6.** This diagram is the P6 target. As built in P4, there is no passkey yet: the operator's own wallet calls `setMandate(agentId, mandate)` and `revokeMandate(agentId)` directly on `MandateRegistry`, authorized by `_authorize` requiring `msg.sender == IdentityRegistry.ownerOf(agentId)`. The `setPasskey`, WebAuthn-assertion and `setInboxKey` steps above (and `/inbox`) arrive in P6, which replaces `_authorize`'s owner check with WebAuthn verification.
+> **P4 vs. P6.** This diagram is the P6 target. As built in P4, there is no passkey yet: the owner sets the mandate directly, in this phase — the operator's own wallet calls `setMandate(agentId, mandate)` and `revokeMandate(agentId)` on `MandateRegistry`, authorized by `_authorize` requiring `msg.sender == IdentityRegistry.ownerOf(agentId)`. The `setPasskey`, WebAuthn-assertion and `setInboxKey` steps above (and `/inbox`) arrive in P6, which replaces `_authorize`'s owner check with WebAuthn verification.
+>
+> **Per-token approval in the demo.** The diagram's `approve(forwarder, agentId)` is a per-token ERC-721 approval, scoped to one agent, which is what the demo uses for both demo agents (§7 has the trade-off against the alternative, a blanket `setApprovalForAll`). An owner with many agents can still choose the blanket approval instead; either way the forwarder only ever calls `validationRequest`.
 
 ### 5.2 Validated action (happy path)
 
@@ -386,11 +388,12 @@ Because spend accounting and `verify` read it, `mandate-v1`'s evidence stays pub
 | Validator storage (HTTP) | Availability | Integrity | `responseHash` onchain |
 | Consumer (gate deployer) | Choosing which validators to require and each one's minimum score | — | Fixed at deployment in immutables, readable with `requirements()` |
 
-**The forwarder's approval covers all of the owner's agents (trade-off).** `setApprovalForAll(forwarder, true)` is the only ERC-721 approval that lets a contract act for an agent without a per-token `approve`, but it makes the forwarder an operator for **every** agent that owner holds, now and later, with the power to transfer them. The forwarder never uses that power: its only functions are `setAgentKey` (current owner only) and `request`, which makes one call, `validationRequest`, on a registry fixed at deployment. It has no admin, no upgrade path, no `delegatecall` and no payable function. What remains:
+**The demo uses least privilege: a per-token `approve(forwarder, agentId)` for each demo agent, not a blanket operator approval.** The registry accepts a token-approved address the same way it accepts an operator (`getApproved`), so the forwarder works unchanged. The exposure is then that one agent, and a transfer clears the approval (pinned by `test_Request_WorksWithPerTokenApproval_OnlyForThatAgent`). The cost is one approval per agent, renewed after any transfer. Owners can also call `validationRequest` from the owner wallet directly. The deployer's earlier blanket `setApprovalForAll(forwarder, true)` has been revoked (`setApprovalForAll(forwarder, false)`; `docs/deployments.md` has the transactions); agent 1982 (the P1/P2 test agent) was never individually approved and `scripts/src/gated-execute.ts` calls `validationRequest` as the owner directly, so it's unaffected.
+
+**An owner who'd rather not manage one approval per agent can still choose a blanket `setApprovalForAll(forwarder, true)` instead (trade-off).** It's the only ERC-721 approval that lets a contract act for an agent without a per-token `approve`, but it makes the forwarder an operator for **every** agent that owner holds, now and later, with the power to transfer them. The forwarder never uses that power: its only functions are `setAgentKey` (current owner only) and `request`, which makes one call, `validationRequest`, on a registry fixed at deployment. It has no admin, no upgrade path, no `delegatecall` and no payable function. What remains, for an owner who makes that choice:
 - **A bug in the forwarder** would expose every agent of every owner who approved it. That is why it is about 30 lines and pinned by tests (one call per request, the ABI, ERC-721 calls refused, fuzzed calldata).
 - **A stolen hot key** can create validation requests for its own agent only, spending its own MON. It can't move the agent or touch the owner's other agents, and a validator still judges each request. The owner revokes it with `setAgentKey(agentId, address(0))`, or revokes the forwarder entirely with `setApprovalForAll(forwarder, false)`.
 - **Ownership changes:** a key stops working when the agent leaves the owner who registered it, even if the new owner also approved the forwarder. If the agent comes back to that owner, the key works again until revoked.
-- **Owners who don't want a blanket operator** can approve the forwarder for one agent instead: `approve(forwarder, agentId)`. The registry accepts the token-approved address too (`getApproved`), so the forwarder works unchanged. The exposure is then that one agent, and a transfer clears the approval (pinned by `test_Request_WorksWithPerTokenApproval_OnlyForThatAgent`). The cost is one approval per agent, renewed after any transfer. Owners can also call `validationRequest` from the owner wallet directly. The demo uses the blanket approval, so it also covers the deployer's test agent 1982.
 
 **Two trust modes:**
 - **Verifiable** (`mandate-v1`): anyone can reproduce the verdict.
