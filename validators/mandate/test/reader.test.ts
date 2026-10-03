@@ -35,6 +35,7 @@ import { generatePrivateKey, privateKeyToAccount } from "viem/accounts";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { FakeRpc, RevertError, revert, type RpcLog } from "../../../packages/sdk/test/helpers/fake-rpc.ts";
 import { collectInputs, type PreimageCache } from "../src/collect.ts";
+import { concurrencyLimit } from "../src/concurrency.ts";
 import { MANDATE_V1 } from "../src/params.ts";
 import { viemMandateReader, type MandateAddresses } from "../src/reader.ts";
 import type { MandateInputs } from "../src/types.ts";
@@ -969,5 +970,24 @@ describe("viemMandateReader: one RPC budget across a whole collection", () => {
     expect(inputs.spend).toEqual({ since: pinned.timestamp - MANDATE_V1.spendWindowSeconds, entries: expect.any(Array), total: 120n });
     expect(rpc.calls.filter((c) => c.method === "eth_getLogs").length).toBeGreaterThanOrEqual(62); // 60 windows + 2 evidence lookups
     expect(rpc.peakInFlight).toBe(limit);
+  });
+
+  it("two readers sharing one limit keep at most N requests in flight", async () => {
+    rpc.delayMs = 5;
+    rpc.onCall(ADDRESSES.identityRegistry, identityRegistryAbi, "ownerOf", () => OWNER);
+    const shared = concurrencyLimit(2);
+    const r1 = viemMandateReader({ publicClient: rpc.clients(account, { retryCount: 0 }).publicClient, addresses: ADDRESSES, limit: shared });
+    const r2 = viemMandateReader({ publicClient: rpc.clients(account, { retryCount: 0 }).publicClient, addresses: ADDRESSES, limit: shared });
+
+    await Promise.all([
+      r1.ownerOf(AGENT, P),
+      r1.ownerOf(AGENT, P),
+      r1.ownerOf(AGENT, P),
+      r2.ownerOf(AGENT, P),
+      r2.ownerOf(AGENT, P),
+      r2.ownerOf(AGENT, P),
+    ]);
+
+    expect(rpc.peakInFlight).toBe(2);
   });
 });

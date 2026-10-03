@@ -23,7 +23,7 @@ import {
   type PublicClient,
 } from "viem";
 import { blocksWithTimestamp } from "./blocks.ts";
-import { concurrencyLimit, mapWithConcurrency } from "./concurrency.ts";
+import { concurrencyLimit, mapWithConcurrency, type Limiter } from "./concurrency.ts";
 import { MANDATE_V1 } from "./params.ts";
 import type { MandateRecord, PermissionEvent, PinnedBlock, Simulation } from "./types.ts";
 
@@ -141,7 +141,9 @@ const PERMISSION_EVENTS = [
  * - **One RPC budget.** Every JSON-RPC request this reader sends, from any method and any number of
  *   concurrent callers (the collector reads spend and permission logs side by side), goes through
  *   one first-in, first-out limiter of `concurrency` requests (default 8), so a rate-limited public
- *   RPC never sees more than that many at once.
+ *   RPC never sees more than that many at once. Pass `limit` (e.g. a {@link concurrencyLimit} shared
+ *   with another reader) to use that limiter instead of making one from `concurrency`, so several
+ *   readers can share one RPC budget; `concurrency` is then ignored.
  * - **Raw `eth_call`, so CCIP-Read never runs.** Every state read, `consumed()` and `simulate()` is a
  *   plain `eth_call` request at `P`, never viem's `call`/`readContract`. Those follow an EIP-3668
  *   `OffchainLookup` revert: they fetch the URLs the revert names and call the contract back at
@@ -157,11 +159,13 @@ const PERMISSION_EVENTS = [
 export function viemMandateReader(options: {
   publicClient: PublicClient;
   addresses: MandateAddresses;
-  /** The most JSON-RPC requests in flight at once, across every method (default 8). */
+  /** The most JSON-RPC requests in flight at once, across every method (default 8). Ignored when `limit` is given. */
   concurrency?: number;
+  /** A limiter to use instead of making one from `concurrency`, e.g. to share one RPC budget across several readers. */
+  limit?: Limiter;
 }): VerifyReader {
   const { publicClient, concurrency = 8 } = options;
-  const limited = concurrencyLimit(concurrency);
+  const limited = options.limit ?? concurrencyLimit(concurrency);
   const validationRegistry = getAddress(options.addresses.validationRegistry);
   const identityRegistry = getAddress(options.addresses.identityRegistry);
   const forwarder = getAddress(options.addresses.forwarder);

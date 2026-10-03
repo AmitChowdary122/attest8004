@@ -242,8 +242,12 @@ function report(
   };
 }
 
-/** The status at `at`, or `null` when the registry reverts `UnknownRequest` there (no such request yet). */
-async function statusOrUnknown(reader: VerifyReader, requestHash: Hex, at: bigint): Promise<ValidationStatus | null> {
+/**
+ * The status at `at`, or `null` when the registry reverts `UnknownRequest` there (no such request
+ * yet). Exported so `risk-v1`'s prerequisite check (P5) can read validator A's status at its own
+ * pinned block the same way `verify` does.
+ */
+export async function statusOrUnknown(reader: VerifyReader, requestHash: Hex, at: bigint): Promise<ValidationStatus | null> {
   try {
     return await reader.status(requestHash, at);
   } catch (error) {
@@ -258,8 +262,9 @@ async function statusOrUnknown(reader: VerifyReader, requestHash: Hex, at: bigin
  * error. That covers a raw provider error (`{ code: 3, data }`), viem's HTTP `RpcRequestError` (code
  * 3 at the top) and viem's `UnknownRpcError` wrapping a custom transport's error (code -1, with the
  * revert as its cause). Anything else, a transport failure or another revert, is a failed read.
+ * Exported for the same reason as {@link statusOrUnknown}.
  */
-function isUnknownRequest(error: unknown): boolean {
+export function isUnknownRequest(error: unknown): boolean {
   let current: unknown = error;
   for (let depth = 0; depth < 16 && typeof current === "object" && current !== null; depth++) {
     const e = current as { code?: unknown; data?: unknown; cause?: unknown };
@@ -310,8 +315,11 @@ function postedEvidence(text: string): { doc: Record<string, unknown>; pinnedBlo
  *   `block` is the deployment block itself), the block is right and only the log is missing
  *   (`REQUEST_NOT_FOUND`: lag, not evidence); otherwise the evidence is wrong (`REQUEST_BLOCK_WRONG`).
  *   A failed status read rejects, so a transport error is never a mismatch.
+ *
+ * Exported so `risk-v1`'s `verify` (P5) can re-read validator A's own request the same way, when
+ * checking the prerequisite verdict it required.
  */
-async function requestAt(
+export async function requestAt(
   reader: VerifyReader,
   requestHash: Hex,
   block: bigint,

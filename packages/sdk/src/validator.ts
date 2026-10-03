@@ -144,8 +144,10 @@ export function buildEvidence(args: { tag: string; requestHash: Hex; result: Che
  *   keccak256, with a gas limit resolved through the chain port (a literal, or an evidence-sized
  *   headroom policy), retrying a failed send. A request that keeps failing is retried in later
  *   cycles, with a growing wait, then logged as given up.
- * - Lets a subclass decline a valid request without responding (`accepts()`), optionally with a
- *   reason, and notifies it once a response lands (`onResponded()`).
+ * - Lets a subclass decline a valid request without responding, either before `check()` runs
+ *   (`accepts()`) or from inside it (`check()` returning `{ decline: "<reason>" }` instead of a
+ *   `CheckResult`), optionally with a reason, and notifies it once a response lands
+ *   (`onResponded()`).
  */
 export abstract class ValidatorBase {
   private readonly options: Required<Omit<ValidatorOptions, "startBlock">> & { startBlock: bigint | undefined };
@@ -171,8 +173,13 @@ export abstract class ValidatorBase {
     };
   }
 
-  /** Decides the verdict for a request that passed every check above. */
-  protected abstract check(request: VerifiedRequest): Promise<CheckResult>;
+  /**
+   * Decides the verdict for a request that passed every check above (and `accepts()`). Return a
+   * `{ decline: "<reason>" }` instead of a `CheckResult` to turn the request away with no response
+   * and no retries, the same way `accepts()`'s decline does: logged once at `warn` as the outcome's
+   * `detail` (e.g. the model's output never passed validation after its retry budget).
+   */
+  protected abstract check(request: VerifiedRequest): Promise<CheckResult | { decline: string }>;
 
   /**
    * Whether to answer a request that passed the base checks. Return `false` to turn it away with no
@@ -303,6 +310,7 @@ export abstract class ValidatorBase {
     const accepted = await this.accepts(verified);
     if (accepted !== true) return skip("DECLINED", typeof accepted === "object" ? accepted.decline : undefined);
     const result = await this.check(verified);
+    if ("decline" in result) return skip("DECLINED", result.decline);
     if (!Number.isInteger(result.score) || result.score < 0 || result.score > 100) {
       throw new Error(`check() returned score ${result.score}; it must be an integer from 0 to 100`);
     }

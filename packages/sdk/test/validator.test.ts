@@ -110,13 +110,13 @@ type RespondedInfo = { requestHash: Hex; score: number; txHash: Hash; blockNumbe
 class TestValidator extends ValidatorBase {
   readonly checked: VerifiedRequest[] = [];
   readonly responded: RespondedInfo[] = [];
-  result: () => CheckResult = () => ({ score: 100, reasons: ["OK"] });
+  result: () => CheckResult | { decline: string } = () => ({ score: 100, reasons: ["OK"] });
   accept: (request: VerifiedRequest) => boolean | { decline: string } = () => true;
   onRespondedImpl: (info: RespondedInfo) => void = () => {};
   protected override async accepts(request: VerifiedRequest): Promise<boolean | { decline: string }> {
     return this.accept(request);
   }
-  protected override async check(request: VerifiedRequest): Promise<CheckResult> {
+  protected override async check(request: VerifiedRequest): Promise<CheckResult | { decline: string }> {
     this.checked.push(request);
     return this.result();
   }
@@ -317,6 +317,40 @@ describe("ValidatorBase", () => {
     expect(logs.filter((l) => l.requestHash === e.requestHash)).toEqual([
       expect.objectContaining({ level: "warn", reason: "DECLINED", detail: "RATE_LIMITED: 20/20 requests in the last 3600 s" }),
     ]);
+  });
+
+  it("check() declining sends nothing and logs DECLINED with the detail", async () => {
+    const e = event();
+    chain.events.push(e);
+    const v = validator();
+    v.result = () => ({ decline: "MODEL_OUTPUT_INVALID: x" });
+
+    const { outcomes } = await v.pollOnce();
+
+    expect(outcomes).toEqual([
+      { kind: "skipped", requestHash: e.requestHash, reason: "DECLINED", detail: "MODEL_OUTPUT_INVALID: x" },
+    ]);
+    expect(chain.respondCalls).toBe(0);
+    expect(v.responded).toHaveLength(0);
+    expect(logs.filter((l) => l.requestHash === e.requestHash)).toEqual([
+      expect.objectContaining({ level: "warn", reason: "DECLINED", detail: "MODEL_OUTPUT_INVALID: x" }),
+    ]);
+  });
+
+  it("a declined check is not retried in later cycles", async () => {
+    const e = event();
+    chain.events.push(e);
+    const v = validator();
+    v.result = () => ({ decline: "MODEL_OUTPUT_INVALID: x" });
+
+    const first = await v.pollOnce();
+    const second = await v.pollOnce();
+    const third = await v.pollOnce();
+
+    expect(skipped(first.outcomes)).toEqual(["DECLINED"]);
+    expect(second.outcomes).toEqual([]);
+    expect(third.outcomes).toEqual([]);
+    expect(v.checked).toHaveLength(1);
   });
 
   it("onResponded is called exactly once per landed response, with the chain's returned block and gas", async () => {

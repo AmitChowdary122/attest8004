@@ -343,7 +343,13 @@ async function authenticatedParts(
   return parsed.parts;
 }
 
-async function collectPermissions(
+/**
+ * The permission-change events `collectInputs` reads for a `mandate-v1` verdict (see "Permissions"
+ * there): `reader.permissionLogs` over `(P − MANDATE_V1.permissionWindowBlocks, P]`, each with whether
+ * it came after the current mandate's own `MandateSet` log. Exported so `risk-v1`'s
+ * `recent_permission_events` tool (P5) can reuse it unchanged, over the same reader and window.
+ */
+export async function collectPermissions(
   reader: MandateReader,
   agentId: bigint,
   owner: Address,
