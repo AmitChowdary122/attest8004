@@ -273,8 +273,10 @@ its sender and its explicit gas limit.
 - **Gas.** Each response's limit is its own estimate × 1.2, capped at 400,000. B's evidence is larger than A's (its
   reasons and spend entry), so it costs more. Each receipt's `gasUsed` equals its limit: Monad charges the limit.
 - **Daily cap.** Each run adds an approved 0.001 MON to agent 1984's spend (cap 0.005 MON; 25 h window on approval
-  time). B keeps exactly its two reasons for the first two runs in any 25 h. A third run also gets
-  `DAILY_CAP_EXCEEDED` on B, and the script stops at that check.
+  time). B keeps exactly its two reasons for the first two runs in any 25 h; from the third, B also gets
+  `DAILY_CAP_EXCEEDED`. The script derives B's expected reasons from B's own evidence (its spend total plus
+  0.003 MON against the cap), and its preflight stops a run before sending anything if A itself wouldn't fit
+  (the sixth in 25 h), saying when the oldest counted approval leaves the window.
 - **Balances after the run:**
   - Agent 1984's hot key holds 0.08946 MON. That is one more run's two requests at the current maximum fee (122 gwei,
     0.07686 MON); top it up with `setup-demo-agents -- --fund`.

@@ -7,7 +7,8 @@
  *
  *   1. Preflight: the vault (agent 1984, validator A at 100), the forwarder, the per-token approval (and no blanket
  *      approval), agent 1984's registered hot key and its mandate (the e2e mandate, unexpired, set by the agent's
- *      current owner), and the balances of validator A and the hot key.
+ *      current owner), the balances of validator A and the hot key, and agent 1984's counted spend: A must still
+ *      fit under the daily cap, or the run stops before sending anything.
  *   2. Fund the vault with 0.01 MON if it holds less than both actions' values together.
  *   3. Build two actions, both expiring in 10 minutes. A sends 0.001 MON to the deployer, inside the mandate. B sends
  *      0.003 MON to an address no mandate lists, so it breaks two rules: the target and the per-tx cap.
@@ -15,7 +16,8 @@
  *      agent 1984.
  *   5. Agent 1984's hot key requests validation of A, then of B, through the forwarder (Attest8004Client).
  *   6. One MandateValidator polls from A's block until it has answered both. A gets 100 with no reasons. B gets 0
- *      with [TARGET_NOT_ALLOWED, VALUE_OVER_TX_CAP], and its evidence's spend counts A. Right after, execute(B) is
+ *      with [TARGET_NOT_ALLOWED, VALUE_OVER_TX_CAP], plus DAILY_CAP_EXCEEDED when its own evidence's spend (which
+ *      must count A) plus 0.003 MON is over the 0.005 MON daily cap. Right after, execute(B) is
  *      simulated, and the gate refuses it (ScoreTooLow). A freshly started validator re-reads the same blocks and
  *      must not post again.
  *   7. awaitVerdict and isValidated confirm A's verdict; the deployer submits execute(A) (permissionless).
@@ -30,8 +32,9 @@
  * transaction back to confirm the limit it carried. Refusals are simulated, never sent.
  *
  * Each run adds an approved 0.001 MON to agent 1984's daily spend (0.005 MON cap, 25 h window on approval
- * time). B's spend includes it, so B stays exactly at TARGET_NOT_ALLOWED and VALUE_OVER_TX_CAP for the first two
- * runs in any 25 h; a third adds DAILY_CAP_EXCEEDED, and this script then stops at that check.
+ * time). B's spend includes it, so from the third run in any 25 h B also gets DAILY_CAP_EXCEEDED, which the script
+ * expects from B's own evidence. A fits under the cap for five runs in any 25 h; the preflight stops a sixth before
+ * it sends anything and says when the oldest counted approval leaves the window.
  */
 import {
   BaseError,
@@ -78,6 +81,7 @@ import {
   MANDATE_V1,
   MAX_EVIDENCE_URI_BYTES,
   MandateValidator,
+  collectSpend,
   mandateAddressesFor,
   verifyContextFor,
   verifyRequest,
@@ -85,6 +89,7 @@ import {
   type VerifyReport,
 } from "@attest8004/validator-mandate";
 import { assertChain, chain, check, mon, printTx, publicClient, requireAddress, requireEnv, walletFor } from "./common.ts";
+import { dailyCapShortfall, expectedReasonsB } from "./e2e-cap.ts";
 
 /**
  * Explicit gas limits (Monad charges for the limit): Monad testnet eth_estimateGas x 1.2, rounded up to 1k.
@@ -115,7 +120,6 @@ const VALUE_A = parseEther("0.001");
 const VALUE_B = parseEther("0.003");
 /** B's target: an address no mandate lists, derived from a fixed label so every run sends B to the same place. */
 const UNLISTED = getAddress(slice(keccak256(toBytes("attest8004.e2e.unlisted")), 12));
-const B_REASONS = ["TARGET_NOT_ALLOWED", "VALUE_OVER_TX_CAP"] as const;
 const FUND_VALUE = parseEther("0.01");
 const MIN_VALIDATOR_BALANCE = parseEther("1");
 const MIN_SCORE = 100;
@@ -266,7 +270,10 @@ function mandateValidator(fromBlock: bigint, name: string): MandateValidator {
 }
 
 /** The evidence document a response posted, decoded from its inline `data:` URI. */
-function postedEvidence(label: string, responseURI: string): { reasons?: unknown; spend?: { entries?: { requestHash: string; counted: boolean }[] } } {
+function postedEvidence(
+  label: string,
+  responseURI: string,
+): { reasons?: unknown; spend?: { total?: unknown; entries?: { requestHash: string; counted: boolean }[] } } {
   const decoded = decodeJsonDataUri(responseURI, MAX_EVIDENCE_URI_BYTES);
   if (!decoded.ok) throw new Error(`${label}'s response URI is not inline JSON: ${decoded.reason}`);
   return JSON.parse(decoded.text) as ReturnType<typeof postedEvidence>;
@@ -356,6 +363,22 @@ async function main(): Promise<void> {
   check(`validator A holds at least ${mon(MIN_VALIDATOR_BALANCE)}`, validatorBalance >= MIN_VALIDATOR_BALANCE, mon(validatorBalance));
   const requestsCost = 2n * DEFAULT_GAS.forwarderRequest * fees.maxFeePerGas;
   check(`the hot key can pay for 2 requests (${mon(requestsCost)})`, hotBalance >= requestsCost, mon(hotBalance));
+
+  // The daily cap, before anything is sent: agent 1984's counted spend as mandate-v1 reads it (the same collector),
+  // at the finalized head. A must still fit under the cap, or every later check would fail.
+  const spendReader = viemMandateReader({ publicClient, addresses, concurrency: READER_CONCURRENCY });
+  const spendHead = await spendReader.finalized();
+  const spend = await collectSpend({ reader: spendReader, validator: validator.address, agentId, pinned: spendHead, cache: new Map() });
+  if ("unreadable" in spend) throw new Error(`check failed: agent ${agentId}'s spend is unreadable at block ${spendHead.number} (${spend.unreadable})`);
+  const counted = spend.entries.filter((entry) => entry.counted).length;
+  console.log(`  agent ${agentId}'s counted ${MANDATE_V1.tag} spend at block ${spendHead.number}: ${mon(spend.total)} (${counted} approval(s))`);
+  const shortfall = dailyCapShortfall({ spend, value: VALUE_A, maxValuePerDay: mandate.maxValuePerDay });
+  if (shortfall !== null) throw new Error(`check failed: ${shortfall}`);
+  check(
+    `A (${mon(VALUE_A)}) fits under the daily cap (${mon(spend.total)} of ${mon(mandate.maxValuePerDay)} counted)`,
+    spend.total + VALUE_A <= mandate.maxValuePerDay,
+    mon(spend.total),
+  );
 
   // 2. Fund the vault if it can't cover both actions (each is simulated at its own pinned block, before A executes).
   const txs: Record<string, Hash> = {};
@@ -484,9 +507,16 @@ async function main(): Promise<void> {
   const evidenceA = postedEvidence("A", verdictA.responseURI);
   const evidenceB = postedEvidence("B", verdictB.responseURI);
   check("A's evidence: reasons []", json(evidenceA.reasons) === "[]", json(evidenceA.reasons));
-  check(`B's evidence: reasons ${json(B_REASONS)}`, json(evidenceB.reasons) === json(B_REASONS), json(evidenceB.reasons));
+  const spendTotalB = evidenceB.spend?.total;
+  check("B's evidence: a readable spend total", typeof spendTotalB === "string" && /^(0|[1-9]\d*)$/.test(spendTotalB), json(evidenceB.spend));
   const spentA = evidenceB.spend?.entries?.find((entry) => entry.requestHash.toLowerCase() === hashA);
   check("B's evidence: its spend counts A", spentA?.counted === true, json(evidenceB.spend));
+  const reasonsB = expectedReasonsB({ spendTotal: BigInt(spendTotalB as string), value: VALUE_B, maxValuePerDay: E2E_MANDATE.maxValuePerDay });
+  check(
+    `B's evidence: reasons ${json(reasonsB)} (spend ${mon(BigInt(spendTotalB as string))} + ${mon(VALUE_B)}, cap ${mon(E2E_MANDATE.maxValuePerDay)})`,
+    json(evidenceB.reasons) === json(reasonsB),
+    json(evidenceB.reasons),
+  );
 
   console.log("\nrestart (a fresh validator re-reads the same blocks)");
   const again = await pollUntilAll(mandateValidator(requestedA.blockNumber, "restarted"), [hashA, hashB]);
@@ -576,8 +606,8 @@ async function main(): Promise<void> {
     );
   }
   check(
-    `verify B: the recomputed reasons are ${json(B_REASONS)}`,
-    json(reports.B?.recomputed?.reasons) === json(B_REASONS),
+    `verify B: the recomputed reasons are ${json(reasonsB)}`,
+    json(reports.B?.recomputed?.reasons) === json(reasonsB),
     json(reports.B?.recomputed?.reasons),
   );
 

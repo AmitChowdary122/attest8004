@@ -238,7 +238,9 @@ export async function collectInputs(o: {
   const at = pinned.number;
   const [owner, mandate] = await Promise.all([reader.ownerOf(request.agentId, at), reader.mandate(request.agentId, at)]);
   const [spend, permissions, simulation] = await Promise.all([
-    mandate === null ? null : collectSpend(o),
+    mandate === null
+      ? null
+      : collectSpend({ reader, validator: o.validator, agentId: request.agentId, pinned, cache: o.cache, exclude: request.requestHash }),
     collectPermissions(reader, request.agentId, owner, mandate, pinned),
     reader.simulate(
       { from: request.gate, to: request.target, value: request.value, data: request.data, gas: MANDATE_V1.simulationGas },
@@ -248,18 +250,27 @@ export async function collectInputs(o: {
   return { pinned, owner, request, mandate, spend, permissions, simulation };
 }
 
-async function collectSpend(o: {
+/**
+ * The agent's `mandate-v1` spend at `P`, exactly as {@link collectInputs} reads it for a verdict (see
+ * "Spend" there): this validator's approvals of `agentId` in the 25 h window, each authenticated, with
+ * `total` summing the ones that count. `exclude` names a request to leave out (a verdict leaves out the
+ * request it evaluates); without it every approval is an entry, which is what a check before requesting
+ * wants (would one more action fit under the daily cap?). A missing approval log throws
+ * {@link SpendLogNotFoundError}, never a smaller spend.
+ */
+export async function collectSpend(o: {
   reader: MandateReader;
   validator: Address;
-  request: MandateInputs["request"];
+  agentId: bigint;
   pinned: PinnedBlock;
   cache: PreimageCache;
+  exclude?: Hex;
 }): Promise<NonNullable<MandateInputs["spend"]>> {
-  const { reader, validator, request, pinned, cache } = o;
+  const { reader, validator, agentId, pinned, cache } = o;
   const at = pinned.number;
   const since = pinned.timestamp - MANDATE_V1.spendWindowSeconds;
-  const current = request.requestHash.toLowerCase();
-  const hashes = (await reader.agentValidations(request.agentId, at)).filter((hash) => hash.toLowerCase() !== current);
+  const excluded = o.exclude?.toLowerCase();
+  const hashes = (await reader.agentValidations(agentId, at)).filter((hash) => hash.toLowerCase() !== excluded);
 
   const results = await mapWithConcurrency(
     hashes,

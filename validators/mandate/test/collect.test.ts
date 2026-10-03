@@ -11,6 +11,7 @@ import { getAddress, keccak256, stringToBytes, toHex, type Address, type Hex } f
 import { beforeEach, describe, expect, it } from "vitest";
 import {
   collectInputs,
+  collectSpend,
   countsTowardSpend,
   MandateSetLogNotFoundError,
   parseApprovalParts,
@@ -333,6 +334,39 @@ describe("collectInputs: which approvals are entries", () => {
 
   it("an agent with no validations has an empty spend", async () => {
     await expect(spendOf()).resolves.toEqual({ since: SINCE, entries: [], total: 0n });
+  });
+});
+
+describe("collectSpend: an agent's spend at P for no request in particular (a check before requesting)", () => {
+  it("is the spend collectInputs records for a verdict at the same P, with the same entries and total", async () => {
+    add(reader, approval({ value: 700n, deadline: P.timestamp - 1n }), true);
+    add(reader, approval({ value: 1_500n, deadline: P.timestamp - 1n }), false);
+    add(reader, approval({ value: 300n, deadline: P.timestamp }), false);
+    add(reader, approval({ value: 9n, deadline: P.timestamp, response: 0 }));
+
+    const spend = await collectSpend({ reader, validator: VALIDATOR, agentId: AGENT, pinned: P, cache: new Map() });
+
+    expect(spend).toEqual((await collect()).spend);
+    expect(spend).toMatchObject({ since: SINCE, total: 1_000n });
+  });
+
+  it("skips nothing unless told which request to leave out", async () => {
+    const a = add(reader, approval({ value: 40n, deadline: P.timestamp }));
+    const b = add(reader, approval({ value: 2n, deadline: P.timestamp }));
+
+    const all = await collectSpend({ reader, validator: VALIDATOR, agentId: AGENT, pinned: P, cache });
+    const withoutA = await collectSpend({ reader, validator: VALIDATOR, agentId: AGENT, pinned: P, cache, exclude: a.requestHash });
+
+    expect(all).toMatchObject({ total: 42n, entries: [{ requestHash: a.requestHash }, { requestHash: b.requestHash }] });
+    expect(withoutA).toMatchObject({ total: 2n, entries: [{ requestHash: b.requestHash }] });
+  });
+
+  it("reads every input at P, and a missing approval log still throws (never a smaller spend)", async () => {
+    const a = add(reader, approval({ value: 40n, deadline: P.timestamp }));
+    reader.evidence.set(a.requestHash, null);
+
+    await expect(collectSpend({ reader, validator: VALIDATOR, agentId: AGENT, pinned: P, cache })).rejects.toBeInstanceOf(SpendLogNotFoundError);
+    expect(reader.reads.every((r) => r.at === P.number)).toBe(true);
   });
 });
 
