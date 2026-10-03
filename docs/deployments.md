@@ -217,6 +217,69 @@ transaction back to confirm its sender and its explicit gas limit.
   fund 26,000 (estimate 21,212).
 - After the run, agent 1984's hot key holds 0.088 MON (two requests' worth at the current fee).
 
+## Verified end-to-end runs with `mandate-v1` (P4)
+
+From P4, `scripts/src/e2e.ts` (`pnpm --filter @attest8004/scripts e2e`) runs validator A as **`mandate-v1`**. The P3
+stub validator is deleted, so validator A's key signs only `mandate-v1` verdicts. Demo agent 1984's **hot key**
+requests validation of two actions through the **AgentRequestForwarder** before any validator runs. Both are checked
+against agent 1984's mandate (above):
+
+- **A:** 0.001 MON from the vault to the deployer. This is inside the mandate.
+- **B:** 0.003 MON to `0xFdD9ffc1e3D8E0f391C03DB8Dc25Db7D5367671F` (`keccak256("attest8004.e2e.unlisted")[12:]`, an
+  address no mandate lists). It breaks the mandate twice: the target isn't listed, and the value is over the
+  0.002 MON per-tx cap.
+
+One `MandateValidator` answered both. It ran in memory from just before A's block, with reader concurrency 8, the
+vault as its only gate, the service's admission defaults, and response gas set to the estimate × 1.2, capped at
+400,000.
+
+- **A scored 100** with no reasons.
+- **B scored 0** with `[TARGET_NOT_ALLOWED, VALUE_OVER_TX_CAP]`. B's pin waited for A's approval, so B's evidence
+  lists A in its spend (0.001 MON, `counted: true`).
+- `execute(B)` was then **simulated**, and the gate refused it with `ScoreTooLow(validator A, requestHash B, 0,
+  100)`. `isValidated(B)` is false.
+- A freshly started validator re-read the same blocks and skipped both (`ALREADY_RESPONDED`). Exactly one
+  `ValidationResponse` exists for each request.
+- The deployer submitted `execute(A)` (permissionless).
+- `verifyRequest` re-ran both verdicts at their pinned blocks with a fresh reader. Both **match**, with the same score
+  and the same `responseHash`.
+
+The other refusals are simulated too: the owner and agent 1985's hot key calling the forwarder for agent 1984
+(`NotAgentKey`), and a replay of A (`ActionAlreadyConsumed`). The script reads each sent transaction back to confirm
+its sender and its explicit gas limit.
+
+| Date | Step | Tx | Block | Gas limit (estimate) |
+|---|---|---|---|---|
+| 2026-10-03 | forwarder.request, A (hot key) | [`0xdf56b446…c79649e`](https://monad-testnet.socialscan.io/tx/0xdf56b446bdb4c38d773b08bda8a7e59cd50b82badcabbbb6eb614ac52c79649e) | 67,896,188 | 315,000 (SDK default) |
+| 2026-10-03 | forwarder.request, B (hot key) | [`0x4be3145c…147f664`](https://monad-testnet.socialscan.io/tx/0x4be3145ced73603023bbbf1ff224189af9daab3503171bcede134fa8f147f664) | 67,896,193 | 315,000 (SDK default) |
+| 2026-10-03 | validationResponse, A → 100 (validator A) | [`0xef94ea65…76ce73b`](https://monad-testnet.socialscan.io/tx/0xef94ea6509f6605345be1d18761e02abd997adf0d20bc3799a021f69d76ce73b) | 67,896,224 | 153,338 (127,781) |
+| 2026-10-03 | validationResponse, B → 0 (validator A) | [`0xc429d953…c38df2a`](https://monad-testnet.socialscan.io/tx/0xc429d9537acece99359add70a914fd2e1434b3d65e31a2957cffa73a0c38df2a) | 67,896,251 | 178,142 (148,451) |
+| 2026-10-03 | execute(A) (deployer) | [`0xb666247e…60c84f9`](https://monad-testnet.socialscan.io/tx/0xb666247e2ac448a233c1bac336c19d65373aa908a2656b2f6e999408f60c84f9) | 67,896,267 | 106,000 (87,626) |
+
+- **A:** `requestHash` `0xd0ca15eae05d88cc58f404494ae58ad70055f84b7f72573fd60acfc43c6cd283`. `actionHash`
+  `0x54b8b568a71766d1312a396ffd580d6fa047aedfd5b0c30f1822f0078b28d4a9` (consumed). Pinned block 67,896,198.
+  `responseHash` `0x6f2011dccc9b2e8e235d9e80d585c6750d63ffbac0791f7200b2f048b9fbc08a`.
+- **B:** `requestHash` `0x85b92cb27c06a013bd63c9ee51e29b6329570ccd784a3e2941496f2c4a5965e9`. `actionHash`
+  `0x28d36fc7ceb8f0aa1f3b9156bef8daadccfbfa67919d70acb8d1ca9e20706dce` (never executable). Pinned block 67,896,225.
+  `responseHash` `0x7631feb99772d89d3fad805f691da4ee79cd8b48ddc32e0087d38fa4a26bf4bd`.
+- **`verify` from the CLI.** Both were re-checked afterwards from the repo root with
+  `pnpm attest8004 verify <requestHash>`. Each exited 0 and printed `match`:
+  - A: posted 100, recomputed 100; no spend in the window.
+  - B: posted 0, recomputed 0; `TARGET_NOT_ALLOWED, VALUE_OVER_TX_CAP`; one counted approval, A's 0.001 MON.
+  - Both: 0 permission events in the window.
+- **Gas.** Each response's limit is its own estimate × 1.2, capped at 400,000. B's evidence is larger than A's (its
+  reasons and spend entry), so it costs more. Each receipt's `gasUsed` equals its limit: Monad charges the limit.
+- **Daily cap.** Each run adds an approved 0.001 MON to agent 1984's spend (cap 0.005 MON; 25 h window on approval
+  time). B keeps exactly its two reasons for the first two runs in any 25 h. A third run also gets
+  `DAILY_CAP_EXCEEDED` on B, and the script stops at that check.
+- **Balances after the run:**
+  - Agent 1984's hot key holds 0.08946 MON. That is one more run's two requests at the current maximum fee (122 gwei,
+    0.07686 MON); top it up with `setup-demo-agents -- --fund`.
+  - Validator A holds 1.966 MON.
+  - The vault holds 0.007 MON.
+- Check it yourself (read-only, public RPC by default):
+  `pnpm attest8004 verify 0x85b92cb27c06a013bd63c9ee51e29b6329570ccd784a3e2941496f2c4a5965e9`
+
 ## Canonical contracts used (not deployed by us)
 
 | Contract | Monad testnet (10143) | Monad mainnet (143) |
