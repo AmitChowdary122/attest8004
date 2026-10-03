@@ -4,6 +4,7 @@ import {
   encodeEventTopics,
   getAddress,
   keccak256,
+  parseAbi,
   toHex,
   zeroHash,
   type Address,
@@ -220,6 +221,39 @@ describe("Attest8004Client.isValidated (mirrors AttestGate)", () => {
 
   it("is false when a requirement's verdict carries another tag", async () => {
     statuses.set(rhA, [VALIDATOR_A, 7n, 100, keccak256(toHex("a")), "other", 1n]);
+    expect(await isValidated()).toBe(false);
+  });
+
+  /**
+   * The tag is compared as raw bytes, never as a decoded JS string: decoding through
+   * `TextDecoder` (what an ABI `string` output does) silently strips a leading BOM and replaces
+   * invalid UTF-8, so a decode-then-rehash would pass a tag that doesn't hash to what the
+   * contract actually stored and checked onchain (`AttestGate._checkVerdict` hashes `bytes(tag)`
+   * directly, with no decode step).
+   */
+  it("is false when a verdict's tag carries a leading BOM that naive UTF-8 decoding would strip", async () => {
+    // Raw bytes as posted onchain: EF BB BF ("﻿") + "mandate-v1". Decoding this as a string
+    // and re-encoding it loses the BOM, which would make it hash equal to plain "mandate-v1".
+    statuses.set(rhA, [VALIDATOR_A, 7n, 100, keccak256(toHex("a")), "﻿mandate-v1", 1n]);
+    expect(await isValidated()).toBe(false);
+  });
+
+  it("is false when a verdict's tag isn't valid UTF-8", async () => {
+    // getValidationStatus with `tag` declared `bytes` (same wire encoding as `string`), so we can
+    // post a raw byte sequence no JS string can hold losslessly: "mandate-v1" plus one dangling
+    // UTF-8 continuation byte (0x80), which TextDecoder would turn into "mandate-v1�".
+    const rawTagAbi = parseAbi([
+      "function getValidationStatus(bytes32 requestHash) view returns (address validatorAddress, uint256 agentId, uint8 response, bytes32 responseHash, bytes tag, uint256 lastUpdate)",
+    ]);
+    const invalidTag = `${toHex("mandate-v1")}80` as Hex;
+    rpc.onCall(REGISTRY, rawTagAbi, "getValidationStatus", () => [
+      VALIDATOR_A,
+      7n,
+      100,
+      keccak256(toHex("a")),
+      invalidTag,
+      1n,
+    ]);
     expect(await isValidated()).toBe(false);
   });
 

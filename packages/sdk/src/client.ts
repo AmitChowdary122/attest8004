@@ -3,7 +3,7 @@ import {
   ContractFunctionRevertedError,
   getAddress,
   keccak256,
-  toBytes,
+  parseAbi,
   type Address,
   type Hash,
   type Hex,
@@ -48,6 +48,21 @@ export interface Verdict {
   blockNumber: bigint;
   txHash: Hash;
 }
+
+/**
+ * `getValidationStatus` with `tag` declared `bytes` instead of `string` (the same ABI encoding —
+ * a length-prefixed byte string either way). Decoding `tag` as `string` would run it through
+ * viem's `bytesToString`, which uses `TextDecoder` and so silently strips a leading UTF-8 BOM and
+ * replaces invalid UTF-8 with U+FFFD. `AttestGate._checkVerdict` has no such step: it hashes the
+ * stored bytes directly (`keccak256(bytes(tag))`, and `bytes(tag)` on a Solidity `string` is
+ * exactly its stored bytes, never reinterpreted). Reading `tag` as raw bytes here keeps
+ * `isValidated` byte-exact with that: hashing a decoded-then-re-encoded JS string instead could
+ * accept a tag onchain that doesn't actually hash to the requirement's `tagHash`.
+ */
+const validationStatusRawTagAbi = parseAbi([
+  "function getValidationStatus(bytes32 requestHash) view returns (address validatorAddress, uint256 agentId, uint8 response, bytes32 responseHash, bytes tag, uint256 lastUpdate)",
+  "error UnknownRequest(bytes32 requestHash)",
+]);
 
 export interface Attest8004ClientOptions {
   publicClient: PublicClient;
@@ -182,11 +197,11 @@ export class Attest8004Client {
 
     for (const { validator, minScore, tagHash } of requirements) {
       const requestHash = computeRequestHash({ chainId, gate, validator, action });
-      let status: readonly [Address, bigint, number, Hex, string, bigint];
+      let status: readonly [Address, bigint, number, Hex, Hex, bigint];
       try {
         status = await publicClient.readContract({
           address: registry,
-          abi: validationRegistryAbi,
+          abi: validationStatusRawTagAbi,
           functionName: "getValidationStatus",
           args: [requestHash],
         });
@@ -194,10 +209,10 @@ export class Attest8004Client {
         if (isRevert(error)) return false;
         throw error;
       }
-      const [storedValidator, storedAgentId, response, , tag] = status;
+      const [storedValidator, storedAgentId, response, , tagBytes] = status;
       if (getAddress(storedValidator) !== getAddress(validator)) return false;
       if (storedAgentId !== action.agentId || response < minScore) return false;
-      if (keccak256(toBytes(tag)) !== tagHash) return false;
+      if (keccak256(tagBytes) !== tagHash) return false;
     }
     return true;
   }
