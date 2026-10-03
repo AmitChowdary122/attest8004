@@ -4,8 +4,8 @@ The docs are part of the product (SPEC §4.10). Each file is added in the phase 
 
 | Doc | What | Status |
 |---|---|---|
-| [deployments.md](./deployments.md) | Every deployment: chain, address, commit and date | live (ValidationRegistry on testnet, P1) |
-| [spec-notes.md](./spec-notes.md) | Differences between our ValidationRegistry and the EIP-8004 Draft | done (P1, checked 2 Oct 2026) |
+| [deployments.md](./deployments.md) | Every deployment: chain, address, commit and date | live on testnet (ValidationRegistry, P1; DemoAgentVault, P2) |
+| [spec-notes.md](./spec-notes.md) | Differences between our ValidationRegistry and the EIP-8004 Draft | done (P1, checked 2 Oct 2026; P2 decisions 3 Oct) |
 | [nansen.md](./nansen.md) | Every Nansen endpoint and data category used | stub (P5) |
 | `quickstart.md` | A 10-minute integration guide | planned (P11) |
 | `api.md` | SDK and API reference | planned (P11) |

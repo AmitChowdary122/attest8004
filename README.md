@@ -2,7 +2,7 @@
 
 > **The missing ERC-8004 Validation layer for Monad.**
 > Built for Monad Metropolis, Track 04 (Trust, Identity & AI Infrastructure).
-> **Status: work in progress.** The ValidationRegistry is live on Monad testnet (see [Deployments](#deployments)); the other parts are being built. Progress is in [STATUS.md](./STATUS.md).
+> **Status: work in progress.** The ValidationRegistry and a demo AttestGate consumer (`DemoAgentVault`) are live on Monad testnet (see [Deployments](#deployments)); the other parts are being built. Progress is in [STATUS.md](./STATUS.md).
 
 ## What
 
@@ -31,9 +31,9 @@ Monad's ERC-8004 docs list the Validation Registry as "coming soon", and the can
 
 The flow, in short:
 
-1. An agent builds an `Action` and calls `validationRequest` on the **ValidationRegistry**. The request is bound by `requestHash` to one chain, one gate, one exact action and a deadline.
+1. An agent builds an `Action` and calls `validationRequest` on the **ValidationRegistry**, once per validator. Each `requestHash` is bound to one chain, one gate, one validator, one exact action and a deadline.
 2. Validators pick up the `ValidationRequest` event, check the action against the operator's passkey-approved **mandate** (and, for `risk-qwen-v1`, against simulation, Nansen data and ERC-8004 reputation), then post `validationResponse` with a score and an evidence hash.
-3. A consumer contract using **AttestGate** recomputes `requestHash` from the call. It executes only if a trusted validator's fresh verdict meets its minimum score, and each verdict can be used once.
+3. A consumer contract using **AttestGate** recomputes each required validator's `requestHash` from the call. It executes only if every one of those verdicts names the right agent and meets its minimum score, and each action runs once.
 4. Detailed findings go to the operator's encrypted inbox. Envio indexes everything for the trust API.
 
 The diagrams, flows, data formats, trust model and key custody are in **[ARCHITECTURE.md](./ARCHITECTURE.md)**. Scope and acceptance criteria are in [SPEC.md](./SPEC.md).
@@ -72,13 +72,21 @@ cd contracts && MONAD_TESTNET_RPC_URL=https://testnet-rpc.monad.xyz forge test -
 pnpm --filter @attest8004/scripts roundtrip   # register agent -> validationRequest -> validationResponse
 ```
 
+The validated execute through `DemoAgentVault` is also scripted. It acts as agent 1982, so it only runs with the key
+of that agent's owner (our deployer); it shows how the recorded testnet run was made:
+
+```bash
+pnpm --filter @attest8004/scripts gated-execute   # request -> verdict -> execute through AttestGate
+```
+
 ## Deployments
 
 | Chain | Contract | Address |
 |---|---|---|
 | Monad testnet (10143) | `ValidationRegistry` (spec-conformant, **not canonical**) | [`0xc4A4D0cEB3971cbE7a2536494aC106f2Cd9F9a8f`](https://monad-testnet.socialscan.io/address/0xc4a4d0ceb3971cbe7a2536494ac106f2cd9f9a8f) |
+| Monad testnet (10143) | `DemoAgentVault` (AttestGate demo, agent 1982, requires validator A) | [`0x7A5EC388CCbfD3B255CFa94fc2062c0807F2C4CD`](https://monad-testnet.socialscan.io/address/0x7a5ec388ccbfd3b255cfa94fc2062c0807f2c4cd) |
 
-Deploy tx [`0x724f31e0…cf64d03`](https://monad-testnet.socialscan.io/tx/0x724f31e0efd09993f2d73581cb742e71d4bef52c0f4f2a30cccd43d79cf64d03). A scripted register → request → response round trip on this registry (agentId 1982) is recorded, with its transaction hashes, in [docs/deployments.md](./docs/deployments.md). That file records every deployment with its chain, address, commit and date. Differences from the EIP-8004 Draft are in [docs/spec-notes.md](./docs/spec-notes.md).
+Registry deploy tx [`0x724f31e0…cf64d03`](https://monad-testnet.socialscan.io/tx/0x724f31e0efd09993f2d73581cb742e71d4bef52c0f4f2a30cccd43d79cf64d03). A scripted register → request → response round trip on this registry (agentId 1982), and a validated execute through `DemoAgentVault` ([`0x59d5987e…71e3f85`](https://monad-testnet.socialscan.io/tx/0x59d5987e1d2583def79af6af40efd60daf0fa88cc7553d6f3b31a0eab71e3f85)), are recorded with their transaction hashes in [docs/deployments.md](./docs/deployments.md). That file records every deployment with its chain, address, commit and date. Differences from the EIP-8004 Draft are in [docs/spec-notes.md](./docs/spec-notes.md).
 
 Canonical contracts this project builds on:
 
@@ -109,7 +117,7 @@ At runtime, `risk-qwen-v1` uses **Qwen 3.8 Max** (Alibaba Cloud Model Studio) fo
 | Library | Licence | Used for |
 |---|---|---|
 | [forge-std](https://github.com/foundry-rs/forge-std) v1.17.0 | MIT / Apache-2.0 | Foundry testing |
-| [OpenZeppelin Contracts](https://github.com/OpenZeppelin/openzeppelin-contracts) v5.7.0 | MIT | Contract utilities (P256, WebAuthn); ERC721 in a test mock |
+| [OpenZeppelin Contracts](https://github.com/OpenZeppelin/openzeppelin-contracts) v5.7.0 | MIT | Contract utilities (P256, WebAuthn); `ReentrancyGuardTransient` in AttestGate; ERC721 in a test mock |
 | [viem](https://viem.sh) | MIT | TypeScript EVM client |
 | [zod](https://zod.dev) | MIT | Schema validation |
 | [Vitest](https://vitest.dev) | MIT | TypeScript tests |
@@ -121,6 +129,7 @@ At runtime, `risk-qwen-v1` uses **Qwen 3.8 Max** (Alibaba Cloud Model Studio) fo
 
 - `contracts/src/interfaces/IValidationRegistry.sol` copies the function and event signatures from the [EIP-8004](https://eips.ethereum.org/EIPS/eip-8004) text (CC0).
 - `ValidationRegistry` was written for this project. Its behaviour deliberately matches the reference [`erc-8004/erc-8004-contracts`](https://github.com/erc-8004/erc-8004-contracts) `ValidationRegistryUpgradeable` (MIT), but no code was copied from it. The differences are in [docs/spec-notes.md](./docs/spec-notes.md).
+- The expected values in the shared hash vectors (`packages/sdk/test/vectors.json`) are generated with Foundry's `cast`.
 - Deployment goes through the widely used deterministic deployment proxy at `0x4e59b44847b379578588920cA78FbF26c0B4956C` (Arachnid); it is called onchain, and none of its code is included here.
 
 This list grows as libraries are added (Envio, Mera, agent0 and others).
