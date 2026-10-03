@@ -118,12 +118,32 @@ function readFailedGeneration(body: unknown): string | null {
   }
 }
 
-/** `retry-after`, in seconds, capped at 90 s and converted to ms; missing or invalid reads as 0. */
-function retryAfterMs(headers: Headers): number {
+const RETRY_AFTER_CAP_SECONDS = 90;
+/** Fix round 1, finding 3: a non-zero fallback (doubling per retry) when `retry-after` can't be used as-is. */
+const RETRY_AFTER_FALLBACK_BASE_MS = 2_000;
+
+type RetryAfterDecision = { kind: "wait"; ms: number } | { kind: "fail_fast" };
+
+/**
+ * Decides how `retry-after` (on a 429) should be handled for the `retryIndex`-th retry (0-based):
+ * - A valid, non-negative number of seconds at or under {@link RETRY_AFTER_CAP_SECONDS}: wait that long.
+ * - A valid number over the cap: `fail_fast` — fix round 1, finding 3. Retrying at a capped 90 s
+ *   when the provider asked for much longer just wastes the whole retry budget on futile waits (up
+ *   to 6 real minutes), so this fails fast as transient instead.
+ * - Missing, non-numeric (including an HTTP-date string, which Node's `Headers` passes through
+ *   as-is) or negative: fix round 1, finding 3. This used to wait 0 ms (hammering the provider);
+ *   it now falls back to a non-zero backoff that doubles per retry (2 s, 4 s, 8 s, 16 s, ...).
+ */
+function retryAfterDecision(headers: Headers, retryIndex: number): RetryAfterDecision {
   const raw = headers.get("retry-after");
-  const seconds = raw === null ? NaN : Number(raw);
-  const safeSeconds = Number.isFinite(seconds) && seconds > 0 ? seconds : 0;
-  return Math.min(safeSeconds, 90) * 1000;
+  if (raw !== null) {
+    const seconds = Number(raw);
+    if (Number.isFinite(seconds) && seconds >= 0) {
+      if (seconds > RETRY_AFTER_CAP_SECONDS) return { kind: "fail_fast" };
+      return { kind: "wait", ms: seconds * 1000 };
+    }
+  }
+  return { kind: "wait", ms: RETRY_AFTER_FALLBACK_BASE_MS * 2 ** retryIndex };
 }
 
 function isAbortLike(error: unknown): boolean {
@@ -175,6 +195,25 @@ const MAX_429_RETRIES = 4;
 const OTHER_RETRY_DELAYS_MS = [2_000, 4_000] as const;
 const RETRYABLE_STATUSES = new Set([500, 502, 503, 498, 499]);
 
+/**
+ * `new URL(baseUrl).host`, wrapped: Node's `ERR_INVALID_URL` for an unparseable string carries the
+ * full input back on its `.input` field, which could be `LLM_BASE_URL` itself — fix round 1,
+ * finding 8. This rethrows our own fixed text instead, with no URL in any field, and also rejects a
+ * non-http(s) scheme the same way (a config mistake, not a provider failure, so a plain `Error`).
+ */
+function parseBaseUrlHost(baseUrl: string): string {
+  let parsed: URL;
+  try {
+    parsed = new URL(baseUrl);
+  } catch {
+    throw new Error("LLM_BASE_URL must be an http(s) URL");
+  }
+  if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+    throw new Error("LLM_BASE_URL must be an http(s) URL");
+  }
+  return parsed.host;
+}
+
 async function readJsonSafely(response: Response): Promise<unknown> {
   try {
     return await response.json();
@@ -204,7 +243,7 @@ export function openAiCompatibleClient(o: {
   // No pacer given: don't gate at all (callers that care about the free tier always pass one).
   const pacer = o.pacer ?? new RatePacer({ requestsPerMinute: Number.MAX_SAFE_INTEGER, tokensPerMinute: Number.MAX_SAFE_INTEGER });
   const baseUrl = o.baseUrl.replace(/\/+$/, "");
-  const host = new URL(baseUrl).host;
+  const host = parseBaseUrlHost(baseUrl);
   const url = `${baseUrl}/chat/completions`;
   const apiKey = o.apiKey;
 
@@ -225,8 +264,21 @@ export function openAiCompatibleClient(o: {
             signal: AbortSignal.timeout(timeoutMs),
           });
         } catch (error) {
-          const message = isAbortLike(error) ? "request timed out" : "request failed";
-          throw new ProviderError(message, { kind: "transient", status: null, code: null, failedGeneration: null });
+          if (isAbortLike(error)) {
+            throw new ProviderError("request timed out", { kind: "transient", status: null, code: null, failedGeneration: null });
+          }
+          // Fix round 1, finding 4: a rejected fetch (a network failure, not our own timeout
+          // abort) is "an other error" per Decision 6, so it gets the same 2 in-call retries (2 s,
+          // 4 s) as 5xx before becoming transient. Fixed error text throughout; the underlying
+          // error (which could carry a hostname, a port or other operational detail) is never
+          // attached as `cause` or folded into the message.
+          if (retriesOther >= OTHER_RETRY_DELAYS_MS.length) {
+            throw new ProviderError("request failed", { kind: "transient", status: null, code: null, failedGeneration: null });
+          }
+          const delay = OTHER_RETRY_DELAYS_MS[retriesOther] as number;
+          retriesOther++;
+          await sleepFn(delay);
+          continue;
         }
 
         pacer.observe(response.headers);
@@ -250,7 +302,16 @@ export function openAiCompatibleClient(o: {
               failedGeneration: null,
             });
           }
-          await sleepFn(retryAfterMs(response.headers));
+          const decision = retryAfterDecision(response.headers, retries429 - 1);
+          if (decision.kind === "fail_fast") {
+            throw new ProviderError(`provider retry-after exceeds the ${RETRY_AFTER_CAP_SECONDS}s cap`, {
+              kind: "transient",
+              status,
+              code,
+              failedGeneration: null,
+            });
+          }
+          await sleepFn(decision.ms);
           continue;
         }
 

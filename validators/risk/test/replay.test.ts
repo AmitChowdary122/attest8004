@@ -52,11 +52,49 @@ describe("ReplayChatClient", () => {
     await expect(client.complete(changed)).rejects.toMatchObject({ fixture: "my-fixture", step: 0 });
   });
 
+  // Fix round 1, finding 6: the message should name the expected and actual hashes for a changed
+  // request, so a failing replay is debuggable without re-instrumenting.
+  it("includes the expected and actual request hashes in the message on a changed request", async () => {
+    const client = new ReplayChatClient(fixtureWith(1), "my-fixture");
+    const changed: ChatRequest = { ...request(0), max_completion_tokens: 999 };
+    const expectedHash = hashRequest(request(0));
+    const actualHash = hashRequest(changed);
+    expect(expectedHash).not.toBe(actualHash);
+
+    let caught: unknown;
+    try {
+      await client.complete(changed);
+    } catch (error) {
+      caught = error;
+    }
+    expect(caught).toBeInstanceOf(FixtureMismatchError);
+    const error = caught as FixtureMismatchError;
+    expect(error.message).toContain(expectedHash);
+    expect(error.message).toContain(actualHash);
+  });
+
   it("throws when steps run out", async () => {
     const client = new ReplayChatClient(fixtureWith(1), "my-fixture");
     await client.complete(request(0));
     await expect(client.complete(request(1))).rejects.toBeInstanceOf(FixtureMismatchError);
     await expect(client.complete(request(1))).rejects.toMatchObject({ fixture: "my-fixture", step: 1 });
+  });
+
+  // Fix round 1, finding 6: the message should say the recording is exhausted (and how many steps it
+  // had), not just repeat the generic mismatch wording.
+  it("says the fixture is exhausted after N steps when steps run out", async () => {
+    const client = new ReplayChatClient(fixtureWith(2), "my-fixture");
+    await client.complete(request(0));
+    await client.complete(request(1));
+
+    let caught: unknown;
+    try {
+      await client.complete(request(2));
+    } catch (error) {
+      caught = error;
+    }
+    expect(caught).toBeInstanceOf(FixtureMismatchError);
+    expect((caught as Error).message).toContain("exhausted after 2 step");
   });
 
   it("host is the fixture's host", () => {
@@ -103,5 +141,43 @@ describe("RecordingChatClient", () => {
     const live: ChatClient = { host: "api.groq.com", complete: async () => Promise.reject(new Error("unused")) };
     const recorder = new RecordingChatClient(live);
     expect(recorder.host).toBe("api.groq.com");
+  });
+
+  // Fix round 1, finding 7: request/response were stored by reference, so a caller mutating a
+  // shared messages array (or the live response body) after the call could rewrite history.
+  it("clones the recorded request and response, so a later mutation can't rewrite history", async () => {
+    const messages: ChatRequest["messages"] = [{ role: "user", content: "turn 0" }];
+    const req: ChatRequest = { model: "m", messages, max_completion_tokens: 10 };
+    const liveBody = {
+      model: "m",
+      choices: [{ index: 0, message: { role: "assistant", content: "answer 0" }, finish_reason: "stop" }],
+      usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 },
+    };
+    const live: ChatClient = {
+      host: "api.example.com",
+      complete: async (): Promise<ChatResponse> => ({
+        body: liveBody,
+        servedModel: "m",
+        systemFingerprint: null,
+        content: "answer 0",
+        toolCalls: [],
+        finishReason: "stop",
+        usage: { prompt: 1, completion: 1, total: 2 },
+      }),
+    };
+    const recorder = new RecordingChatClient(live);
+    await recorder.complete(req);
+
+    // Mutate the caller's own objects after the call.
+    (messages[0] as { content: string }).content = "mutated!";
+    const liveChoice = liveBody.choices[0];
+    if (liveChoice === undefined) throw new Error("unreachable");
+    liveChoice.message.content = "mutated response";
+
+    const fixture = recorder.toFixture();
+    const recordedRequest = fixture.steps[0]?.request as ChatRequest;
+    const recordedResponse = fixture.steps[0]?.response as typeof liveBody;
+    expect((recordedRequest.messages[0] as { content: string }).content).toBe("turn 0");
+    expect(recordedResponse.choices[0]?.message.content).toBe("answer 0");
   });
 });

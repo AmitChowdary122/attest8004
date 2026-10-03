@@ -6,6 +6,29 @@
  * authoritative than our own estimate (several turns' estimates can drift). `now`/`sleep` are
  * injectable so tests never wait on a real clock.
  */
+
+/**
+ * Thrown by `acquire()` when a single call's estimated tokens can never fit within the per-minute
+ * token budget — not a transient capacity squeeze that waiting resolves, so `acquire()` throws
+ * immediately instead of looping on 60 s sleeps forever (fix round 1, finding 2: previously this
+ * left `check()` never settling and the cursor stalled with no log). `kind: "transient"` mirrors
+ * {@link import("./llm.ts").ProviderError}'s own field, so a caller that duck-types on `.kind` (the
+ * agent loop, `check()`) treats this exactly like a provider failure: no response, retried from
+ * scratch in a later cycle.
+ */
+export class TokenBudgetExceededError extends Error {
+  readonly kind: "transient" = "transient";
+  readonly estimatedTokens: number;
+  readonly tokensPerMinute: number;
+
+  constructor(estimatedTokens: number, tokensPerMinute: number) {
+    super(`estimated ${estimatedTokens} tokens exceeds the ${tokensPerMinute}/minute budget; this call can never be paced`);
+    this.name = "TokenBudgetExceededError";
+    this.estimatedTokens = estimatedTokens;
+    this.tokensPerMinute = tokensPerMinute;
+  }
+}
+
 export class RatePacer {
   private readonly requestsPerMinute: number;
   private readonly tokensPerMinute: number;
@@ -23,8 +46,15 @@ export class RatePacer {
     this.sleepFn = o.sleep ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
   }
 
-  /** Waits until a request slot and `estimatedTokens` both fit in the next 60 s, then reserves them. */
+  /**
+   * Waits until a request slot and `estimatedTokens` both fit in the next 60 s, then reserves them.
+   * Throws {@link TokenBudgetExceededError} immediately (no waiting) if `estimatedTokens` alone
+   * exceeds `tokensPerMinute`, since no amount of waiting would ever make it fit.
+   */
   async acquire(estimatedTokens: number): Promise<void> {
+    if (estimatedTokens > this.tokensPerMinute) {
+      throw new TokenBudgetExceededError(estimatedTokens, this.tokensPerMinute);
+    }
     for (;;) {
       const now = this.nowFn();
       this.prune(now);
@@ -37,6 +67,12 @@ export class RatePacer {
       if (requestsFit && tokensFit) {
         this.requestTimestamps.push(now);
         this.tokenEvents.push({ time: now, tokens: estimatedTokens });
+        // Fix round 1, finding 5: decrement the override itself (not just the sliding-window
+        // estimate), so a second acquire inside the same override window can't pass against the
+        // same flat `remaining` the first one already spent.
+        if (this.tokenOverride !== null && now < this.tokenOverride.resetAt) {
+          this.tokenOverride.remaining -= estimatedTokens;
+        }
         return;
       }
 

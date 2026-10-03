@@ -51,16 +51,37 @@ export function hashRequest(request: ChatRequest): Hex {
   return keccak256(stringToBytes(canonicalJson(normalizeForHash(request))));
 }
 
-/** Thrown by {@link ReplayChatClient} when the next call's request doesn't match the recording, or the recording is exhausted. */
+/**
+ * Thrown by {@link ReplayChatClient} when the next call's request doesn't match the recording, or
+ * the recording is exhausted. Fix round 1, finding 6: the message now says which case it is and
+ * carries enough to debug it without re-instrumenting — the expected and actual request hashes for
+ * a changed request, or how many steps the fixture had when it ran out.
+ */
 export class FixtureMismatchError extends Error {
   readonly fixture: string;
   readonly step: number;
+  readonly expectedHash: Hex | null;
+  readonly actualHash: Hex | null;
 
-  constructor(fixture: string, step: number) {
-    super(`fixture "${fixture}": no recorded step ${step} matches this request`);
+  constructor(fixture: string, step: number, detail?: { expectedHash: Hex; actualHash: Hex } | { exhaustedAfter: number }) {
+    let message: string;
+    let expectedHash: Hex | null = null;
+    let actualHash: Hex | null = null;
+    if (detail !== undefined && "exhaustedAfter" in detail) {
+      message = `fixture "${fixture}": exhausted after ${detail.exhaustedAfter} steps (no recorded step ${step})`;
+    } else if (detail !== undefined) {
+      expectedHash = detail.expectedHash;
+      actualHash = detail.actualHash;
+      message = `fixture "${fixture}": step ${step} expected request hash ${detail.expectedHash}, got ${detail.actualHash}`;
+    } else {
+      message = `fixture "${fixture}": no recorded step ${step} matches this request`;
+    }
+    super(message);
     this.name = "FixtureMismatchError";
     this.fixture = fixture;
     this.step = step;
+    this.expectedHash = expectedHash;
+    this.actualHash = actualHash;
   }
 }
 
@@ -79,8 +100,11 @@ export class ReplayChatClient implements ChatClient {
 
   async complete(request: ChatRequest): Promise<ChatResponse> {
     const step = this.steps[this.index];
-    if (step === undefined) throw new FixtureMismatchError(this.label, this.index);
-    if (hashRequest(request) !== step.requestHash) throw new FixtureMismatchError(this.label, this.index);
+    if (step === undefined) throw new FixtureMismatchError(this.label, this.index, { exhaustedAfter: this.steps.length });
+    const actualHash = hashRequest(request);
+    if (actualHash !== step.requestHash) {
+      throw new FixtureMismatchError(this.label, this.index, { expectedHash: step.requestHash, actualHash });
+    }
     this.index++;
     return parseChatResponse(step.response);
   }
@@ -99,7 +123,13 @@ export class RecordingChatClient implements ChatClient {
 
   async complete(request: ChatRequest): Promise<ChatResponse> {
     const response = await this.live.complete(request);
-    this.steps.push({ requestHash: hashRequest(request), request, response: response.body });
+    // Fix round 1, finding 7: clone both, so a caller mutating a shared `messages` array (or the
+    // live response body) after this call can't silently rewrite the recording.
+    this.steps.push({
+      requestHash: hashRequest(request),
+      request: structuredClone(request),
+      response: structuredClone(response.body),
+    });
     return response;
   }
 

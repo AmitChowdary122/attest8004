@@ -7,8 +7,14 @@
  * live calls (recorded in `test/fixtures/llm/guard.json`) and found a plain decimal string — the
  * malicious-probability score, e.g. `"0.00038913910975679755"` for a benign text and
  * `"0.9995530247688293"` for an injection attempt. `classify()` is pinned to that format: content
- * that isn't a bare decimal string is an unparseable guard answer, which Decision 6 treats as
- * transient, never a verdict.
+ * that isn't a bare decimal string (per {@link parseGuardScore}) is an unparseable guard answer,
+ * which Decision 6 treats as transient, never a verdict.
+ *
+ * Fix round 1, finding 1: both recorded scores are float32 values printed as Python's `str(float)`
+ * would (shortest round-tripping float64 repr), which switches to exponent notation below 1e-4
+ * (e.g. `"3.890000152750872e-05"`). A benign text scoring under 1e-4 was being rejected as
+ * unparseable, and since that's transient, every retry failed the same way — the check never
+ * settled. `parseGuardScore` now accepts exponent notation and range-checks to [0, 1].
  */
 import type { ChatClient } from "./llm.ts";
 import { ProviderError } from "./llm.ts";
@@ -21,8 +27,22 @@ export interface PromptGuard {
   classify(text: string): Promise<string>;
 }
 
-/** The pinned format: an optionally-signed decimal number, nothing else (no exponents, no labels). */
-const DECIMAL_SCORE = /^-?\d+(?:\.\d+)?$/;
+/** A non-negative decimal literal, optionally in exponent notation (e.g. `"3.89e-05"`); no sign, no labels. */
+const GUARD_SCORE_PATTERN = /^\d+(?:\.\d+)?(?:[eE][-+]?\d+)?$/;
+
+/**
+ * Parses a Prompt Guard score string into a probability, or `null` if it isn't one: the pinned
+ * grammar (a non-negative decimal literal, optionally in exponent notation) range-checked to
+ * `[0, 1]`. Exported so `verify` (Task 12) parses a recorded score with the exact same grammar
+ * `classify()` validated it against.
+ */
+export function parseGuardScore(raw: string): number | null {
+  const trimmed = raw.trim();
+  if (!GUARD_SCORE_PATTERN.test(trimmed)) return null;
+  const value = Number(trimmed);
+  if (!Number.isFinite(value) || value < 0 || value > 1) return null;
+  return value;
+}
 
 /** Wraps a {@link ChatClient} as a {@link PromptGuard} for `model` (ARCHITECTURE "Tools": its own client/pacer). */
 export function chatPromptGuard(client: ChatClient, model: string): PromptGuard {
@@ -35,7 +55,7 @@ export function chatPromptGuard(client: ChatClient, model: string): PromptGuard 
         max_completion_tokens: 16,
       });
       const content = (response.content ?? "").trim();
-      if (content === "" || !DECIMAL_SCORE.test(content) || !Number.isFinite(Number(content))) {
+      if (parseGuardScore(content) === null) {
         throw new ProviderError("unparseable guard answer", { kind: "transient", status: null, code: null, failedGeneration: null });
       }
       return content;
@@ -77,7 +97,9 @@ export async function screen(
     let bestText = chunks[0] ?? field.text;
     for (const chunk of chunks) {
       const score = await guard.classify(chunk);
-      const num = Number(score);
+      // classify() already validated this against parseGuardScore, so this is never null in
+      // practice; NaN is a harmless defensive fallback (it never wins the `>` comparison below).
+      const num = parseGuardScore(score) ?? Number.NaN;
       if (num > bestNum) {
         bestNum = num;
         bestScore = score;

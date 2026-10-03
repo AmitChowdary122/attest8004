@@ -1,6 +1,6 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
-import { chatPromptGuard, screen } from "../src/guard.ts";
+import { chatPromptGuard, parseGuardScore, screen } from "../src/guard.ts";
 import type { ChatClient, ChatRequest } from "../src/llm.ts";
 import { ProviderError } from "../src/llm.ts";
 import { RISK_V1 } from "../src/params.ts";
@@ -77,6 +77,29 @@ describe("chatPromptGuard", () => {
     const { client } = fakeGuardClient([""]);
     const guard = chatPromptGuard(client, RISK_V1.guardModel);
     await expect(guard.classify("hello")).rejects.toMatchObject({ kind: "transient" });
+  });
+
+  it("accepts exponent-notation content (fix round 1, finding 1): a benign score below 1e-4", async () => {
+    // Python's str(float) switches to exponent form below 1e-4, e.g. a real float32 benign score.
+    const { client } = fakeGuardClient(["3.890000152750872e-05"]);
+    const guard = chatPromptGuard(client, RISK_V1.guardModel);
+    await expect(guard.classify("hi")).resolves.toBe("3.890000152750872e-05");
+  });
+});
+
+describe("parseGuardScore (fix round 1, finding 1)", () => {
+  it("parses exponent notation", () => {
+    expect(parseGuardScore("3.890000152750872e-05")).toBeCloseTo(3.890000152750872e-5);
+    expect(parseGuardScore("1e-10")).toBeCloseTo(1e-10);
+  });
+
+  it("accepts 0 and 1 exactly", () => {
+    expect(parseGuardScore("0")).toBe(0);
+    expect(parseGuardScore("1")).toBe(1);
+  });
+
+  it.each(["1.5", "-0.1", "abc", ""])("rejects %j", (raw) => {
+    expect(parseGuardScore(raw)).toBeNull();
   });
 });
 

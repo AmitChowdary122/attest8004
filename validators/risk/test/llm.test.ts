@@ -104,14 +104,51 @@ describe("openAiCompatibleClient: errors", () => {
     expect(sleep.calls).toEqual([2_000, 2_000, 2_000, 2_000]);
   });
 
-  it("caps retry-after at 90 s", async () => {
-    const responses = Array.from({ length: 5 }, () => jsonResponse(429, { error: { code: "rate_limit_exceeded" } }, { "retry-after": "999" }));
+  // Fix round 1, finding 3: retry-after over the 90s cap used to retry 4 times at a capped 90s each
+  // (6 real minutes of futile waiting); it now fails fast instead, since no amount of waiting within
+  // our retry budget would help.
+  it("fails fast as transient when retry-after exceeds the 90 s cap, instead of retrying at a capped 90 s", async () => {
+    const { fn, calls } = fakeFetch([jsonResponse(429, { error: { code: "rate_limit_exceeded" } }, { "retry-after": "999" })]);
+    const sleep = fakeSleep();
+    const client = openAiCompatibleClient({ baseUrl: "https://api.example.com/v1", apiKey: "k", fetch: fn, sleep: sleep.fn });
+
+    await expect(client.complete(baseRequest())).rejects.toMatchObject({ kind: "transient", status: 429 });
+    expect(calls).toHaveLength(1);
+    expect(sleep.calls).toEqual([]);
+  });
+
+  it("fails fast on a retry-after of exactly 90 s (no, only strictly over 90 s fails fast) — 90 s itself still waits", async () => {
+    const responses = Array.from({ length: 5 }, () => jsonResponse(429, { error: { code: "rate_limit_exceeded" } }, { "retry-after": "90" }));
     const { fn } = fakeFetch(responses);
     const sleep = fakeSleep();
     const client = openAiCompatibleClient({ baseUrl: "https://api.example.com/v1", apiKey: "k", fetch: fn, sleep: sleep.fn });
 
     await expect(client.complete(baseRequest())).rejects.toMatchObject({ kind: "transient", status: 429 });
     expect(sleep.calls).toEqual([90_000, 90_000, 90_000, 90_000]);
+  });
+
+  // Fix round 1, finding 3: a missing retry-after header used to wait 0 ms (hammering the provider);
+  // it now falls back to a non-zero doubling backoff.
+  it("falls back to a non-zero doubling backoff when retry-after is missing", async () => {
+    const responses = Array.from({ length: 5 }, () => jsonResponse(429, { error: { code: "rate_limit_exceeded" } }));
+    const { fn } = fakeFetch(responses);
+    const sleep = fakeSleep();
+    const client = openAiCompatibleClient({ baseUrl: "https://api.example.com/v1", apiKey: "k", fetch: fn, sleep: sleep.fn });
+
+    await expect(client.complete(baseRequest())).rejects.toMatchObject({ kind: "transient", status: 429 });
+    expect(sleep.calls).toEqual([2_000, 4_000, 8_000, 16_000]);
+  });
+
+  it("falls back to a non-zero doubling backoff when retry-after is an HTTP-date (not a bare number of seconds)", async () => {
+    const responses = Array.from({ length: 5 }, () =>
+      jsonResponse(429, { error: { code: "rate_limit_exceeded" } }, { "retry-after": "Wed, 21 Oct 2026 07:28:00 GMT" }),
+    );
+    const { fn } = fakeFetch(responses);
+    const sleep = fakeSleep();
+    const client = openAiCompatibleClient({ baseUrl: "https://api.example.com/v1", apiKey: "k", fetch: fn, sleep: sleep.fn });
+
+    await expect(client.complete(baseRequest())).rejects.toMatchObject({ kind: "transient", status: 429 });
+    expect(sleep.calls).toEqual([2_000, 4_000, 8_000, 16_000]);
   });
 
   it.each([500, 502, 503, 498, 499])("%i is retried twice (2 s, 4 s) then transient", async (status) => {
@@ -147,6 +184,51 @@ describe("openAiCompatibleClient: errors", () => {
     });
 
     await expect(client.complete(baseRequest())).rejects.toMatchObject({ kind: "transient" });
+  });
+
+  // Fix round 1, finding 4: a rejected fetch (a network failure, not our own timeout abort) used to
+  // become transient immediately; Decision 6 says "other errors" (which this is) get the same 2
+  // in-call retries (2s, 4s) as 5xx before giving up.
+  it("a rejected fetch (network failure) is retried twice (2 s, 4 s) then transient, per Decision 6", async () => {
+    let calls = 0;
+    const flaky = (async (): Promise<Response> => {
+      calls++;
+      throw new Error("ECONNREFUSED: connection refused at 10.0.0.1:443 with token abc-super-secret");
+    }) as typeof fetch;
+    const sleep = fakeSleep();
+    const client = openAiCompatibleClient({ baseUrl: "https://api.example.com/v1", apiKey: "k", fetch: flaky, sleep: sleep.fn });
+
+    let caught: unknown;
+    try {
+      await client.complete(baseRequest());
+    } catch (error) {
+      caught = error;
+    }
+    expect(caught).toBeInstanceOf(ProviderError);
+    const providerError = caught as ProviderError;
+    expect(providerError.kind).toBe("transient");
+    expect(providerError.message).toBe("request failed");
+    expect((providerError as unknown as { cause?: unknown }).cause).toBeUndefined();
+    expect(providerError.message).not.toContain("10.0.0.1");
+    expect(providerError.message).not.toContain("abc-super-secret");
+    expect(calls).toBe(3);
+    expect(sleep.calls).toEqual([2_000, 4_000]);
+  });
+
+  it("a rejected fetch that recovers on retry succeeds normally", async () => {
+    let calls = 0;
+    const flakyThenOk = (async (url: string | URL | Request, init?: RequestInit): Promise<Response> => {
+      calls++;
+      if (calls < 2) throw new Error("ECONNRESET");
+      return jsonResponse(200, successBody());
+    }) as typeof fetch;
+    const sleep = fakeSleep();
+    const client = openAiCompatibleClient({ baseUrl: "https://api.example.com/v1", apiKey: "k", fetch: flakyThenOk, sleep: sleep.fn });
+
+    const result = await client.complete(baseRequest());
+    expect(result.content).toBe("hello");
+    expect(calls).toBe(2);
+    expect(sleep.calls).toEqual([2_000]);
   });
 
   it.each([401, 404, 413])("%i -> transient, with no in-call retry", async (status) => {
@@ -251,6 +333,30 @@ describe("openAiCompatibleClient: successful response mapping", () => {
       finishReason: "tool_calls",
       usage: { prompt: 3, completion: 4, total: 7 },
     });
+  });
+});
+
+// Fix round 1, finding 8: new URL(baseUrl) throws Node's ERR_INVALID_URL, whose `.input` field
+// holds the full LLM_BASE_URL — that must never surface in any field we expose.
+describe("openAiCompatibleClient: LLM_BASE_URL validation", () => {
+  it("wraps an unparseable baseUrl in our own fixed text, with no URL in any field", () => {
+    const bogus = "not a valid url with spaces and a secret-token-xyz";
+    let caught: unknown;
+    try {
+      openAiCompatibleClient({ baseUrl: bogus, apiKey: "k" });
+    } catch (error) {
+      caught = error;
+    }
+    expect(caught).toBeInstanceOf(Error);
+    const error = caught as Error & Record<string, unknown>;
+    expect(error.message).toBe("LLM_BASE_URL must be an http(s) URL");
+    const haystack = JSON.stringify(Object.assign({ message: error.message, name: error.name }, error));
+    expect(haystack).not.toContain(bogus);
+    expect(haystack).not.toContain("secret-token-xyz");
+  });
+
+  it("rejects a non-http(s) scheme the same way", () => {
+    expect(() => openAiCompatibleClient({ baseUrl: "ftp://example.com", apiKey: "k" })).toThrow("LLM_BASE_URL must be an http(s) URL");
   });
 });
 
