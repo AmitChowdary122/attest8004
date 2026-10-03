@@ -38,6 +38,11 @@ jobs:
       - name: Build
         run: forge build --sizes
 
+      - name: Check hash vectors against cast
+        # The independent oracle for SPEC §4.3: recomputes every expected hash in
+        # packages/sdk/test/vectors.json with cast (jq is preinstalled on the runner).
+        run: ../packages/sdk/test/vectors.sh --check
+
       - name: Test (unit + fuzz)
         run: forge test -vvv --no-match-path 'test/fork/*'
         env:
