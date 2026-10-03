@@ -29,10 +29,11 @@ export interface MandateRecord {
 
 /**
  * One `mandate-v1` approval of this agent's action, found via `getAgentValidations` and its
- * `ValidationResponse` evidence (Decision 1). `counted` is whether the collector's "which approvals
- * count toward spend" rule (consumed, or unconsumed with `deadline >= P.ts`, or a failed `consumed()`
- * read) included it in `total`; `consumed` is `null` when the gate's `consumed()` read failed
- * (fail-closed: still `counted`).
+ * `ValidationResponse` evidence, authenticated by recomputing `requestHash` from the logged
+ * request fields. `counted` is whether the collector's "which approvals count toward spend" rule
+ * (consumed, or unconsumed with `deadline >= P.ts`, or a failed `consumed()` read) included it in
+ * `total`; `consumed` is `null` when the gate's `consumed()` read failed (fail-closed: still
+ * `counted`).
  */
 export interface SpendEntry {
   requestHash: Hex;
@@ -69,8 +70,10 @@ export type Simulation =
 /**
  * Everything `evaluate()` needs, all read at the pinned block `P` (`pinned`). `mandate` is `null`
  * when the agent has none; `spend` is `null` exactly when `mandate` is `null` (there is nothing to
- * cap), a `{ unreadable }` document when found evidence failed its checks (Decision 1, amendment 1),
- * or the full `{ since, entries, total }` document with `total` already summed by the collector.
+ * cap), a `{ unreadable }` document when found evidence failed its checks (its hash didn't match
+ * the approval's `responseHash`, it didn't decode as `mandate-v1` evidence, or its request fields
+ * recomputed to a different `requestHash`), or the full `{ since, entries, total }` document with
+ * `total` already summed by the collector.
  */
 export interface MandateInputs {
   pinned: PinnedBlock;

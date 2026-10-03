@@ -25,9 +25,9 @@ const EVEN_HEX = /^0x([0-9a-fA-F]{2})*$/;
  * - `"0x"` (empty data, a plain MON transfer) returns {@link MANDATE_V1.plainTransferSelector}
  *   (`"0x00000000"`).
  * - 1-3 bytes of data are too short to hold a selector: `null`.
- * - Non-empty data whose first 4 bytes are `0x00000000` also returns `null` (the calalldata and
- *   selectors amendment): `0x00000000` in an allowlist means an empty-data transfer only, never a
- *   call to selector zero or a bare fallback with arguments.
+ * - Non-empty data whose first 4 bytes are `0x00000000` also returns `null`, so `0x00000000` in an
+ *   allowlist means an empty-data transfer only, never a call to selector zero or a bare fallback
+ *   with arguments.
  * - Otherwise, the first 4 bytes, lower-cased.
  */
 export function selectorOf(data: Hex): Hex | null {
