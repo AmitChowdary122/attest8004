@@ -30,10 +30,12 @@ Every Attest8004 deployment is recorded here: chain, contract, address, the comm
 
 - **Constructor argument:** the ValidationRegistry above (`0xc4A4…F9a8f`). The forwarder reads the Identity Registry from
   it (`identityRegistry()` returns the canonical `0x8004A818BFB912233c491871b3d84c89A494BD9e`).
-- **What it does:** an agent's owner approves it once with `setApprovalForAll(forwarder, true)` on the Identity Registry
-  and registers a hot key with `setAgentKey(agentId, key)`. The key can then call `request(...)`, which makes exactly one
+- **What it does:** an agent's owner approves it on the Identity Registry, per agent with `approve(forwarder, agentId)`
+  (what the demo agents use since P4) or once for all its agents with `setApprovalForAll(forwarder, true)`, and
+  registers a hot key with `setAgentKey(agentId, key)`. The key can then call `request(...)`, which makes exactly one
   call, `validationRequest`, on the ValidationRegistry, while the owner who registered it still owns the agent. See
-  ARCHITECTURE §5.2 and §7 (the approval covers all of the owner's agents; the forwarder only exposes `validationRequest`).
+  ARCHITECTURE §5.2 and §7 (a blanket approval covers all of the owner's agents; either way the forwarder only exposes
+  `validationRequest`).
 - **How it was deployed:** `contracts/script/DeployAgentRequestForwarder.s.sol` via
   `script/deploy-testnet.sh AgentRequestForwarder`, through the CREATE2 factory with salt
   `keccak256("attest8004.AgentRequestForwarder.v1")`. The broadcast record is
@@ -56,8 +58,9 @@ Every Attest8004 deployment is recorded here: chain, contract, address, the comm
 - **The address depends on the Identity Registry.** The init code includes the Identity Registry argument, so a
   mainnet deployment (another Identity Registry) will have a different address. Check it with
   `predictedAddress(<identity registry>)` on the deploy script.
-- **Not upgradeable, no owner, holds no funds. Immutable `_authorize` hook is overridden in P4** (owner-only wallet
-  signature); P6 redeploys with a WebAuthn-verifying override, so the mandate hook itself never upgrades in place.
+- **Not upgradeable, no owner, holds no funds.** Every change goes through the internal `_authorize` hook, which in
+  this deployment requires the agent's current owner (`msg.sender == ownerOf(agentId)`). P6 puts a WebAuthn assertion
+  in that hook, which is a new deployment, so this one never changes in place.
 
 ### DemoAgentVault (testnet, P3, agent 1984) details
 

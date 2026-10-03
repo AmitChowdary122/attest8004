@@ -1,13 +1,13 @@
 # contracts
 
-Foundry project for the Attest8004 contracts (SPEC §4.1–4.3):
+Foundry project for the Attest8004 contracts (SPEC §4.1–4.4):
 
 | Contract | Status |
 |---|---|
 | `ValidationRegistry` | **live on Monad testnet** at `0xc4A4D0cEB3971cbE7a2536494aC106f2Cd9F9a8f` (P1; see [docs/deployments.md](../docs/deployments.md)) |
 | `AttestGate` + `DemoAgentVault` | **live on Monad testnet**: `DemoAgentVault` at `0x23BfBD12545CCd1501ddA1B65a54518FD6212a96`, for demo agent 1984, requiring validator A (P3; the P2 vault for agent 1982 is superseded; see [docs/deployments.md](../docs/deployments.md)) |
 | `AgentRequestForwarder` | **live on Monad testnet** at `0x1451F3C36545b191d3642f759D59f21DcFD657B2` (P3; see [docs/deployments.md](../docs/deployments.md)) |
-| `MandateRegistry` | planned (P4, passkeys in P6) |
+| `MandateRegistry` | **live on Monad testnet** at `0x2523197373ef813E19b5b14Ef2984130868cD17c`, owner-set mandates (P4; passkey approval is a new deployment in P6; see [docs/deployments.md](../docs/deployments.md)) |
 
 ```bash
 forge build
@@ -37,16 +37,36 @@ implementation is in [docs/spec-notes.md](../docs/spec-notes.md).
 
 `src/AgentRequestForwarder.sol` lets an agent's hot key request validations without being able to move the agent.
 EIP-8004 accepts `validationRequest` only from the owner or an ERC-721 operator, and an operator can also transfer
-the agent. So the owner approves the forwarder once (`setApprovalForAll`) and registers one key per agent
-(`setAgentKey`, current owner only; `address(0)` revokes). `request` works only from that key, only while the owner
+the agent. So the owner approves the forwarder, either per agent (`approve(forwarder, agentId)`, which the demo
+agents use) or once for all its agents (`setApprovalForAll`), and registers one key per agent (`setAgentKey`, current
+owner only; `address(0)` revokes). `request` works only from that key, only while the owner
 who registered it still owns the agent, and makes exactly one call: `validationRequest` on the fixed registry.
-Immutable, no admin, no funds. The trade-off of the blanket approval is in ARCHITECTURE §7.
+Immutable, no admin, no funds. The trade-off between the two approvals is in ARCHITECTURE §7.
 
 | Test file | What it covers |
 |---|---|
 | `test/AgentRequestForwarder.t.sol` | Key management (owner only, not an operator or the key; rotate; revoke); requests: wrong key, another agent's key, the owner, no key, a revoked key, a key set by a previous owner after a transfer (even if the new owner approved the forwarder), the A→B→A case, a revoked approval, a reused hash, a per-token `approve` instead of `setApprovalForAll` (works for that agent only, cleared by a transfer); that the forwarder can only call `validationRequest` (state-diff recording of every call it makes, the compiled ABI pinned, ERC-721 calls refused, no funds, fuzzed calldata) |
 | `test/fork/AgentRequestForwarder.fork.t.sol` | The testnet configuration against the live registry and canonical Identity Registry: a key requests; a stale key after a transfer is refused |
 | `test/DeployAgentRequestForwarder.t.sol` | The CREATE2 deploy script: predicted address, idempotence, wiring, the testnet configuration |
+
+## MandateRegistry
+
+`src/MandateRegistry.sol` holds each agent's current spending mandate (SPEC §4.2): allowed targets and selectors
+(at most 16 of each), a per-transaction and a per-day cap in native MON, and an expiry. `mandate-v1` reads it at its
+pinned block. In P4 only the agent's current `ownerOf` may call `setMandate(agentId, mandate)` or
+`revokeMandate(agentId)`; an operator or a token-approved address is refused. The record stores that owner and
+`setAtBlock`, so a mandate goes stale once the agent is transferred (`mandate-v1` then fails `MANDATE_OWNER_CHANGED`).
+It rejects a zero target, an expiry at or before now, and a per-transaction cap above the daily cap. Every change goes
+through one internal hook, `_authorize(agentId, changeHash)`, before any write. P6 puts a WebAuthn assertion (P256 at
+`0x0100`) in that hook; the hook is internal and the contract immutable, so that is a new deployment. No admin, no
+funds, no fallback.
+
+| Test file | What it covers |
+|---|---|
+| `test/MandateRegistry.t.sol` | Authorisation (owner; operator, token-approved address and stranger refused; a nonexistent agent), every validation rule (17 targets or selectors, a zero target, an expired `validUntil`, a per-tx cap above the daily cap) and the passing boundaries for expiry (one second ahead) and caps (equal), an overwrite replaces both arrays, behaviour across a transfer (the old record keeps the old owner, who can no longer change it; the new owner can set a fresh one), revoke, fuzz that `mandateHash` binds every field, no ether and no unknown calldata accepted |
+| `test/mocks/MandateRegistryHookHarness.sol` | A subclass that records and can veto `_authorize`, used to prove every change goes through the hook before any write |
+| `test/fork/MandateRegistry.fork.t.sol` | A fresh registry on a fork of Monad testnet: the live owner of agent 1984 sets a mandate and reads it back; a stranger is refused |
+| `test/DeployMandateRegistry.t.sol` | The CREATE2 deploy script: predicted address, idempotence, wiring, the exact broadcast transaction, the testnet configuration, unsupported chains |
 
 ## AttestGate and DemoAgentVault
 
@@ -80,16 +100,17 @@ CI runs them in a separate `contracts-fork` job that may fail without turning th
 
 ## Deploying
 
-`script/DeployValidationRegistry.s.sol`, `script/DeployAgentRequestForwarder.s.sol` and `script/DeployDemoAgentVault.s.sol` deploy through the CREATE2
+`script/DeployValidationRegistry.s.sol`, `script/DeployAgentRequestForwarder.s.sol`, `script/DeployMandateRegistry.s.sol` and `script/DeployDemoAgentVault.s.sol` deploy through the CREATE2
 factory `0x4e59…956C` with a **literal gas limit** (`DEPLOY_GAS`), because Monad charges for the gas limit, not
 the gas used. The address depends on the init code, which includes the constructor arguments: the
-ValidationRegistry's address depends on the Identity Registry (so testnet and mainnet differ), the forwarder's on
-its ValidationRegistry, and the vault's on its registry, agent and validator requirements. Re-running is a no-op once the contract exists.
+ValidationRegistry's and the MandateRegistry's addresses depend on the Identity Registry (so testnet and mainnet
+differ), the forwarder's on its ValidationRegistry, and the vault's on its registry, agent and validator requirements. Re-running is a no-op once the contract exists.
 
 ```bash
 ./script/deploy-testnet.sh ValidationRegistry               # dry run against Monad testnet; nothing is sent
 BROADCAST=1 ./script/deploy-testnet.sh ValidationRegistry   # deploy
 ./script/deploy-testnet.sh AgentRequestForwarder            # same, for the forwarder
+./script/deploy-testnet.sh MandateRegistry                  # same, for the mandate registry
 ./script/deploy-testnet.sh DemoAgentVault                   # same, for the demo vault
 ```
 

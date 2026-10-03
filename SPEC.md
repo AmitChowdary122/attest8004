@@ -128,7 +128,7 @@ attest8004/
   - Use **explicit gas limits** with the estimate guard (Monad charges on the gas limit, not gas used): a literal, or an evidence-sized `{ headroomPercent, max }` policy, since a response's evidence (and so its gas) varies with the validator's own findings.
   - Build evidence JSON v1 as **canonical JSON** (`buildEvidence()`, sorted keys, no whitespace), so a later `verify` command can rebuild the exact bytes from a recomputed `CheckResult` and reproduce `responseHash`.
 - **`AgentRequestForwarder.sol`** (in `contracts/src/`; added in P3). It lets an agent's hot key request validations without any power over the agent itself. EIP-8004 accepts `validationRequest` only from the owner or an ERC-721 operator, and an operator can also transfer the agent.
-  - The agent's owner calls `setApprovalForAll(forwarder, true)` once on the Identity Registry, then `setAgentKey(agentId, key)` on the forwarder. Only the current `ownerOf(agentId)` may set or revoke (`key = address(0)`) the key, and the record stores that owner.
+  - The agent's owner approves the forwarder on the Identity Registry, once for all its agents with `setApprovalForAll(forwarder, true)` or per agent with `approve(forwarder, agentId)` (what the demo agents use since P4), then calls `setAgentKey(agentId, key)` on the forwarder. Only the current `ownerOf(agentId)` may set or revoke (`key = address(0)`) the key, and the record stores that owner.
   - `request(validator, agentId, requestURI, requestHash)` works only when called by that agent's key, and only while the recorded owner is still `ownerOf(agentId)`. It makes exactly one call: `validationRequest` on the fixed ValidationRegistry.
   - Immutable, no admin, holds no funds. Deployed through the CREATE2 factory with the estimate guard.
   - **Tests:** wrong key, a key set by a previous owner and used after the agent is transferred, a revoked key, and that the forwarder can do nothing except `validationRequest`.
@@ -150,7 +150,7 @@ attest8004/
   7. `SELECTOR_NOT_ALLOWED`: the calldata's selector isn't on the allowlist. **`0x00000000` in the allowlist means empty calldata only** (a plain MON transfer): non-empty data starting with `0x00000000`, or 1–3 bytes of data, never matches, and an empty allowlist allows nothing.
   8. `VALUE_OVER_TX_CAP`: the value is above `maxValuePerTx`.
   9. `DAILY_CAP_EXCEEDED`: the spend (below) plus the value is above `maxValuePerDay`.
-  10. `SPEND_HISTORY_UNREADABLE`: a past approval's evidence was found, but it doesn't hash to that approval's `responseHash`, isn't `mandate-v1` evidence, or its request fields recompute to another `requestHash`.
+  10. `SPEND_HISTORY_UNREADABLE`: a past approval's evidence was found, but its response URI isn't an inline `data:` URI the validator accepts, or the evidence doesn't hash to that approval's `responseHash`, isn't `mandate-v1` evidence, names another `requestHash`, or has request fields that recompute to another `requestHash`.
   11. `PERMISSION_CHANGED_AFTER_MANDATE`: a permission change in the last N blocks (below) came after the current mandate was set. This is the Grok/Bankr pattern.
   12. `SIMULATION_FAILED`: an `eth_call` of the action at `P`, from the gate, with its value and data and a 1,000,000 gas cap, reverts, runs out of gas or lacks funds.
 
@@ -161,7 +161,7 @@ attest8004/
   - Which approvals exist comes from state at `P` (`getAgentValidations` and each status). Each one's amount comes from that approval's own posted evidence, used only if it hashes to the approval's `responseHash` and its request fields recompute to its `requestHash`. An evidence log that can't be found is never a verdict: the check fails and is retried later.
   - **Caps cover native MON only.** A mandate that allowlists token-moving selectors (`transfer`, `approve`, …) doesn't cap token amounts. This is on the P10 threat-model list.
 - **Permission changes** are read in the window `(P − N, P]`, with **N = 6,000 blocks** (about 30 minutes): the Identity Registry's `Transfer` and `Approval` of the agent and `ApprovalForAll` by its owner at `P`, the forwarder's `AgentKeySet` for the agent, and the MandateRegistry's `MandateSet` and `MandateRevoked` for the agent. An event after the current mandate's own `MandateSet`, comparing `(block, logIndex)`, fails the action: the owner never approved a mandate with that change in view.
-- **Output:** a score of 100 or 0, tag `mandate-v1`, the reasons, and canonical evidence JSON (ARCHITECTURE §6) with `block` (`P`'s number, hash and timestamp), `request`, `params` (N, the spend window, the deadline horizon, the simulation gas cap and the contracts read), `mandate`, `spend`, `permissions` and `simulation`. The evidence is an inline `data:` URI in public plaintext, because spend accounting and `verify` read it.
+- **Output:** a score of 100 or 0, tag `mandate-v1`, the reasons, and canonical evidence JSON (ARCHITECTURE §6) with `block` (`P`'s number, hash and timestamp), `request`, `params` (N, the spend window, the deadline horizon, the simulation gas cap, and the Identity Registry, forwarder and MandateRegistry addresses), `mandate`, `spend`, `permissions` and `simulation`. The evidence is an inline `data:` URI in public plaintext, because spend accounting and `verify` read it.
 - **Gas-spend policy.** `accepts()` decides whether to answer at all. A declined request gets no response, and one `warn` log line names the agent and the reason.
   - It serves only its allowlisted gates (`MANDATE_V1_GATES`, by default the demo vault), and only agents with an unexpired mandate set by their current owner.
   - Then a per-agent rate limit (20 requests an hour) and a validator-wide daily gas budget (10,000,000 gas, with each response reserving its 400,000 gas cap until it lands) apply. All three are configurable in env, and a restart resets the counters.
@@ -197,7 +197,7 @@ attest8004/
   - `Mandate` and `InboxKey`
   - `PermissionEvent`: Identity Registry `Approval`, `ApprovalForAll` and agent-wallet/URI changes
   - `AgentTrustSummary` (derived)
-- The repo contains `config.yaml`, `schema.graphql` and the handlers. The GraphQL API is used by `getAgentTrust()`, the mandate validator's daily-spend check and `/dashboard`.
+- The repo contains `config.yaml`, `schema.graphql` and the handlers. The GraphQL API is used by `getAgentTrust()` and `/dashboard`. (`mandate-v1`'s daily-spend check reads chain state and posted evidence instead, as built in P4, so a verdict can be re-run without the indexer.)
 - **Day 1 check:** is Monad testnet 10143 supported? If not, also deploy the contracts to mainnet and index mainnet.
 
 ### 4.9 Web app (`web/`)
