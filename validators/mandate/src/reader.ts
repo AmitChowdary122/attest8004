@@ -59,9 +59,9 @@ export interface ResponseLog {
 /**
  * Everything `mandate-v1` reads from the chain. Every state read takes `at`, the pinned block `P`,
  * and reads exactly that block; every log read ends at or before the block it is given. A transient
- * RPC failure (HTTP 429, a timeout, history the node no longer serves) always throws, so it can
- * never turn into a verdict. `viemMandateReader` is the real one; callers may call its methods
- * concurrently, and it bounds the requests it sends itself.
+ * RPC failure (HTTP 429, a timeout, history the node no longer serves, a call answered with no hex
+ * result) always throws, so it can never turn into a verdict. `viemMandateReader` is the real one;
+ * callers may call its methods concurrently, and it bounds the requests it sends itself.
  */
 export interface MandateReader {
   chainId(): Promise<number>;
@@ -77,9 +77,9 @@ export interface MandateReader {
   /**
    * `gate.consumed(actionHash)` at `at`, with a gas cap of `MANDATE_V1.consumedCallGas`. `null` when
    * the pinned call gives no bool, which is chain state, not an RPC failure: it reverts, runs out of
-   * gas within the cap, or succeeds with data that doesn't decode as a bool (a gate with no code
-   * returns none). The collector counts `null` toward spend (fail closed). A transport or RPC error
-   * still throws.
+   * gas within the cap, or succeeds with hex data that doesn't decode as a bool (a gate with no code
+   * returns `"0x"`). The collector counts `null` toward spend (fail closed). A transport or RPC
+   * error still throws, and so does an answer with no hex result (`null`, missing, or not hex).
    */
   consumed(gate: Address, actionHash: Hex, at: bigint): Promise<boolean | null>;
   /**
@@ -94,8 +94,10 @@ export interface MandateReader {
     filter: { agentId: bigint; owner: Address },
   ): Promise<Omit<PermissionEvent, "afterMandate">[]>;
   /**
-   * An `eth_call` of `call` at `at` with its explicit `gas`. Only a revert (JSON-RPC code 3), too
-   * little balance (`insufficient funds`) or running out of gas are outcomes; any other failure throws.
+   * An `eth_call` of `call` at `at` with its explicit `gas`. It is `ok` only when the node answers
+   * with hex data (`"0x"` included). Only a revert (JSON-RPC code 3), too little balance
+   * (`insufficient funds`) or running out of gas are failed outcomes; any other failure throws, and
+   * so does an answer with no hex result.
    */
   simulate(call: { from: Address; to: Address; value: bigint; data: Hex; gas: bigint }, at: bigint): Promise<Simulation>;
   /**
@@ -146,6 +148,11 @@ const PERMISSION_EVENTS = [
  *   `latest`, without `from`, `value` or `gas`. That would make an outcome depend on an HTTP server
  *   and on `latest` instead of `P` (so `verify` could disagree), turn a revert into a success, and let
  *   whoever controls a call target make this process send requests to URLs of their choosing.
+ * - **Only a hex answer is chain state.** viem's transports resolve an `eth_call` answered with
+ *   `result: null`, with neither `result` nor `error`, or (over HTTP) with an empty 200 body, as
+ *   that missing value instead of throwing. Every raw `eth_call` here throws unless the answer is a
+ *   `0x` hex string of whole bytes, so a broken answer is an RPC failure (retried; `verify` exits 2),
+ *   never a successful simulation, an unknown `consumed()` or a decoded registry value.
  */
 export function viemMandateReader(options: {
   publicClient: PublicClient;
@@ -173,9 +180,15 @@ export function viemMandateReader(options: {
     return { number: b.number, hash: b.hash, timestamp: b.timestamp };
   };
 
-  /** One raw `eth_call` at block `at` (see above: never viem's `call`). Errors are the node's, unwrapped. */
-  const ethCall = (call: { to: Address; data: Hex; from?: Address; value?: bigint; gas?: bigint }, at: bigint): Promise<Hex> =>
-    limited(() =>
+  /**
+   * One raw `eth_call` at block `at` (see above: never viem's `call`). Errors are the node's,
+   * unwrapped. An answer with no hex result throws here (see above), before any caller reads it.
+   */
+  const ethCall = async (
+    call: { to: Address; data: Hex; from?: Address; value?: bigint; gas?: bigint },
+    at: bigint,
+  ): Promise<Hex> => {
+    const result: unknown = await limited(() =>
       publicClient.request({
         method: "eth_call",
         params: [
@@ -190,6 +203,9 @@ export function viemMandateReader(options: {
         ],
       }),
     );
+    if (!isCallResult(result)) throw new Error(MALFORMED_CALL_ANSWER);
+    return result;
+  };
 
   const responseLog = async (requestHash: Hex, timestamp: bigint, notAfter: bigint): Promise<ResponseLog | null> => {
     const range = await blocksWithTimestamp(async (n) => (await block(n)).timestamp, timestamp, notAfter);
@@ -299,8 +315,9 @@ export function viemMandateReader(options: {
         if (outcome?.error === "REVERTED" || outcome?.error === "OUT_OF_GAS") return null;
         throw error;
       }
-      // A call that succeeded but returned no bool (no code at that address, or no `consumed()`) is
-      // chain state at P, so it is unknown rather than a failure: verify must reach the same answer.
+      // `ethCall` only returns well-formed hex. A call that succeeded but returned no bool (no code at
+      // that address, or no `consumed()`) is chain state at P, so it is unknown rather than a failure:
+      // verify must reach the same answer.
       try {
         return decodeFunctionResult({ abi: attestGateAbi, functionName: "consumed", data });
       } catch {
@@ -388,6 +405,20 @@ export function viemMandateReader(options: {
       return matching.at(-1)?.uri ?? null;
     },
   };
+}
+
+/**
+ * The error for an `eth_call` answer that carries no hex result. It has no JSON-RPC code, so no
+ * caller classifies it as a revert or another outcome: it is an RPC failure, retried like any other.
+ */
+const MALFORMED_CALL_ANSWER = "eth_call answered with no hex result: a malformed RPC answer, not chain state";
+
+/**
+ * Whether an `eth_call` answer is call data: a string of `0x` and whole bytes (`"0x"` included, the
+ * answer for an address with no code). That is the only shape a node returns for a call that ran.
+ */
+function isCallResult(value: unknown): value is Hex {
+  return typeof value === "string" && /^0x(?:[0-9a-fA-F]{2})*$/.test(value);
 }
 
 function byBlockThenLogIndex(a: { block: bigint; logIndex: number }, b: { block: bigint; logIndex: number }): number {

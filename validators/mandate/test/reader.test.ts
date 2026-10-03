@@ -10,13 +10,17 @@ import {
   validationRequestEvent,
   validationResponseEvent,
 } from "@attest8004/sdk";
+import { createServer, type Server } from "node:http";
+import type { AddressInfo } from "node:net";
 import {
   BaseError,
+  createPublicClient,
   encodeAbiParameters,
   encodeErrorResult,
   encodeEventTopics,
   getAbiItem,
   getAddress,
+  http,
   HttpRequestError,
   keccak256,
   TimeoutError,
@@ -28,7 +32,7 @@ import {
   type Hex,
 } from "viem";
 import { generatePrivateKey, privateKeyToAccount } from "viem/accounts";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { FakeRpc, RevertError, revert, type RpcLog } from "../../../packages/sdk/test/helpers/fake-rpc.ts";
 import { collectInputs, type PreimageCache } from "../src/collect.ts";
 import { MANDATE_V1 } from "../src/params.ts";
@@ -369,6 +373,118 @@ describe("viemMandateReader: consumed() is null for any outcome of the pinned ca
       });
       await expect(reader().consumed(GATE, HASH, P)).rejects.toThrow();
     }
+  });
+});
+
+/** The reader's error for an eth_call answer that carries no hex result. */
+const MALFORMED = /malformed RPC answer/;
+
+describe("viemMandateReader: an eth_call answer with no hex result is an RPC failure, never chain state", () => {
+  const call = { from: GATE, to: TARGET, value: 0n, data: "0x" as Hex, gas: 1_000_000n };
+
+  it.each([
+    ["null", null],
+    ["a number", 123],
+    ["an object", {}],
+    ["hex with an odd number of digits", "0x123"],
+    ["a string that isn't hex", "true"],
+  ] as const)("an answer of %s: consumed(), simulate() and every registry read throw", async (_, answer) => {
+    rpc.intercept = (method) => (method === "eth_call" ? answer : undefined);
+    const r = reader();
+    await expect(r.consumed(GATE, HASH, P)).rejects.toThrow(MALFORMED);
+    await expect(r.simulate(call, P)).rejects.toThrow(MALFORMED);
+    await expect(r.mandate(AGENT, P)).rejects.toThrow(MALFORMED);
+    await expect(r.ownerOf(AGENT, P)).rejects.toThrow(MALFORMED);
+    await expect(r.agentValidations(AGENT, P)).rejects.toThrow(MALFORMED);
+    await expect(r.status(HASH, P)).rejects.toThrow(MALFORMED);
+  });
+});
+
+describe("viemMandateReader over viem's http transport: only a hex result is chain state", () => {
+  // A real JSON-RPC endpoint on 127.0.0.1, so viem's own HTTP parsing runs. viem resolves an HTTP
+  // 200 with no `result` and no `error` (or a body that parses to one) as that missing `result`.
+  let server: Server;
+  let url = "";
+  /** The HTTP 200 reply to each request: its body, and its content type (none when omitted). */
+  let reply: (id: unknown) => { body: string; contentType?: string } = () => ({ body: "" });
+  const rpcReply = (payload: Record<string, unknown>) => (id: unknown) => ({
+    body: JSON.stringify({ jsonrpc: "2.0", id, ...payload }),
+    contentType: "application/json",
+  });
+  const call = { from: GATE, to: TARGET, value: 0n, data: "0x" as Hex, gas: 1_000_000n };
+
+  beforeAll(async () => {
+    server = createServer((request, response) => {
+      let raw = "";
+      request.setEncoding("utf8");
+      request.on("data", (chunk: string) => {
+        raw += chunk;
+      });
+      request.on("end", () => {
+        const { body, contentType } = reply((JSON.parse(raw) as { id?: unknown }).id);
+        response.writeHead(200, contentType === undefined ? {} : { "content-type": contentType });
+        response.end(body);
+      });
+    });
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    url = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+  });
+  afterAll(async () => {
+    await new Promise<void>((resolve, reject) => server.close((error) => (error ? reject(error) : resolve())));
+  });
+
+  function httpReader() {
+    const publicClient = createPublicClient({ transport: http(url, { retryCount: 0 }) });
+    return viemMandateReader({ publicClient, addresses: ADDRESSES });
+  }
+
+  it.each([
+    ["result: null", rpcReply({ result: null })],
+    ["neither result nor error", rpcReply({})],
+    ["an empty body with no content type", () => ({ body: "" })],
+    ["a bare {} body", () => ({ body: "{}", contentType: "application/json" })],
+    ["result: 123", rpcReply({ result: 123 })],
+    ["result: an odd number of hex digits", rpcReply({ result: "0x123" })],
+  ] as const)("an HTTP 200 with %s: consumed(), simulate() and the registry reads throw", async (_, answer) => {
+    reply = answer;
+    const r = httpReader();
+    await expect(r.consumed(GATE, HASH, P)).rejects.toThrow(MALFORMED);
+    await expect(r.simulate(call, P)).rejects.toThrow(MALFORMED);
+    await expect(r.mandate(AGENT, P)).rejects.toThrow(MALFORMED);
+    await expect(r.status(HASH, P)).rejects.toThrow(MALFORMED);
+  });
+
+  it('result "0x" (a call to an address with no code) is chain state: consumed() is null, simulate() is ok', async () => {
+    reply = rpcReply({ result: "0x" });
+    const r = httpReader();
+    await expect(r.consumed(GATE, HASH, P)).resolves.toBeNull();
+    await expect(r.simulate(call, P)).resolves.toEqual({ ok: true });
+  });
+
+  it("consumed() reads a bool as itself, and a 32-byte word that isn't a bool as null", async () => {
+    const r = httpReader();
+    reply = rpcReply({ result: encodeAbiParameters([{ type: "bool" }], [true]) });
+    await expect(r.consumed(GATE, HASH, P)).resolves.toBe(true);
+    reply = rpcReply({ result: encodeAbiParameters([{ type: "bool" }], [false]) });
+    await expect(r.consumed(GATE, HASH, P)).resolves.toBe(false);
+    reply = rpcReply({ result: `0x${"00".repeat(31)}02` });
+    await expect(r.consumed(GATE, HASH, P)).resolves.toBeNull();
+  });
+
+  it("the node's JSON-RPC errors are still classified: a revert, too little balance, running out of gas", async () => {
+    const r = httpReader();
+    const reverted = revert(attestGateAbi, "ActionExpired", [1n, 2n]);
+    reply = rpcReply({ error: { code: 3, message: "execution reverted", data: reverted.data } });
+    await expect(r.simulate(call, P)).resolves.toEqual({ ok: false, error: "REVERTED", revertSelector: reverted.data.slice(0, 10) });
+    await expect(r.consumed(GATE, HASH, P)).resolves.toBeNull();
+
+    reply = rpcReply({ error: { code: -32003, message: "Insufficient funds for gas * price + value" } });
+    await expect(r.simulate(call, P)).resolves.toEqual({ ok: false, error: "INSUFFICIENT_FUNDS", revertSelector: null });
+    await expect(r.consumed(GATE, HASH, P)).rejects.toThrow(/Insufficient funds/);
+
+    reply = rpcReply({ error: { code: -32000, message: "out of gas" } });
+    await expect(r.simulate(call, P)).resolves.toEqual({ ok: false, error: "OUT_OF_GAS", revertSelector: null });
+    await expect(r.consumed(GATE, HASH, P)).resolves.toBeNull();
   });
 });
 
