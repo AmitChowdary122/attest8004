@@ -103,6 +103,7 @@ pnpm --filter @attest8004/scripts setup-demo-agents            # register agents
 pnpm --filter @attest8004/scripts setup-demo-agents -- --fund  # top each hot key up to four requests
 pnpm --filter @attest8004/scripts setup-demo-agents -- --fund-validator  # top validator A up to 2 MON
 pnpm --filter @attest8004/scripts set-mandate                  # agent 1984's e2e mandate (owner-set until P6's passkeys)
+pnpm --filter @attest8004/scripts set-mandate -- --force       # set the same mandate again: a new MandateSet baseline
 pnpm --filter @attest8004/scripts e2e                          # hot key -> forwarder -> mandate-v1 -> gated execute; verify both
 pnpm --filter @attest8004/scripts gated-execute                # P2: the superseded agent-1982 vault, owner requests directly
 ```

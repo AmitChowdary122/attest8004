@@ -3,7 +3,10 @@
  * targets, selectors and per-tx/per-day MON caps mandate-v1 checks before scoring an action.
  *
  *   1. Computes the mandate's hash with the MandateRegistry's own pure `mandateHashOf` (eth_call)
- *      and skips sending if the stored mandate's hash already equals it.
+ *      and skips sending if the stored mandate's hash already equals it, unless --force is given:
+ *      that sets the same mandate again, so it gets a new MandateSet log (and setAtBlock), the
+ *      baseline mandate-v1 orders permission events against (after an owner-intended permission
+ *      change, say).
  *   2. Otherwise calls setMandate(1984, mandate) from the deployer (the agent's current owner),
  *      with a literal gas limit.
  *   3. Reads getMandate(1984) back and checks every field and that owner == deployer, then checks
@@ -15,10 +18,10 @@
  *      windows, regardless of how long ago the mandate was set, so this stays cheap and never
  *      throws a false failure just because time has passed since the least-privilege switch.
  *
- * Run: pnpm --filter @attest8004/scripts set-mandate   (Node loads ../.env into the environment)
+ * Run: pnpm --filter @attest8004/scripts set-mandate [-- --force]   (Node loads ../.env into the environment)
  *
- * Re-runnable: step 2 is skipped once the stored hash matches the constants below. Step 3's
- * permission-window check runs either way. Needs DEPLOYER_PRIVATE_KEY. Every transaction has a
+ * Re-runnable: step 2 is skipped once the stored hash matches the constants below (unless --force).
+ * Step 3's permission-window check runs either way. Needs DEPLOYER_PRIVATE_KEY. Every transaction has a
  * literal gas limit and goes through the SDK's estimate guard.
  */
 import { getAbiItem, getAddress, parseEther, type AbiEvent, type Address, type Hex } from "viem";
@@ -32,6 +35,7 @@ import {
   writeWithGasGuard,
 } from "@attest8004/sdk";
 import { assertChain, chain, check, printTx, publicClient, requireEnv, walletFor } from "./common.ts";
+import { permissionChangedMessage, shouldSendMandate } from "./set-mandate-plan.ts";
 
 /**
  * Explicit gas limit: Monad testnet eth_estimateGas on 3 Oct 2026 x 1.2, rounded up to 1k.
@@ -54,6 +58,8 @@ const mandateRegistry = getAddress(deployment.mandateRegistry);
 const forwarder = getAddress(deployment.agentRequestForwarder);
 const owner = privateKeyToAccount(requireEnv("DEPLOYER_PRIVATE_KEY") as Hex);
 const ownerWallet = walletFor(owner);
+/** --force: send setMandate even when the stored mandate already matches, for a new MandateSet baseline. */
+const force = process.argv.includes("--force");
 
 /** The e2e mandate for agent 1984: plain MON transfers to the deployer only, capped and time-limited. */
 const MANDATE = {
@@ -137,15 +143,15 @@ async function main(): Promise<void> {
   });
   console.log(`mandate hash    ${mandateHash}`);
 
-  // 1. Skip sending if the stored mandate already matches.
+  // 1. Skip sending if the stored mandate already matches (unless --force).
   const [, storedHash] = await publicClient.readContract({
     address: mandateRegistry,
     abi: mandateRegistryAbi,
     functionName: "getMandate",
     args: [AGENT_ID],
   });
-  if (storedHash === mandateHash) {
-    console.log(`\nagent ${AGENT_ID} already has this mandate; nothing to send`);
+  if (!shouldSendMandate({ storedHash, mandateHash, force })) {
+    console.log(`\nagent ${AGENT_ID} already has this mandate; nothing to send (--force sets it again, for a new MandateSet baseline)`);
   } else {
     // 2. setMandate from the deployer.
     const sent = await writeWithGasGuard({
@@ -200,14 +206,8 @@ async function main(): Promise<void> {
   );
   const violations = logs.filter((log) => isAfter(log, baseline));
   if (violations.length > 0) {
-    const latest = violations.reduce((a, b) => (isAfter(b, a) ? b : a));
-    const until = latest.blockNumber + PERMISSION_WINDOW_BLOCKS;
     throw new Error(
-      `mandate-v1 would score PERMISSION_CHANGED_AFTER_MANDATE until block ${until}: found ` +
-        `${violations.map((v) => `${v.label} at block ${v.blockNumber} (logIndex ${v.logIndex})`).join(", ")}, ` +
-        `after this mandate's own MandateSet at block ${setAtBlock} (logIndex ${baseline.logIndex}). ` +
-        `Re-run set-mandate after a new mandate is set (its MandateSet log becomes the new baseline), ` +
-        `or wait until block ${until}.`,
+      permissionChangedMessage({ violations, setAtBlock, baselineLogIndex: baseline.logIndex, windowBlocks: PERMISSION_WINDOW_BLOCKS }),
     );
   }
   check(`no permission event for agent ${AGENT_ID} landed after setAtBlock within the last ${PERMISSION_WINDOW_BLOCKS} blocks`, true, "none found");
