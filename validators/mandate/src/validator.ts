@@ -29,6 +29,16 @@ export const DEFAULT_PIN_POLL_MS = 250;
  */
 export const PIN_LAG_BLOCKS = 5n;
 
+/**
+ * A gate this validator answers for, and the agent it answers for there. A DemoAgentVault is bound to
+ * one agent, so a request naming it for any other agent could never execute; answering it would only
+ * spend this validator's gas.
+ */
+export interface ServedGate {
+  gate: Address;
+  agentId: bigint;
+}
+
 export type MandateValidatorOptions = Omit<ValidatorOptions, "tag" | "maxDeadlineAheadSeconds" | "maxRequestBytes"> & {
   /** Ignored: a `MandateValidator` always tags its responses `mandate-v1`. */
   tag?: string;
@@ -46,8 +56,11 @@ export type MandateValidatorOptions = Omit<ValidatorOptions, "tag" | "maxDeadlin
    * never below it: the mandate can't be read before it, and `verify` rejects such a pin.
    */
   mandateRegistryDeployBlock: bigint;
-  /** The gates (e.g. a DemoAgentVault) whose requests this validator answers. Compared case-insensitively. */
-  gates: Address[];
+  /**
+   * The (gate, agent) pairs whose requests this validator answers, e.g. a DemoAgentVault and the one
+   * agent it is bound to. Gates are compared case-insensitively. A gate may be listed with several agents.
+   */
+  gates: ServedGate[];
   /** The per-agent rate limit and daily gas budget, checked last in `accepts()`. */
   admission: Admission;
   /** Default {@link DEFAULT_PIN_TIMEOUT_MS} (30,000 ms). */
@@ -64,7 +77,9 @@ export type MandateValidatorOptions = Omit<ValidatorOptions, "tag" | "maxDeadlin
  * block and reproduce byte for byte.
  *
  * - **`accepts()`**, in order, declining with one `warn` line that names the agent: a gate it doesn't
- *   serve (`GATE_NOT_SERVED`); at the reader's finalized head, no mandate (`NO_MANDATE`), an expired one
+ *   serve (`GATE_NOT_SERVED`) or serves only for other agents (`GATE_NOT_FOR_AGENT`), both before any
+ *   RPC, so nobody can spend this validator's gas by naming its gate for their own agent; at the
+ *   reader's finalized head, no mandate (`NO_MANDATE`), an expired one
  *   (`MANDATE_EXPIRED`) or one set by someone who no longer owns the agent (`MANDATE_STALE`); then the
  *   admission policy (`RATE_LIMITED`, `GAS_BUDGET_EXHAUSTED`), admitted at the cycle head's time. If
  *   that finalized head is still below the request's block (a lagging RPC node), it throws instead of
@@ -93,7 +108,8 @@ export class MandateValidator extends ValidatorBase {
   private readonly reader: MandateReader;
   private readonly addresses: MandateAddresses;
   private readonly mandateRegistryDeployBlock: bigint;
-  private readonly gates: ReadonlySet<string>;
+  /** The agents each served gate (lower-case) is answered for. */
+  private readonly gates: ReadonlyMap<string, ReadonlySet<bigint>>;
   private readonly admission: Admission;
   private readonly cache: PreimageCache;
   private readonly pinTimeoutMs: number;
@@ -123,7 +139,14 @@ export class MandateValidator extends ValidatorBase {
     this.reader = reader;
     this.addresses = addresses;
     this.mandateRegistryDeployBlock = mandateRegistryDeployBlock;
-    this.gates = new Set(gates.map((gate) => gate.toLowerCase()));
+    const served = new Map<string, Set<bigint>>();
+    for (const { gate, agentId } of gates) {
+      const key = gate.toLowerCase();
+      const agents = served.get(key) ?? new Set<bigint>();
+      agents.add(agentId);
+      served.set(key, agents);
+    }
+    this.gates = served;
     this.admission = admission;
     this.cache = cache ?? new Map();
     this.pinTimeoutMs = pinTimeoutMs ?? DEFAULT_PIN_TIMEOUT_MS;
@@ -144,8 +167,14 @@ export class MandateValidator extends ValidatorBase {
 
   protected override async accepts(request: VerifiedRequest): Promise<boolean | { decline: string }> {
     const agentId = request.action.agentId;
-    if (!this.gates.has(request.gate.toLowerCase())) {
+    const agents = this.gates.get(request.gate.toLowerCase());
+    if (agents === undefined) {
       return { decline: `GATE_NOT_SERVED: agent ${agentId} requested through gate ${request.gate}, which this validator doesn't serve` };
+    }
+    if (!agents.has(agentId)) {
+      const listed = [...agents].sort((a, b) => (a < b ? -1 : a > b ? 1 : 0));
+      const served = listed.length === 1 ? `agent ${listed[0]}` : `agents ${listed.join(", ")}`;
+      return { decline: `GATE_NOT_FOR_AGENT: gate ${request.gate} serves ${served}, not ${agentId}` };
     }
     // Whether to answer at all, not the verdict: read at the finalized head, not at P.
     const head = await this.reader.finalized();

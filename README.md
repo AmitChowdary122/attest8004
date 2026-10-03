@@ -114,8 +114,9 @@ pnpm --filter @attest8004/validator-mandate start   # polls until Ctrl-C; JSON-l
 ```
 
 Run one process per validator key: the pinned block relies on knowing that key's last response. It answers only its
-allowlisted gates (by default the demo vault) and agents with an unexpired mandate set by their current owner, with a
-per-agent rate limit and a validator-wide daily gas budget; a restart resets both.
+allowlisted (gate, agent) pairs (by default the demo vault with agent 1984, the one agent it is bound to) and agents
+with an unexpired mandate set by their current owner, with a per-agent rate limit and a validator-wide daily gas
+budget; a restart resets both.
 
 ## Deployments
 

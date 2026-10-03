@@ -299,7 +299,10 @@ function addRequest(json: RequestJsonV1, block = 1_000n): RequestEvent {
 }
 
 /** Runs a real `MandateValidator` over the fakes for one poll cycle: every pending request is answered. */
-async function runValidator(addresses: MandateAddresses = ADDRESSES, gates: Address[] = [GATE]): Promise<void> {
+async function runValidator(
+  addresses: MandateAddresses = ADDRESSES,
+  gates: Array<{ gate: Address; agentId: bigint }> = [{ gate: GATE, agentId: AGENT }],
+): Promise<void> {
   const validator = new MandateValidator({
     chain,
     cursor: new MemoryCursorStore(999n),
@@ -441,7 +444,10 @@ describe("verifyRequest: an honest verdict reproduces", () => {
     chain.codelessGates.add(CODELESS_GATE.toLowerCase());
     const first = addRequest(requestJson({ gate: CODELESS_GATE, value: 1_000n }));
     const second = addRequest(requestJson({ value: 1_000n }));
-    await runValidator(ADDRESSES, [GATE, CODELESS_GATE]);
+    await runValidator(ADDRESSES, [
+      { gate: GATE, agentId: AGENT },
+      { gate: CODELESS_GATE, agentId: AGENT },
+    ]);
     const expected = {
       requestHash: first.requestHash,
       approvedAt: tsOf(1_010n),

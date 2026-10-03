@@ -22,12 +22,12 @@ function errorOf(env: Record<string, string | undefined>): string {
 }
 
 describe("parseServiceConfig", () => {
-  it("applies the defaults: the demo vault, the cursor under validators/mandate/.state, 20/h, 10M gas/day, 400k gas/response", () => {
+  it("applies the defaults: the demo vault for agent 1984, the cursor under validators/mandate/.state, 20/h, 10M gas/day, 400k gas/response", () => {
     expect(parseServiceConfig(base, ROOT)).toEqual({
       privateKey: KEY,
       rpcUrl: RPC,
       rpcHost: "rpc.example.org",
-      gates: [DEPLOYMENTS[10143].demoAgentVault],
+      gates: [{ gate: DEPLOYMENTS[10143].demoAgentVault, agentId: 1_984n }],
       cursorPath: "/srv/attest8004/validators/mandate/.state/cursor.json",
       maxRequestsPerAgentPerHour: 20,
       dailyGasBudget: 10_000_000n,
@@ -47,7 +47,7 @@ describe("parseServiceConfig", () => {
       },
       ROOT,
     );
-    expect(config.gates).toEqual([DEPLOYMENTS[10143].demoAgentVault]);
+    expect(config.gates).toEqual([{ gate: DEPLOYMENTS[10143].demoAgentVault, agentId: DEPLOYMENTS[10143].demoAgents[0] }]);
     expect(config.maxRequestsPerAgentPerHour).toBe(20);
   });
 
@@ -55,7 +55,7 @@ describe("parseServiceConfig", () => {
     const config = parseServiceConfig(
       {
         ...base,
-        MANDATE_V1_GATES: ` ${GATE_A.toLowerCase()} , ${GATE_B}`,
+        MANDATE_V1_GATES: ` ${GATE_A.toLowerCase()}:1984 , ${GATE_B} : 0 ,${GATE_A}:1985`,
         MANDATE_V1_CURSOR: "tmp/cursor.json",
         MANDATE_V1_MAX_REQUESTS_PER_AGENT_PER_HOUR: "5",
         MANDATE_V1_DAILY_GAS_BUDGET: "2000000",
@@ -64,7 +64,11 @@ describe("parseServiceConfig", () => {
       ROOT,
     );
     expect(config).toMatchObject({
-      gates: [GATE_A, GATE_B],
+      gates: [
+        { gate: GATE_A, agentId: 1_984n },
+        { gate: GATE_B, agentId: 0n },
+        { gate: GATE_A, agentId: 1_985n },
+      ],
       cursorPath: "/srv/attest8004/tmp/cursor.json",
       maxRequestsPerAgentPerHour: 5,
       dailyGasBudget: 2_000_000n,
@@ -108,10 +112,22 @@ describe("parseServiceConfig", () => {
     );
   });
 
-  it("rejects a gate that isn't an address, or an empty item", () => {
-    expect(errorOf({ ...base, MANDATE_V1_GATES: `${GATE_A},0x1234` })).toContain('MANDATE_V1_GATES: "0x1234" is not an address');
-    expect(errorOf({ ...base, MANDATE_V1_GATES: `${GATE_A},,${GATE_B}` })).toContain("MANDATE_V1_GATES has an empty item");
+  it("rejects a gate that isn't an address, an agentId that isn't a decimal integer, or an empty item", () => {
+    expect(errorOf({ ...base, MANDATE_V1_GATES: `${GATE_A}:1984,0x1234:1985` })).toContain('MANDATE_V1_GATES: "0x1234" is not an address');
+    expect(errorOf({ ...base, MANDATE_V1_GATES: `${GATE_A}:1984,,${GATE_B}:1985` })).toContain("MANDATE_V1_GATES has an empty item");
     const badChecksum = GATE_A.replace("B", "b");
-    expect(errorOf({ ...base, MANDATE_V1_GATES: badChecksum })).toContain("is not an address");
+    expect(errorOf({ ...base, MANDATE_V1_GATES: `${badChecksum}:1984` })).toContain("is not an address");
+    for (const agentId of ["abc", "-1", "1e3", "01984", "", "1.5", `${2n ** 256n}`]) {
+      expect(errorOf({ ...base, MANDATE_V1_GATES: `${GATE_A}:${agentId}` })).toContain(
+        `MANDATE_V1_GATES: agentId "${agentId}" for gate ${GATE_A} must be a decimal integer below 2^256`,
+      );
+    }
+  });
+
+  it("needs each gate paired with the one agent it serves, so a gate alone (any agent) is refused", () => {
+    expect(errorOf({ ...base, MANDATE_V1_GATES: GATE_A })).toContain(
+      `MANDATE_V1_GATES: "${GATE_A}" must be <gate address>:<agentId>, e.g. ${DEPLOYMENTS[10143].demoAgentVault}:1984`,
+    );
+    expect(errorOf({ ...base, MANDATE_V1_GATES: `${GATE_A}:1984:1985` })).toContain("must be <gate address>:<agentId>");
   });
 });

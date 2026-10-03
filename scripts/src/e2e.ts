@@ -227,8 +227,8 @@ const responseGas = new Map<Hex, { estimate: bigint; limit: bigint }>();
 
 /**
  * Validator A as the service runs it (validators/mandate/src/main.ts), from just before `fromBlock`, in memory:
- * the evidence-sized response limit, a reader at concurrency 8, the vault as its only gate and a fresh admission
- * policy with the service's defaults. Its chain port is wrapped only to record each response's gas.
+ * the evidence-sized response limit, a reader at concurrency 8, the vault for agent 1984 as its only (gate, agent)
+ * pair and a fresh admission policy with the service's defaults. Its chain port is wrapped only to record each response's gas.
  */
 function mandateValidator(fromBlock: bigint, name: string): MandateValidator {
   const port = viemValidatorChain({
@@ -259,7 +259,7 @@ function mandateValidator(fromBlock: bigint, name: string): MandateValidator {
     reader: viemMandateReader({ publicClient, addresses, concurrency: READER_CONCURRENCY }),
     addresses,
     mandateRegistryDeployBlock: deployment.mandateRegistryDeployBlock,
-    gates: [vault],
+    gates: [{ gate: vault, agentId }],
     admission: new Admission(ADMISSION),
     log: (entry) => console.log(`    ${name}: ${json(entry)}`),
   });

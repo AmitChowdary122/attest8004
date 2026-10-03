@@ -196,13 +196,15 @@ function mandate(over: Partial<MandateRecord> = {}): MandateRecord {
 
 let saltCounter = 0;
 
-function requestJson(over: { gate?: Address; target?: Address; value?: bigint; deadline?: bigint } = {}): RequestJsonV1 {
+function requestJson(
+  over: { gate?: Address; agentId?: bigint; target?: Address; value?: bigint; deadline?: bigint } = {},
+): RequestJsonV1 {
   return buildRequestJson({
     chainId: CHAIN_ID,
     gate: over.gate ?? GATE,
     validator: VALIDATOR,
     action: buildAction({
-      agentId: AGENT,
+      agentId: over.agentId ?? AGENT,
       target: over.target ?? OWNER,
       value: over.value ?? 1_000n,
       deadline: over.deadline ?? tsOf(1_004n) + 600n,
@@ -266,7 +268,7 @@ function validator(over: Partial<MandateValidatorOptions> = {}): MandateValidato
     reader,
     addresses: ADDRESSES,
     mandateRegistryDeployBlock: 0n,
-    gates: [GATE],
+    gates: [{ gate: GATE, agentId: AGENT }],
     admission,
     retryDelayMs: 0,
     pollIntervalMs: 0,
@@ -481,16 +483,49 @@ describe("MandateValidator: accepts()", () => {
 
   it("serves its gates case-insensitively", async () => {
     const e = addRequest(requestJson());
-    const { outcomes } = await validator({ gates: [GATE.toLowerCase() as Address] }).pollOnce();
+    const { outcomes } = await validator({ gates: [{ gate: GATE.toLowerCase() as Address, agentId: AGENT }] }).pollOnce();
     expect(outcomes).toEqual([expect.objectContaining({ kind: "responded", requestHash: e.requestHash })]);
   });
 
-  it("checks the gate before reading any mandate", async () => {
+  it("checks the gate before reading anything", async () => {
     reader.mandateRecord = null;
     addRequest(requestJson({ gate: OTHER_GATE }));
     const { outcomes } = await validator().pollOnce();
     expect(outcomes).toEqual([expect.objectContaining({ reason: "DECLINED", detail: expect.stringMatching(/^GATE_NOT_SERVED: /) })]);
-    expect(reader.calls.filter((c) => c.method === "mandate" || c.method === "ownerOf")).toEqual([]);
+    expect(reader.calls).toEqual([]);
+  });
+
+  it("GATE_NOT_FOR_AGENT: a served gate named for another agent is declined before any read, and nothing is sent", async () => {
+    // Anyone can register an agent, set their own mandate and name our gate: the gate would refuse the action
+    // (NotVaultAgent), but each answer would still spend this validator's gas.
+    const admit = vi.spyOn(admission, "admit");
+    const e = addRequest(requestJson({ agentId: 7n }));
+
+    const { outcomes } = await validator().pollOnce();
+
+    const detail = `GATE_NOT_FOR_AGENT: gate ${GATE} serves agent 1984, not 7`;
+    expect(outcomes).toEqual([{ kind: "skipped", requestHash: e.requestHash, reason: "DECLINED", detail }]);
+    expect(warnLines()).toEqual([expect.objectContaining({ level: "warn", requestHash: e.requestHash, reason: "DECLINED", detail })]);
+    expect(reader.calls).toEqual([]);
+    expect(admit).not.toHaveBeenCalled();
+    expect(chain.respondCalls).toBe(0);
+  });
+
+  it("serves each gate for exactly the agents it is listed with", async () => {
+    const gates = [
+      { gate: GATE, agentId: AGENT },
+      { gate: GATE, agentId: 1_985n },
+      { gate: OTHER_GATE, agentId: 1_982n },
+    ];
+    const ours = addRequest(requestJson({ agentId: 1_985n }));
+    const theirs = addRequest(requestJson({ agentId: 1_982n }));
+
+    const { outcomes } = await validator({ gates }).pollOnce();
+
+    expect(outcomes).toEqual([
+      expect.objectContaining({ kind: "responded", requestHash: ours.requestHash }),
+      { kind: "skipped", requestHash: theirs.requestHash, reason: "DECLINED", detail: `GATE_NOT_FOR_AGENT: gate ${GATE} serves agents 1984, 1985, not 1982` },
+    ]);
   });
 
   it("reports an expired mandate before a stale owner", async () => {

@@ -1,6 +1,7 @@
 import { DEPLOYMENTS } from "@attest8004/sdk";
 import { isAbsolute, resolve } from "node:path";
-import { getAddress, isAddress, type Address, type Hex } from "viem";
+import { getAddress, isAddress, type Hex } from "viem";
+import type { ServedGate } from "./validator.ts";
 
 /** The `mandate-v1` service's settings, from the environment (see `.env.example`). */
 export interface ServiceConfig {
@@ -10,7 +11,8 @@ export interface ServiceConfig {
   rpcUrl: string;
   /** The RPC URL's host, the most of it the service logs. */
   rpcHost: string;
-  gates: Address[];
+  /** The (gate, agent) pairs the validator answers for. */
+  gates: ServedGate[];
   /** Absolute. */
   cursorPath: string;
   maxRequestsPerAgentPerHour: number;
@@ -28,6 +30,8 @@ export const SERVICE_DEFAULTS = {
 } as const;
 
 const PRIVATE_KEY = /^0x[0-9a-fA-F]{64}$/;
+const DECIMAL = /^(0|[1-9][0-9]*)$/;
+const UINT256_LIMIT = 2n ** 256n;
 const POSITIVE_DECIMAL = /^[1-9][0-9]*$/;
 
 /**
@@ -59,15 +63,30 @@ export function parseServiceConfig(env: Record<string, string | undefined>, repo
     }
   }
 
-  const gates: Address[] = [];
+  const testnet = DEPLOYMENTS[10143];
+  const gates: ServedGate[] = [];
   const gateList = read("MANDATE_V1_GATES");
   if (gateList === undefined) {
-    gates.push(DEPLOYMENTS[10143].demoAgentVault);
+    gates.push({ gate: testnet.demoAgentVault, agentId: testnet.demoAgents[0] as bigint });
   } else {
     for (const item of gateList.split(",").map((s) => s.trim())) {
-      if (item === "") problems.push("MANDATE_V1_GATES has an empty item");
-      else if (!isAddress(item, { strict: true })) problems.push(`MANDATE_V1_GATES: "${item}" is not an address`);
-      else gates.push(getAddress(item));
+      if (item === "") {
+        problems.push("MANDATE_V1_GATES has an empty item");
+        continue;
+      }
+      const parts = item.split(":").map((s) => s.trim());
+      if (parts.length !== 2) {
+        problems.push(`MANDATE_V1_GATES: "${item}" must be <gate address>:<agentId>, e.g. ${testnet.demoAgentVault}:${testnet.demoAgents[0]}`);
+        continue;
+      }
+      const [gate, agentId] = parts as [string, string];
+      if (!isAddress(gate, { strict: true })) {
+        problems.push(`MANDATE_V1_GATES: "${gate}" is not an address`);
+      } else if (!DECIMAL.test(agentId) || BigInt(agentId) >= UINT256_LIMIT) {
+        problems.push(`MANDATE_V1_GATES: agentId "${agentId}" for gate ${getAddress(gate)} must be a decimal integer below 2^256`);
+      } else {
+        gates.push({ gate: getAddress(gate), agentId: BigInt(agentId) });
+      }
     }
   }
 
