@@ -1,6 +1,6 @@
 import { getAddress, type Address, type Hash, type Hex, type PublicClient, type WalletClient } from "viem";
 import { validationRegistryAbi, validationRequestEvent } from "./abi.ts";
-import { writeWithGasGuard } from "./gas.ts";
+import { writeWithGasGuard, type GasLimit } from "./gas.ts";
 
 /** A `ValidationRequest` event addressed to this validator. */
 export interface RequestEvent {
@@ -34,26 +34,27 @@ export interface ValidatorChain {
   /** `ValidationRequest` events naming this validator in [fromBlock, toBlock], in chain order. */
   requestLogs(fromBlock: bigint, toBlock: bigint): Promise<RequestEvent[]>;
   status(requestHash: Hex): Promise<ValidationStatus>;
-  /** Sends `validationResponse` and resolves once it succeeded onchain. */
+  /** Sends `validationResponse` and resolves once it succeeded onchain, with where it landed. */
   respond(response: {
     requestHash: Hex;
     response: number;
     responseURI: string;
     responseHash: Hex;
     tag: string;
-  }): Promise<Hash>;
+  }): Promise<{ txHash: Hash; blockNumber: bigint; gasLimit: bigint }>;
 }
 
 /**
  * A `ValidatorChain` over viem. The head is the `finalized` block by default, so the validator never
  * answers a request that a reorg could remove. Responses go through `writeWithGasGuard` with the
- * explicit `gasLimit` (Monad charges for the limit).
+ * given `gasLimit` (Monad charges for the limit): a literal, or an evidence-sized policy, since a
+ * response's evidence varies in size with the validator's own findings.
  */
 export function viemValidatorChain(options: {
   publicClient: PublicClient;
   walletClient: WalletClient;
   validationRegistry: Address;
-  gasLimit: bigint;
+  gasLimit: GasLimit;
   headTag?: "finalized" | "safe" | "latest";
 }): ValidatorChain {
   const { publicClient, walletClient, validationRegistry, gasLimit, headTag = "finalized" } = options;
@@ -107,7 +108,7 @@ export function viemValidatorChain(options: {
     },
 
     async respond({ requestHash, response, responseURI, responseHash, tag }) {
-      const { hash } = await writeWithGasGuard({
+      const { hash, receipt, gasLimit: sentGasLimit } = await writeWithGasGuard({
         publicClient,
         walletClient,
         address: validationRegistry,
@@ -117,7 +118,7 @@ export function viemValidatorChain(options: {
         gasLimit,
         label: "validationResponse",
       });
-      return hash;
+      return { txHash: hash, blockNumber: receipt.blockNumber, gasLimit: sentGasLimit };
     },
   };
 }

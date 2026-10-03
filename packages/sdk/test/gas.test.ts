@@ -1,7 +1,13 @@
 import { getAddress, keccak256, toHex, type Hex } from "viem";
 import { generatePrivateKey, privateKeyToAccount } from "viem/accounts";
 import { beforeEach, describe, expect, it } from "vitest";
-import { GasLimitTooLowError, agentRequestForwarderAbi, sendWithGasGuard, writeWithGasGuard } from "../src/index.ts";
+import {
+  GasLimitTooLowError,
+  agentRequestForwarderAbi,
+  sendWithGasGuard,
+  writeWithGasGuard,
+  type GasLimit,
+} from "../src/index.ts";
 import { FakeRpc, revert } from "./helpers/fake-rpc.ts";
 
 const FORWARDER = getAddress("0x1451f3c36545b191d3642f759d59f21dcfd657b2");
@@ -11,7 +17,7 @@ const account = privateKeyToAccount(generatePrivateKey());
 
 describe("writeWithGasGuard", () => {
   let rpc: FakeRpc;
-  const write = (gasLimit: bigint) => {
+  const write = (gasLimit: GasLimit) => {
     const { publicClient, walletClient } = rpc.clients(account);
     return writeWithGasGuard({
       publicClient,
@@ -67,6 +73,57 @@ describe("writeWithGasGuard", () => {
   it("throws when the receipt says the transaction reverted", async () => {
     rpc.receiptStatus = "0x0";
     await expect(write(120_000n)).rejects.toThrow(/forwarder\.request: transaction 0x[0-9a-f]{64} reverted/);
+  });
+});
+
+describe("writeWithGasGuard: evidence-sized gas limit policy", () => {
+  let rpc: FakeRpc;
+  const write = (gasLimit: GasLimit) => {
+    const { publicClient, walletClient } = rpc.clients(account);
+    return writeWithGasGuard({
+      publicClient,
+      walletClient,
+      address: FORWARDER,
+      abi: agentRequestForwarderAbi,
+      functionName: "request",
+      args: [VALIDATOR, 7n, "data:application/json,{}", HASH],
+      gasLimit,
+      label: "forwarder.request",
+    });
+  };
+
+  beforeEach(() => {
+    rpc = new FakeRpc().onCall(FORWARDER, agentRequestForwarderAbi, "request", () => undefined);
+  });
+
+  it("sizes the limit at the estimate plus headroom, rounded up", async () => {
+    rpc.estimate = 100_000n;
+    const result = await write({ headroomPercent: 20, max: 400_000n });
+    expect(rpc.sent[0]?.gas).toBe(120_000n);
+    expect(result.gasLimit).toBe(120_000n);
+    expect(result.estimate).toBe(100_000n);
+  });
+
+  it("caps the sized limit at max", async () => {
+    rpc.estimate = 380_000n;
+    const result = await write({ headroomPercent: 20, max: 400_000n });
+    expect(rpc.sent[0]?.gas).toBe(400_000n);
+    expect(result.gasLimit).toBe(400_000n);
+  });
+
+  it("throws GasLimitTooLowError before sending when the estimate is already above max", async () => {
+    rpc.estimate = 401_000n;
+    const error = await write({ headroomPercent: 20, max: 400_000n }).catch((e: unknown) => e);
+    expect(error).toBeInstanceOf(GasLimitTooLowError);
+    expect(error).toMatchObject({ label: "forwarder.request", estimate: 401_000n, limit: 400_000n });
+    expect(rpc.methods()).not.toContain("eth_sendRawTransaction");
+  });
+
+  it("rejects a headroomPercent that isn't a non-negative integer, before sending", async () => {
+    rpc.estimate = 100_000n;
+    await expect(write({ headroomPercent: -1, max: 400_000n })).rejects.toThrow(/headroomPercent/);
+    await expect(write({ headroomPercent: 1.5, max: 400_000n })).rejects.toThrow(/headroomPercent/);
+    expect(rpc.methods()).not.toContain("eth_sendRawTransaction");
   });
 });
 

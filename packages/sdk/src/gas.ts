@@ -15,6 +15,13 @@ export class GasLimitTooLowError extends Error {
   }
 }
 
+/**
+ * A transaction's gas limit: either a literal, or an evidence-sized policy whose limit is computed
+ * from a fresh estimate — `min(max, ceil(estimate * (100 + headroomPercent) / 100))` — because an
+ * evidence-carrying response's size (and so its gas) varies with the validator's own findings.
+ */
+export type GasLimit = bigint | { headroomPercent: number; max: bigint };
+
 export interface GasGuardedWrite {
   publicClient: PublicClient;
   /** Must carry the sending account. */
@@ -23,19 +30,20 @@ export interface GasGuardedWrite {
   abi: Abi;
   functionName: string;
   args: readonly unknown[];
-  /** The literal gas limit sent with the transaction. Monad charges for the limit, not the gas used. */
-  gasLimit: bigint;
+  /** The gas limit sent with the transaction. Monad charges for the limit, not the gas used. */
+  gasLimit: GasLimit;
   /** Names the transaction in errors. */
   label: string;
 }
 
 /**
  * Sends a contract call with an explicit gas limit, the way every Attest8004 transaction is sent:
- * simulate it (so a revert surfaces by name and nothing is sent), ask the node for an estimate and
- * refuse to send if it is above `gasLimit`, send with `gas: gasLimit`, and wait for a successful
- * receipt. Monad charges the full limit even for a reverted transaction, hence the checks first.
- * Fees and the nonce are set here too: otherwise viem asks the node to fill them with
- * eth_fillTransaction and takes the node's `gas` from the result.
+ * simulate it (so a revert surfaces by name and nothing is sent), ask the node for an estimate,
+ * resolve `gasLimit` against that estimate (refusing to send if it is above the limit, or above a
+ * policy's `max`), send with `gas: <the resolved limit>`, and wait for a successful receipt. Monad
+ * charges the full limit even for a reverted transaction, hence the checks first. Fees and the nonce
+ * are set here too: otherwise viem asks the node to fill them with eth_fillTransaction and takes the
+ * node's `gas` from the result.
  */
 export async function writeWithGasGuard(write: GasGuardedWrite): Promise<{
   hash: Hash;
@@ -53,16 +61,36 @@ export async function writeWithGasGuard(write: GasGuardedWrite): Promise<{
 
   await publicClient.simulateContract({ ...call, account: account.address } as never);
   const estimate = await publicClient.estimateContractGas({ ...call, account: account.address } as never);
-  if (estimate > gasLimit) throw new GasLimitTooLowError(label, estimate, gasLimit);
+  const limit = resolveGasLimit(gasLimit, estimate, label);
 
   const hash = await walletClient.writeContract({
     ...call,
     account,
     chain: walletClient.chain,
-    gas: gasLimit,
+    gas: limit,
     ...(await feesAndNonce(publicClient, account.address)),
   } as never);
-  return { hash, receipt: await successfulReceipt(publicClient, hash, label), estimate, gasLimit };
+  return { hash, receipt: await successfulReceipt(publicClient, hash, label), estimate, gasLimit: limit };
+}
+
+/**
+ * Resolves a `GasLimit` against a fresh estimate. A literal keeps today's behavior: the limit
+ * itself, refusing if the estimate is above it. A policy sizes the limit to the estimate plus
+ * headroom (rounded up, bigint arithmetic throughout), capped at `max`, and refuses up front if the
+ * estimate alone is already above `max` — so nothing is sent for a response too large to pay for.
+ */
+function resolveGasLimit(gasLimit: GasLimit, estimate: bigint, label: string): bigint {
+  if (typeof gasLimit === "bigint") {
+    if (estimate > gasLimit) throw new GasLimitTooLowError(label, estimate, gasLimit);
+    return gasLimit;
+  }
+  const { headroomPercent, max } = gasLimit;
+  if (!Number.isInteger(headroomPercent) || headroomPercent < 0) {
+    throw new RangeError(`${label}: headroomPercent must be a non-negative integer, got ${headroomPercent}`);
+  }
+  if (estimate > max) throw new GasLimitTooLowError(label, estimate, max);
+  const sized = (estimate * (100n + BigInt(headroomPercent)) + 99n) / 100n;
+  return sized < max ? sized : max;
 }
 
 /** A plain value transfer with the same explicit-limit guard as `writeWithGasGuard`. */

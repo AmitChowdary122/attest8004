@@ -1,9 +1,9 @@
 import { BaseError, zeroHash, type Address, type Hash, type Hex } from "viem";
 import type { Action } from "./action.ts";
+import { encodeCanonicalJsonDataUri } from "./canonical.ts";
 import { MAX_LOG_BLOCK_RANGE } from "./logs.ts";
 import {
   MAX_REQUEST_URI_BYTES,
-  encodeJsonDataUri,
   parseRequestUri,
   requestHashOfJson,
   requestJsonToAction,
@@ -65,7 +65,7 @@ export type SkipReason =
   | "DECLINED";
 
 export type Outcome =
-  | { kind: "responded"; requestHash: Hex; score: number; txHash: Hash }
+  | { kind: "responded"; requestHash: Hex; score: number; txHash: Hash; blockNumber: bigint }
   | { kind: "skipped"; requestHash: Hex; reason: SkipReason; detail?: string }
   | { kind: "gave-up"; requestHash: Hex; error: string };
 
@@ -97,6 +97,25 @@ const EVIDENCE_SCHEMA_V1 = "attest8004.evidence.v1";
 const RESERVED_EVIDENCE_KEYS = ["schema", "validator", "requestHash", "score", "reasons"];
 
 /**
+ * The evidence JSON v1 document for a response (ARCHITECTURE §6): the base's fields, then the
+ * subclass's own. The base builds it this way before publishing; `verify` (a later CLI) calls it
+ * again with a recomputed `CheckResult` to rebuild the exact document and check its hash. Callers
+ * that build their own `result.evidence` must avoid the base's reserved keys (`check()`'s caller
+ * checks this before building; `buildEvidence` itself does not re-check).
+ */
+export function buildEvidence(args: { tag: string; requestHash: Hex; result: CheckResult }): Record<string, unknown> {
+  const { tag, requestHash, result } = args;
+  return {
+    schema: EVIDENCE_SCHEMA_V1,
+    validator: tag,
+    requestHash,
+    score: result.score,
+    reasons: result.reasons,
+    ...result.evidence,
+  };
+}
+
+/**
  * The validator base class (SPEC §4.4). A subclass implements `check()`; the base does the rest:
  *
  * - Polls `ValidationRequest` logs naming this validator with eth_getLogs, from a saved block
@@ -107,10 +126,12 @@ const RESERVED_EVIDENCE_KEYS = ["schema", "validator", "requestHash", "score", "
  *   neither past nor more than `maxDeadlineAheadSeconds` ahead.
  * - Checks `getValidationStatus` before working on a request and again before sending, so a
  *   restart never posts twice. Its responses always carry a non-zero responseHash and a tag.
- * - Posts `validationResponse` with an evidence JSON v1 and its keccak256, with an explicit gas
- *   limit (through the chain port), retrying a failed send. A request that keeps failing is retried
- *   in later cycles, with a growing wait, then logged as given up.
- * - Lets a subclass decline a valid request without responding (`accepts()`).
+ * - Posts `validationResponse` with a canonical-JSON evidence document (`buildEvidence()`) and its
+ *   keccak256, with a gas limit resolved through the chain port (a literal, or an evidence-sized
+ *   headroom policy), retrying a failed send. A request that keeps failing is retried in later
+ *   cycles, with a growing wait, then logged as given up.
+ * - Lets a subclass decline a valid request without responding (`accepts()`), optionally with a
+ *   reason, and notifies it once a response lands (`onResponded()`).
  */
 export abstract class ValidatorBase {
   private readonly options: Required<Omit<ValidatorOptions, "startBlock">> & { startBlock: bigint | undefined };
@@ -140,17 +161,35 @@ export abstract class ValidatorBase {
   protected abstract check(request: VerifiedRequest): Promise<CheckResult>;
 
   /**
-   * Whether to answer a request that passed the base checks. Return false to turn it away with no
-   * response and no retries (logged as DECLINED), e.g. a request outside this validator's scope.
-   * Default: accept every request.
+   * Whether to answer a request that passed the base checks. Return `false` to turn it away with no
+   * response and no retries (logged as DECLINED with no detail), e.g. a request outside this
+   * validator's scope. Return `{ decline: "<reason>" }` to do the same but carry a reason, logged
+   * once at `warn` as the outcome's `detail` (e.g. a rate limit or budget exhaustion). Default:
+   * accept every request.
    */
-  protected async accepts(_request: VerifiedRequest): Promise<boolean> {
+  protected async accepts(_request: VerifiedRequest): Promise<boolean | { decline: string }> {
     return true;
   }
 
-  /** Where the evidence goes. Default: a data: URI; responseHash = keccak256 of the JSON bytes. */
+  /**
+   * Called once per response that actually landed onchain, right after `chain.respond` resolves,
+   * with the block it landed in and the gas limit that was sent. Never called when the status check
+   * finds the request already answered (nothing landed through this call). A subclass might use it
+   * to record spend or update a rate-limit counter. If it throws, the throw is logged and swallowed:
+   * the response already landed, so treating it as failed would retry and double-post. Default:
+   * no-op.
+   */
+  protected onResponded(_response: { requestHash: Hex; score: number; txHash: Hash; blockNumber: bigint; gasLimit: bigint }): void {
+    // no-op by default
+  }
+
+  /**
+   * Where the evidence goes. Default: canonical JSON (sorted keys, no whitespace) as a data: URI;
+   * responseHash = keccak256 of those exact bytes, so `verify` can rebuild them byte for byte from a
+   * recomputed `CheckResult` via {@link buildEvidence} and get the same hash.
+   */
   protected async publishEvidence(evidence: Record<string, unknown>): Promise<{ uri: string; hash: Hex }> {
-    return encodeJsonDataUri(evidence);
+    return encodeCanonicalJsonDataUri(evidence);
   }
 
   /**
@@ -247,7 +286,8 @@ export abstract class ValidatorBase {
       chainId: json.chainId,
       headTimestamp,
     };
-    if (!(await this.accepts(verified))) return skip("DECLINED");
+    const accepted = await this.accepts(verified);
+    if (accepted !== true) return skip("DECLINED", typeof accepted === "object" ? accepted.decline : undefined);
     const result = await this.check(verified);
     if (!Number.isInteger(result.score) || result.score < 0 || result.score > 100) {
       throw new Error(`check() returned score ${result.score}; it must be an integer from 0 to 100`);
@@ -255,14 +295,7 @@ export abstract class ValidatorBase {
     const reserved = Object.keys(result.evidence ?? {}).filter((key) => RESERVED_EVIDENCE_KEYS.includes(key));
     if (reserved.length > 0) throw new Error(`check() evidence reuses reserved keys: ${reserved.join(", ")}`);
 
-    const evidence = await this.publishEvidence({
-      schema: EVIDENCE_SCHEMA_V1,
-      validator: tag,
-      requestHash,
-      score: result.score,
-      reasons: result.reasons,
-      ...result.evidence,
-    });
+    const evidence = await this.publishEvidence(buildEvidence({ tag, requestHash, result }));
     return this.respond(requestHash, result.score, evidence);
   }
 
@@ -275,20 +308,33 @@ export abstract class ValidatorBase {
         return { kind: "skipped", requestHash, reason: "ALREADY_RESPONDED" };
       }
       try {
-        const txHash = await chain.respond({
+        const { txHash, blockNumber, gasLimit } = await chain.respond({
           requestHash,
           response: score,
           responseURI: evidence.uri,
           responseHash: evidence.hash,
           tag,
         });
-        this.log("info", "responded", { requestHash, score, txHash });
-        return { kind: "responded", requestHash, score, txHash };
+        this.log("info", "responded", { requestHash, score, txHash, blockNumber, gasLimit });
+        this.notifyResponded({ requestHash, score, txHash, blockNumber, gasLimit });
+        return { kind: "responded", requestHash, score, txHash, blockNumber };
       } catch (error) {
         if (attempt >= sendAttempts) throw error;
         this.log("warn", "send failed; retrying", { requestHash, attempt, error: errorMessage(error) });
         await sleep(retryDelayMs);
       }
+    }
+  }
+
+  /** Calls the subclass's `onResponded`, swallowing a throw: the response already landed. */
+  private notifyResponded(response: { requestHash: Hex; score: number; txHash: Hash; blockNumber: bigint; gasLimit: bigint }): void {
+    try {
+      this.onResponded(response);
+    } catch (error) {
+      this.log("error", "onResponded threw; the response already landed and was not retried", {
+        requestHash: response.requestHash,
+        error: errorMessage(error),
+      });
     }
   }
 

@@ -53,9 +53,9 @@ describe("StubValidator", () => {
         tag: "",
         lastUpdate: 1n,
       }),
-      respond: async ({ requestHash }): Promise<Hash> => {
+      respond: async ({ requestHash }): Promise<{ txHash: Hash; blockNumber: bigint; gasLimit: bigint }> => {
         responded.push(requestHash);
-        return keccak256(requestHash);
+        return { txHash: keccak256(requestHash), blockNumber: 101n, gasLimit: 90_000n };
       },
     };
     const stub = new StubValidator({

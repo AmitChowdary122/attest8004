@@ -98,11 +98,12 @@ describe("viemValidatorChain", () => {
     });
   });
 
-  it("responds with exactly the explicit gas limit", async () => {
+  it("responds with exactly the explicit gas limit, and returns the receipt's block and the sent gas", async () => {
     rpc.onCall(REGISTRY, validationRegistryAbi, "validationResponse", () => undefined);
     rpc.estimate = 84_514n;
+    rpc.blockNumber = 1_234n;
     const evidenceHash = keccak256(toHex("evidence"));
-    const hash = await chain().respond({
+    const result = await chain().respond({
       requestHash: HASH,
       response: 100,
       responseURI: "data:application/json,{}",
@@ -110,7 +111,8 @@ describe("viemValidatorChain", () => {
       tag: "mandate-v1",
     });
     expect(rpc.sent).toHaveLength(1);
-    expect(rpc.sent[0]).toMatchObject({ to: REGISTRY, gas: 102_000n, hash });
+    expect(rpc.sent[0]).toMatchObject({ to: REGISTRY, gas: 102_000n, hash: result.txHash });
+    expect(result).toEqual({ txHash: rpc.sent[0]?.hash, blockNumber: 1_234n, gasLimit: 102_000n });
     const { functionName, args } = decodeFunctionData({ abi: validationRegistryAbi, data: rpc.sent[0]?.data ?? "0x" });
     expect(functionName).toBe("validationResponse");
     expect(args).toEqual([HASH, 100, "data:application/json,{}", evidenceHash, "mandate-v1"]);

@@ -17,7 +17,9 @@ import {
   MemoryCursorStore,
   ValidatorBase,
   buildAction,
+  buildEvidence,
   buildRequestJson,
+  canonicalJson,
   decodeJsonDataUri,
   encodeJsonDataUri,
   requestHashOfJson,
@@ -55,6 +57,9 @@ class FakeChain implements ValidatorChain {
   /** When set, a failing respond() still lands (the node accepted it, then the RPC dropped). */
   landThenFail = false;
   failLogs = false;
+  /** The block and gas limit a landed respond() reports, as a real chain's receipt would. */
+  respondBlock = 1_001n;
+  gasLimitSent = 84_010n;
 
   async chainId() {
     return this.chain;
@@ -74,7 +79,7 @@ class FakeChain implements ValidatorChain {
     if (!event) throw new Error(`UnknownRequest(${requestHash})`);
     return { validator: event.validator, agentId: event.agentId, response: 0, responseHash: zeroHash, tag: "", lastUpdate: 1n };
   }
-  async respond(response: Response): Promise<Hash> {
+  async respond(response: Response): Promise<{ txHash: Hash; blockNumber: bigint; gasLimit: bigint }> {
     this.respondCalls++;
     const failing = this.failures.get(response.requestHash) ?? 0;
     if (failing > 0) {
@@ -83,7 +88,7 @@ class FakeChain implements ValidatorChain {
       throw new Error("eth_sendRawTransaction: connection reset");
     }
     this.land(response);
-    return keccak256(toHex(`tx${this.responses.length}`));
+    return { txHash: keccak256(toHex(`tx${this.responses.length}`)), blockNumber: this.respondBlock, gasLimit: this.gasLimitSent };
   }
   private land(response: Response) {
     this.responses.push(response);
@@ -99,16 +104,24 @@ class FakeChain implements ValidatorChain {
   }
 }
 
+type RespondedInfo = { requestHash: Hex; score: number; txHash: Hash; blockNumber: bigint; gasLimit: bigint };
+
 class TestValidator extends ValidatorBase {
   readonly checked: VerifiedRequest[] = [];
+  readonly responded: RespondedInfo[] = [];
   result: () => CheckResult = () => ({ score: 100, reasons: ["OK"] });
-  accept: (request: VerifiedRequest) => boolean = () => true;
-  protected override async accepts(request: VerifiedRequest): Promise<boolean> {
+  accept: (request: VerifiedRequest) => boolean | { decline: string } = () => true;
+  onRespondedImpl: (info: RespondedInfo) => void = () => {};
+  protected override async accepts(request: VerifiedRequest): Promise<boolean | { decline: string }> {
     return this.accept(request);
   }
   protected override async check(request: VerifiedRequest): Promise<CheckResult> {
     this.checked.push(request);
     return this.result();
+  }
+  protected override onResponded(info: RespondedInfo): void {
+    this.responded.push(info);
+    this.onRespondedImpl(info);
   }
 }
 
@@ -182,7 +195,9 @@ describe("ValidatorBase", () => {
 
     const { outcomes, caughtUp } = await v.pollOnce();
 
-    expect(outcomes).toEqual([{ kind: "responded", requestHash: e.requestHash, score: 100, txHash: expect.any(String) }]);
+    expect(outcomes).toEqual([
+      { kind: "responded", requestHash: e.requestHash, score: 100, txHash: expect.any(String), blockNumber: chain.respondBlock },
+    ]);
     expect(caughtUp).toBe(true);
     expect(v.checked).toHaveLength(1);
     expect(v.checked[0]).toMatchObject({ gate: GATE, chainId: 10143, headTimestamp: HEAD_TS, event: e });
@@ -194,6 +209,10 @@ describe("ValidatorBase", () => {
     const decoded = decodeJsonDataUri(posted?.responseURI ?? "");
     if (!decoded.ok) throw new Error(decoded.detail);
     expect(posted?.responseHash).toBe(keccak256(stringToBytes(decoded.text)));
+    // The evidence is canonical JSON: the exact bytes `buildEvidence` would produce, so `verify` can
+    // rebuild them from a recomputed CheckResult and get the same responseHash.
+    const expectedEvidence = buildEvidence({ tag: "test-v1", requestHash: e.requestHash, result: { score: 100, reasons: ["OK"] } });
+    expect(decoded.text).toBe(canonicalJson(expectedEvidence));
     expect(JSON.parse(decoded.text)).toEqual({
       schema: "attest8004.evidence.v1",
       validator: "test-v1",
@@ -278,6 +297,67 @@ describe("ValidatorBase", () => {
     expect(skipped(outcomes)).toEqual(["responded", "DECLINED"]);
     expect(v.checked.map((r) => r.event.requestHash)).toEqual([mine.requestHash]);
     expect(chain.responses.map((r) => r.requestHash)).toEqual([mine.requestHash]);
+  });
+
+  it("accepts() returning a decline reason gives a DECLINED outcome carrying that detail, logged once at warn", async () => {
+    const e = event();
+    chain.events.push(e);
+    const v = validator();
+    v.accept = () => ({ decline: "RATE_LIMITED: 20/20 requests in the last 3600 s" });
+
+    const { outcomes } = await v.pollOnce();
+
+    expect(outcomes).toEqual([
+      { kind: "skipped", requestHash: e.requestHash, reason: "DECLINED", detail: "RATE_LIMITED: 20/20 requests in the last 3600 s" },
+    ]);
+    expect(v.checked).toHaveLength(0);
+    expect(chain.respondCalls).toBe(0);
+    expect(logs.filter((l) => l.requestHash === e.requestHash)).toEqual([
+      expect.objectContaining({ level: "warn", reason: "DECLINED", detail: "RATE_LIMITED: 20/20 requests in the last 3600 s" }),
+    ]);
+  });
+
+  it("onResponded is called exactly once per landed response, with the chain's returned block and gas", async () => {
+    const e = event();
+    chain.events.push(e);
+    chain.respondBlock = 55_123n;
+    chain.gasLimitSent = 90_210n;
+    const v = validator();
+
+    await v.pollOnce();
+
+    expect(v.responded).toEqual([
+      { requestHash: e.requestHash, score: 100, txHash: expect.any(String), blockNumber: 55_123n, gasLimit: 90_210n },
+    ]);
+  });
+
+  it("onResponded is not called when the status check finds the request ALREADY_RESPONDED", async () => {
+    const e = event();
+    chain.events.push(e);
+    await validator().pollOnce();
+
+    const restarted = validator();
+    const { outcomes } = await restarted.pollOnce();
+
+    expect(skipped(outcomes)).toEqual(["ALREADY_RESPONDED"]);
+    expect(restarted.responded).toHaveLength(0);
+  });
+
+  it("if onResponded throws, the response still counts as landed: it is logged, not retried, and the outcome is responded", async () => {
+    const e = event();
+    chain.events.push(e);
+    const v = validator({ maxFailedCycles: 1 });
+    v.onRespondedImpl = () => {
+      throw new Error("subscriber failed");
+    };
+
+    const { outcomes } = await v.pollOnce();
+
+    expect(outcomes).toEqual([expect.objectContaining({ kind: "responded", requestHash: e.requestHash })]);
+    expect(chain.respondCalls).toBe(1);
+    expect(
+      logs.some((l) => l.level === "error" && l.requestHash === e.requestHash && String(l.error).includes("subscriber failed")),
+    ).toBe(true);
   });
 
   it("logs a short preview, never a whole attacker-sized URI", async () => {

@@ -123,8 +123,10 @@ attest8004/
   - **Don't respond at all** (log the reason instead) if: the JSON doesn't hash to `requestHash`, `validator` isn't this validator, `agentId` differs from the event's, `chainId` isn't this chain, or the deadline has passed or is more than a configurable maximum (default 1 hour) in the future.
   - Run `check()`, then post `validationResponse` with an evidence JSON v1 and its keccak256 hash.
   - Check `getValidationStatus` before posting, so a restart never posts twice. Retry a failed send, re-checking the status first; retry a failing request in later cycles with a growing wait, then give up on it.
-  - Let a subclass decline a valid request without responding (`accepts()`).
-  - Use **explicit gas limits** with the estimate guard (Monad charges on the gas limit, not gas used).
+  - Let a subclass decline a valid request without responding (`accepts()`): `false` declines silently, `{ decline: "<reason>" }` declines with that reason as the outcome's logged `detail`.
+  - Call a subclass's `onResponded()` once per response that actually lands onchain, with its block and gas limit, so it can record spend or a rate limit without a second chain read; never on an already-answered status alone, and a throw from it is logged, not retried (the response already landed).
+  - Use **explicit gas limits** with the estimate guard (Monad charges on the gas limit, not gas used): a literal, or an evidence-sized `{ headroomPercent, max }` policy, since a response's evidence (and so its gas) varies with the validator's own findings.
+  - Build evidence JSON v1 as **canonical JSON** (`buildEvidence()`, sorted keys, no whitespace), so a later `verify` command can rebuild the exact bytes from a recomputed `CheckResult` and reproduce `responseHash`.
 - **`AgentRequestForwarder.sol`** (in `contracts/src/`; added in P3). It lets an agent's hot key request validations without any power over the agent itself. EIP-8004 accepts `validationRequest` only from the owner or an ERC-721 operator, and an operator can also transfer the agent.
   - The agent's owner calls `setApprovalForAll(forwarder, true)` once on the Identity Registry, then `setAgentKey(agentId, key)` on the forwarder. Only the current `ownerOf(agentId)` may set or revoke (`key = address(0)`) the key, and the record stores that owner.
   - `request(validator, agentId, requestURI, requestHash)` works only when called by that agent's key, and only while the recorded owner is still `ownerOf(agentId)`. It makes exactly one call: `validationRequest` on the fixed ValidationRegistry.
