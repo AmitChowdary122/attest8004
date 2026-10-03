@@ -4,19 +4,24 @@
  *   1. If DEPLOYMENTS has no demo agents yet, the deployer registers two agents in the canonical
  *      Identity Registry by calling register(string) directly: agent0-sdk 1.7.1 has no defaults
  *      for chain 10143. Record the printed agentIds in packages/sdk/src/deployments.ts.
- *   2. The deployer, as owner, approves the AgentRequestForwarder once: setApprovalForAll.
+ *   2. Least privilege (ARCHITECTURE §7): for each agent, the deployer approves the
+ *      AgentRequestForwarder for that token only (approve(forwarder, agentId)), read back with
+ *      getApproved; then, if the deployer still holds a blanket setApprovalForAll(forwarder, true)
+ *      from an earlier run, it's revoked (setApprovalForAll(forwarder, false)), read back with
+ *      isApprovedForAll.
  *   3. For each agent, the deployer registers its hot key: forwarder.setAgentKey(agentId, hotKey).
  *   4. Estimates forwarder.request from each hot key (a representative request JSON v1) and checks
  *      it against DEFAULT_GAS.forwarderRequest.
  *   5. Only with --fund: tops each hot key up to FUNDED_REQUESTS requests at the current max fee.
+ *   6. Only with --fund-validator: tops validator A up to VALIDATOR_FUND_TARGET.
  *
- * Run: pnpm --filter @attest8004/scripts setup-demo-agents [-- --fund]
+ * Run: pnpm --filter @attest8004/scripts setup-demo-agents [-- --fund --fund-validator]
  *
  * Every step is skipped when already done, so it can be re-run. Needs DEPLOYER_PRIVATE_KEY and the
  * hot keys' addresses (DEMO_AGENT_<n>_HOT_ADDRESS from the hot-keys script); never a hot key itself.
  * Every transaction has a literal gas limit and goes through the SDK's estimate guard.
  */
-import { getAddress, parseAbi, parseEventLogs, type Address, type Hex } from "viem";
+import { getAddress, parseAbi, parseEther, parseEventLogs, type Address, type Hex } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
 import {
   DEFAULT_GAS,
@@ -25,6 +30,7 @@ import {
   buildAction,
   buildRequestJson,
   encodeJsonDataUri,
+  identityRegistryAbi,
   requestHashOfJson,
   sendWithGasGuard,
   writeWithGasGuard,
@@ -43,12 +49,14 @@ import {
 
 /**
  * Explicit gas limits: Monad testnet eth_estimateGas on 3 Oct 2026 x 1.2, rounded up to 1k.
- * Estimates: register 411,546; setApprovalForAll 71,523; setAgentKey 107,670 before the first run
- * and 118,742 / 107,899 in it (the first run sent with 130,000); a MON transfer to an EOA 21,000.
+ * Estimates: register 411,546; approve(forwarder, 1984) 79,523; setApprovalForAll(forwarder, false)
+ * 54,444; setAgentKey 107,670 before the first run and 118,742 / 107,899 in it (the first run sent
+ * with 130,000); a MON transfer to an EOA 21,000.
  */
 const GAS = {
   register: 494_000n,
-  setApprovalForAll: 86_000n,
+  approve: 96_000n,
+  revokeApprovalForAll: 66_000n,
   setAgentKey: 143_000n,
   fund: 26_000n,
 } as const;
@@ -56,14 +64,18 @@ const GAS = {
 /** Each hot key holds enough MON for this many forwarded requests, at the current max fee. */
 const FUNDED_REQUESTS = 4n;
 
-const identityAbi = parseAbi([
-  "function register(string agentURI) returns (uint256 agentId)",
-  "function ownerOf(uint256 agentId) view returns (address)",
-  "function setApprovalForAll(address operator, bool approved)",
-  "function isApprovedForAll(address owner, address operator) view returns (bool)",
-  "event Registered(uint256 indexed agentId, string agentURI, address indexed owner)",
-  "error ERC721NonexistentToken(uint256 tokenId)",
-]);
+/** Validator A is topped up to about this much (only with --fund-validator), through sendWithGasGuard. */
+const VALIDATOR_FUND_TARGET = parseEther("2");
+
+// register/Registered aren't in the SDK's identityRegistryAbi (approve, getApproved,
+// setApprovalForAll, isApprovedForAll, ownerOf, the ERC721 events/errors); this script needs both.
+const identityAbi = [
+  ...identityRegistryAbi,
+  ...parseAbi([
+    "function register(string agentURI) returns (uint256 agentId)",
+    "event Registered(uint256 indexed agentId, string agentURI, address indexed owner)",
+  ]),
+] as const;
 
 const deployment = DEPLOYMENTS[chain.id];
 const identityRegistry = getAddress(deployment.identityRegistry);
@@ -73,6 +85,7 @@ const ownerWallet = walletFor(owner);
 const hotKeys = [requireAddress("DEMO_AGENT_1_HOT_ADDRESS"), requireAddress("DEMO_AGENT_2_HOT_ADDRESS")] as const;
 const validatorA = requireAddress("VALIDATOR_A_ADDRESS");
 const fund = process.argv.includes("--fund");
+const fundValidator = process.argv.includes("--fund-validator");
 
 async function registerAgents(): Promise<readonly bigint[]> {
   if (deployment.demoAgents.length > 0) return deployment.demoAgents;
@@ -132,29 +145,53 @@ async function main(): Promise<void> {
     check(`agent ${id} is owned by the deployer`, agentOwner === owner.address, agentOwner);
   }
 
-  // 2. One approval for the forwarder (covers all of the deployer's agents; ARCHITECTURE §7).
-  const isApproved = () =>
+  // 2. Least privilege: approve the forwarder per token, then revoke any blanket approval.
+  for (const id of agents) {
+    const approvedSpender = () =>
+      publicClient.readContract({
+        address: identityRegistry,
+        abi: identityAbi,
+        functionName: "getApproved",
+        args: [id],
+      });
+    if ((await approvedSpender()) !== forwarder) {
+      const sent = await writeWithGasGuard({
+        publicClient,
+        walletClient: ownerWallet,
+        address: identityRegistry,
+        abi: identityAbi,
+        functionName: "approve",
+        args: [forwarder, id],
+        gasLimit: GAS.approve,
+        label: `approve ${id}`,
+      });
+      printTx(`approve ${id}`, sent);
+    }
+    const spender = await approvedSpender();
+    check(`agent ${id} approves only the forwarder (per-token)`, spender === forwarder, spender);
+  }
+  const blanketApproval = () =>
     publicClient.readContract({
       address: identityRegistry,
       abi: identityAbi,
       functionName: "isApprovedForAll",
       args: [owner.address, forwarder],
     });
-  if (!(await isApproved())) {
+  if (await blanketApproval()) {
     const sent = await writeWithGasGuard({
       publicClient,
       walletClient: ownerWallet,
       address: identityRegistry,
       abi: identityAbi,
       functionName: "setApprovalForAll",
-      args: [forwarder, true],
-      gasLimit: GAS.setApprovalForAll,
-      label: "setApprovalForAll",
+      args: [forwarder, false],
+      gasLimit: GAS.revokeApprovalForAll,
+      label: "revoke setApprovalForAll",
     });
-    printTx("setApprovalForAll", sent);
+    printTx("revoke setApprovalForAll", sent);
   }
-  const approved = await isApproved();
-  check("the deployer approved the forwarder", approved, String(approved));
+  const stillBlanket = await blanketApproval();
+  check("the deployer's blanket approval for the forwarder is revoked", !stillBlanket, String(stillBlanket));
 
   // 3. Each agent's hot key, then 4. what a forwarded request costs from it.
   const latest = await publicClient.getBlock();
@@ -205,29 +242,53 @@ async function main(): Promise<void> {
   }
 
   // 5. Fund the hot keys for a few requests only.
-  if (!fund) {
-    console.log("\nsetup OK (hot keys not funded; re-run with --fund)");
-    return;
-  }
-  const { maxFeePerGas } = await publicClient.estimateFeesPerGas();
-  const target = FUNDED_REQUESTS * DEFAULT_GAS.forwarderRequest * maxFeePerGas;
-  for (const hotKey of hotKeys) {
-    const balance = await publicClient.getBalance({ address: hotKey });
-    if (balance >= target) {
-      console.log(`  ${hotKey} holds ${mon(balance)} (target ${mon(target)})`);
-      continue;
+  if (fund) {
+    const { maxFeePerGas } = await publicClient.estimateFeesPerGas();
+    const target = FUNDED_REQUESTS * DEFAULT_GAS.forwarderRequest * maxFeePerGas;
+    for (const hotKey of hotKeys) {
+      const balance = await publicClient.getBalance({ address: hotKey });
+      if (balance >= target) {
+        console.log(`  ${hotKey} holds ${mon(balance)} (target ${mon(target)})`);
+        continue;
+      }
+      const sent = await sendWithGasGuard({
+        publicClient,
+        walletClient: ownerWallet,
+        to: hotKey,
+        value: target - balance,
+        gasLimit: GAS.fund,
+        label: `fund ${hotKey}`,
+      });
+      printTx(`fund ${hotKey.slice(0, 10)}…`, sent);
+      console.log(`  ${hotKey} funded with ${mon(target - balance)} (now ${mon(target)}: ${FUNDED_REQUESTS} requests)`);
     }
-    const sent = await sendWithGasGuard({
-      publicClient,
-      walletClient: ownerWallet,
-      to: hotKey,
-      value: target - balance,
-      gasLimit: GAS.fund,
-      label: `fund ${hotKey}`,
-    });
-    printTx(`fund ${hotKey.slice(0, 10)}…`, sent);
-    console.log(`  ${hotKey} funded with ${mon(target - balance)} (now ${mon(target)}: ${FUNDED_REQUESTS} requests)`);
+  } else {
+    console.log("\nhot keys not funded (re-run with --fund)");
   }
+
+  // 6. Top up validator A so it can afford its gas budget.
+  if (fundValidator) {
+    const balance = await publicClient.getBalance({ address: validatorA });
+    if (balance >= VALIDATOR_FUND_TARGET) {
+      console.log(`  validator A ${validatorA} holds ${mon(balance)} (target ${mon(VALIDATOR_FUND_TARGET)})`);
+    } else {
+      const sent = await sendWithGasGuard({
+        publicClient,
+        walletClient: ownerWallet,
+        to: validatorA,
+        value: VALIDATOR_FUND_TARGET - balance,
+        gasLimit: GAS.fund,
+        label: "fund validator A",
+      });
+      printTx("fund validator A", sent);
+      console.log(
+        `  validator A funded with ${mon(VALIDATOR_FUND_TARGET - balance)} (now ${mon(VALIDATOR_FUND_TARGET)})`,
+      );
+    }
+  } else {
+    console.log("validator A not funded (re-run with --fund-validator)");
+  }
+
   console.log("\nsetup OK");
 }
 
