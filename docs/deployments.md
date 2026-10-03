@@ -136,6 +136,35 @@ request JSON v1 as a `data:` URI, validator A responds 100, and the deployer cal
 - Check it yourself:
   `cast call 0x7A5EC388CCbfD3B255CFa94fc2062c0807F2C4CD "consumed(bytes32)(bool)" 0x395747b092f0a549890a53edc7e36807d744d602c00c0baaadd04053b8bef0de --rpc-url https://testnet-rpc.monad.xyz`
 
+## Verified end-to-end runs (P3)
+
+`scripts/src/e2e.ts` (`pnpm --filter @attest8004/scripts e2e`) runs the whole P3 path for demo agent 1984: its **hot
+key** requests validation through the **AgentRequestForwarder** with the SDK client (`Attest8004Client`), a
+**StubValidator** built on the SDK's `ValidatorBase` polls `eth_getLogs` up to the finalized block and responds once,
+a second, freshly started validator re-reads the same blocks and must skip the request (`ALREADY_RESPONDED`),
+`awaitVerdict` and `isValidated` confirm the verdict, and the deployer submits `execute` through the agent-1984
+`DemoAgentVault` (execution is permissionless). The stub's check passes everything: tag `attest8004-e2e-stub`, and
+its evidence says no checks ran. Refusals are **simulated**, never sent: the owner and agent 1985's hot key calling
+the forwarder for agent 1984 (`NotAgentKey`), and a replay (`ActionAlreadyConsumed`). The script reads each sent
+transaction back to confirm its sender and its explicit gas limit.
+
+| Date | Agent | Vault | forwarder.request tx (hot key) | validationResponse tx (validator A) | execute tx (deployer) |
+|---|---|---|---|---|---|
+| 2026-10-03 | 1984 | `0x23BfBD12…212a96` | [`0xe2b7df42…0ed554b`](https://monad-testnet.socialscan.io/tx/0xe2b7df42a9f71be25c920e6d2cf70974490c1880af847dd0dc503bd380ed554b) (block 67,784,991) | [`0x8dada3c3…9924e18`](https://monad-testnet.socialscan.io/tx/0x8dada3c3e1ae4a800576c21e027ae78899cfd44bdeb4385369a2420d39924e18) | [`0x6f694020…b1336a8`](https://monad-testnet.socialscan.io/tx/0x6f6940203907d8d759e1887953d1170015be7f0c6d27b39c4e22090bbb1336a8) (block 67,785,016) |
+
+- `requestHash` `0xd90141778d12c963f4b463b0aefacef342ef8f2e196a6f70a29d8bcd050e62b2` (validator A);
+  `actionHash` `0x69a1ce190fc0e671b632161a46434983292b2edbad7ab672705c05e82b17ae4d` (consumed). The action moved
+  0.001 MON from the vault to the deployer.
+- The vault was funded with 0.01 MON first: [`0xd5f96da1…9b63d90`](https://monad-testnet.socialscan.io/tx/0xd5f96da1b562fbd9131e08df7f0ef9173a7212717e38cb94c73b0d3199b63d90).
+- **An earlier attempt stopped after its request.** The request [`0x247cf931…b2a38b0`](https://monad-testnet.socialscan.io/tx/0x247cf931c8342d2e911000d9c4faab3b7000e19d60830eab08d935d3cb2a38b0)
+  (`requestHash` `0x5e8f22b3…7d4122`) landed correctly, but a script check compared the sender in the wrong letter
+  case and stopped the run. That request was never answered and its deadline has passed, so a validator ignores it
+  (`DEADLINE_PASSED`).
+- Gas limits (all explicit; each read back from the sent transaction): forwarder.request 315,000; validationResponse
+  140,000 (provisional; the estimate was 86,765, and the script now uses 105,000); execute 106,000 (estimate 87,626);
+  fund 26,000 (estimate 21,212).
+- After the run, agent 1984's hot key holds 0.088 MON (two requests' worth at the current fee).
+
 ## Canonical contracts used (not deployed by us)
 
 | Contract | Monad testnet (10143) | Monad mainnet (143) |

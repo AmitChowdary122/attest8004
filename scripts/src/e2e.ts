@@ -67,13 +67,14 @@ import { DEPLOYMENTS } from "./deployments.ts";
 import { STUB_TAG, StubValidator } from "./stub-validator.ts";
 
 /**
- * Explicit gas limits (Monad charges for the limit). fund and execute: P2's measured estimates
- * (21,212 and 87,626) x 1.2. validationResponse: provisional for the first run, which measures it.
- * The forwarded request uses the SDK's DEFAULT_GAS.forwarderRequest.
+ * Explicit gas limits (Monad charges for the limit): Monad testnet eth_estimateGas x 1.2, rounded up
+ * to 1k. fund 21,212 and execute 87,626 (P2, and again on 3 Oct 2026 in P3). validationResponse
+ * with the stub's evidence: 86,765 (3 Oct 2026; that run used a provisional 140,000). The forwarded
+ * request uses the SDK's DEFAULT_GAS.forwarderRequest.
  */
 const GAS = {
   fund: 26_000n,
-  validationResponse: 140_000n,
+  validationResponse: 105_000n,
   execute: 106_000n,
 } as const;
 
