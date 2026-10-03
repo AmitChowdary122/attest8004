@@ -56,8 +56,8 @@ contract AttestGateTest is AttestGateFixture {
         new DemoAgentVault(address(registry), agentId, _reqs(validatorA, 100, validatorA, 50));
     }
 
-    /// A pending request's tag doesn't matter, but a zero tagHash is never a validator anyone can
-    /// answer under, so it would lock the requirement shut; the constructor rejects it up front.
+    /// No real tag hashes to the zero value, so a zero tagHash would be a requirement nothing
+    /// could ever satisfy, locking the gate shut; the constructor rejects it up front.
     function test_Constructor_RevertWhen_ZeroTagHash() public {
         AttestGate.Requirement[] memory r = new AttestGate.Requirement[](1);
         r[0] = AttestGate.Requirement(validatorA, 100, bytes32(0));

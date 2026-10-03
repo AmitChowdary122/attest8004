@@ -77,13 +77,17 @@ checked against `packages/sdk/test/vectors.json`, whose expected values come fro
 `src/AttestGate.sol` is an abstract contract with the `onlyValidated(action)` modifier. It holds 1 to 4 immutable
 `(validator, minScore, tagHash)` requirements, and every one must pass. For each, it recomputes that validator's
 `requestHash` and checks the registry's stored validator, agentId, score and tag: a verdict naming the right
-validator and agent with a sufficient score but the wrong tag reverts `TagMismatch`, because a validator key
-signs only its own tag (ARCHITECTURE §9) and a gate that accepted any tag from the named validator would take
-a verdict meant for a different requirement. The constructor rejects a zero `tagHash`: there's no wildcard. It
-marks `actionHash` consumed before the consumer's external call. `src/DemoAgentVault.sol` is the example
-consumer: bound to one agentId, it holds native funds and makes validated calls under a transient reentrancy
-guard. The live testnet deployment requires both `mandate-v1` (validator A, minimum 100) and `risk-v1`
-(validator B, minimum 80) — see `script/DeployDemoAgentVault.s.sol` and `docs/deployments.md`.
+validator and agent with a sufficient score but the wrong tag reverts `TagMismatch`. `requestHash` already binds
+one validator to one exact action, but not to any particular check that validator ran for it, so without the tag
+a gate naming a validator by address alone would accept a verdict from some other check that same key happens to
+answer for this action — the tag is what makes "validator A's key signs only `mandate-v1` verdicts" (ARCHITECTURE
+§9) a contract rule. The constructor rejects a zero `tagHash`, because no real tag hashes to it, so it would be a
+requirement nothing could ever satisfy. It marks `actionHash` consumed before the consumer's external call.
+`src/DemoAgentVault.sol` is the example consumer: bound to one agentId, it holds native funds and makes validated
+calls under a transient reentrancy guard. `script/DeployDemoAgentVault.s.sol` now configures the P5 vault to
+require both `mandate-v1` (validator A, minimum 100) and `risk-v1` (validator B, minimum 80) — **not yet
+deployed**; the live testnet deployment (status table above) still requires validator A only. See
+`docs/deployments.md`.
 
 | Test file | What it covers |
 |---|---|

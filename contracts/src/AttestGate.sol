@@ -12,10 +12,11 @@ import {Action, ActionHash} from "./ActionHash.sol";
 /// @dev For each requirement, the gate recomputes that validator's `requestHash` from the call
 /// (ActionHash: this chain, this gate, the exact action) and reads the ERC-8004 ValidationRegistry.
 /// It checks the stored validator and agentId as well as the score, because anyone who owns an
-/// agent can claim a `requestHash` first (docs/spec-notes.md, row 12), and that the stored tag
-/// hashes to the requirement's `tagHash`, because a validator key signs only its own tag and a
-/// wildcard tag would let any of that validator's verdicts for the agent pass. It then marks the
-/// validator-independent `actionHash` consumed, so an action runs at most once, before the
+/// agent can claim a `requestHash` first (docs/spec-notes.md, row 12). `requestHash` already binds
+/// one validator to one exact action, but not to any particular check that validator ran for it, so
+/// the gate also checks that the stored tag hashes to the requirement's `tagHash`: a verdict from
+/// some other check that same validator happens to run for this action doesn't satisfy it. It then
+/// marks the validator-independent `actionHash` consumed, so an action runs at most once, before the
 /// consumer makes any external call. Consumers should also make the gated function
 /// `nonReentrant`. The requirement list is fixed at deployment: there is no owner.
 abstract contract AttestGate is ReentrancyGuardTransient {
@@ -24,9 +25,10 @@ abstract contract AttestGate is ReentrancyGuardTransient {
         /// 1-100. A pending request reads as response 0, so 0 is rejected.
         uint8 minScore;
         /// keccak256 of the tag that validator's verdict for this action must carry (e.g.
-        /// keccak256("mandate-v1")). Never zero: a validator key signs only its own tag, so a
-        /// gate that required a wildcard tag would let any of that validator's verdicts for the
-        /// agent pass, whatever action they were actually about.
+        /// keccak256("mandate-v1")), so a verdict from some other check that same validator
+        /// happens to run for this action doesn't satisfy this requirement. Never zero: no real
+        /// tag hashes to the zero value, so a zero tagHash would be a requirement nothing could
+        /// ever satisfy, locking the gate shut.
         bytes32 tagHash;
     }
 
