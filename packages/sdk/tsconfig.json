@@ -1,7 +1,10 @@
 {
   "extends": "../../tsconfig.base.json",
   "compilerOptions": {
-    "noEmit": true
+    "noEmit": true,
+    // Source imports use .ts extensions, so Node's type stripping can run src/ directly
+    // (workspace packages import it through the "@attest8004/source" export condition).
+    "allowImportingTsExtensions": true
   },
   "include": ["src", "test"]
 }

@@ -53,14 +53,16 @@ contract ActionHashTest is Test {
         );
     }
 
-    function testFuzz_RequestHash_NeverEqualsActionHash(Action calldata action, uint256 chainId, address gate, address validator)
-        public
-        view
-    {
+    function testFuzz_RequestHash_NeverEqualsActionHash(
+        Action calldata action,
+        uint256 chainId,
+        address gate,
+        address validator
+    ) public view {
         assertTrue(harness.requestHash(action, chainId, gate, validator) != harness.actionHash(action, chainId, gate));
     }
 
-    function _key(uint256 i, string memory field) internal view returns (string memory) {
+    function _key(uint256 i, string memory field) internal pure returns (string memory) {
         return string.concat(".vectors[", vm.toString(i), "]", field);
     }
 }

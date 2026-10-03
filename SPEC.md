@@ -96,7 +96,10 @@ attest8004/
 
 ### 4.3 `AttestGate` + `DemoAgentVault.sol`
 - `Action { uint256 agentId; address target; uint256 value; bytes data; uint64 deadline; bytes32 salt; }`
-- `requestHash = keccak256(abi.encode(block.chainid, gateAddress, agentId, target, value, keccak256(data), deadline, salt))`. The **same function lives in the TS SDK**, with shared test vectors (`packages/sdk/test/vectors.json`), and both test suites must pass on them.
+- Two hashes, defined once in `contracts/src/ActionHash.sol`. The **same functions live in the TS SDK** (`computeRequestHash`, `computeActionHash`), with shared test vectors (`packages/sdk/test/vectors.json`, expected values generated with `cast`), and both test suites must pass on them.
+  - `requestHash = keccak256(abi.encode(block.chainid, gate, validatorAddress, agentId, target, value, keccak256(data), deadline, salt))`, **one per validator**, because the registry records exactly one validator per `requestHash`.
+  - `actionHash` is the same encoding without `validatorAddress`. The gate marks it consumed.
+  - `requestHash` stays an ABI-encoded action hash: that encoding is the "request payload" the EIP's `requestHash` commits to (`docs/spec-notes.md`, row 6).
 - `onlyValidated(Action, minScore)`:
   1. **Recompute** `requestHash` from the call, so a verdict can't be reused for a different action.
   2. Look up the status in the ValidationRegistry.
@@ -116,7 +119,7 @@ attest8004/
   - Load the request and check that its action hashes to `requestHash`.
   - Run `check()`, then post `validationResponse` with an evidence JSON hash.
   - Handle retries and idempotency, and use **explicit gas limits** (Monad charges on the gas limit, not gas used).
-- Request JSON schema v1: `{ "schema":"attest8004.request.v1", "chainId", "agentId", "action":{…}, "gate" }`.
+- Request JSON schema v1: `{ "schema":"attest8004.request.v1", "chainId", "gate", "validator", "agentId", "action":{…} }`, one per validator (ARCHITECTURE §6).
 - Register two demo agents in the canonical Identity Registry using the **agent0 SDK** (sdk.ag0.xyz). Check that it supports testnet 10143; if not, call `register()` directly.
 
 ### 4.5 Validator A — `mandate-v1` (deterministic)
@@ -199,7 +202,7 @@ attest8004/
 
 ## 6. Security requirements (judges check "correct and secure")
 - Check the precompile return length. Enforce low-s. Bind the challenge and nonce. Check the UV flag and rpIdHash.
-- Bind `requestHash` to the exact action, chain, gate and deadline, and make it single use.
+- Bind `requestHash` to the exact action, chain, gate, validator and deadline, and make each action single use.
 - Validators verify that the request JSON matches `requestHash` before acting.
 - Never store private keys or PRF output. Zero buffers. Treat every LLM output as untrusted data: schema-validate it, and the LLM never holds keys.
 - Use explicit gas limits. Keep the deployer and validator keys hackathon-only, funded with testnet MON (or a few dollars on mainnet).

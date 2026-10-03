@@ -111,7 +111,7 @@ flowchart TB
 | P256VERIFY precompile | `0x0100` | `0x0100` |
 | Attest8004 contracts | see `docs/deployments.md` | see `docs/deployments.md` |
 
-### 4.3 The action and its hash (single source of truth)
+### 4.3 The action and its hashes (single source of truth)
 
 ```solidity
 struct Action {
@@ -123,14 +123,23 @@ struct Action {
     bytes32 salt;
 }
 
+// One per validator: the ERC-8004 requestHash submitted to that validator.
 requestHash = keccak256(abi.encode(
+    block.chainid, gate, validatorAddress, agentId, target, value, keccak256(data), deadline, salt
+));
+
+// The same action, whoever validates it. The gate marks it consumed.
+actionHash = keccak256(abi.encode(
     block.chainid, gate, agentId, target, value, keccak256(data), deadline, salt
 ));
 ```
 
-- It binds the verdict to **one chain, one gate and one exact action**, with an expiry.
-- `salt` makes otherwise identical actions distinct. The gate marks each `requestHash` **consumed** after execution.
-- It's implemented identically in Solidity and TypeScript, and checked against shared vectors in `packages/sdk/test/vectors.json`.
+- A verdict is bound to **one chain, one gate, one validator and one exact action**, with an expiry.
+- `validatorAddress` is in `requestHash` because EIP-8004 records exactly one validator per `requestHash` (spec-notes, row 5). An action that needs two validators gets two requests with two hashes.
+- `actionHash` leaves the validator out, so consumption is per action: an action runs at most once, however many validators judged it.
+- `salt` makes otherwise identical actions distinct.
+- The ABI encoding is the "request payload" that the EIP says `requestHash` commits to (spec-notes, row 6). The request JSON at `requestURI` (§6) carries the same fields, and validators recompute the hash from it.
+- It's defined once in `contracts/src/ActionHash.sol` and once in `packages/sdk/src/action.ts`. Both are checked against `packages/sdk/test/vectors.json`, whose expected values come from `cast` (`vectors.sh`), so neither implementation grades itself.
 
 ### 4.4 Gate check (in order)
 1. Recompute `requestHash` from the call arguments.
@@ -244,17 +253,18 @@ npx attest8004 verify <requestHash>
 
 ## 6. Data formats
 
-**Request JSON v1.** Referenced by `requestURI`, preferably as a `data:` URI so no hosting is needed.
+**Request JSON v1.** Referenced by `requestURI`, preferably as a `data:` URI so no hosting is needed. There is one per validator, because `validator` is part of `requestHash`.
 ```json
 {
   "schema": "attest8004.request.v1",
   "chainId": 10143,
   "gate": "0x…",
+  "validator": "0x…",
   "agentId": "42",
   "action": { "target": "0x…", "value": "0", "data": "0x…", "deadline": 1760000000, "salt": "0x…" }
 }
 ```
-Validators **must** recompute `requestHash` from this JSON and reject it on mismatch.
+Validators **must** recompute `requestHash` from this JSON (§4.3) and reject it on mismatch. They must also reject it if `validator` isn't themselves, or if `agentId` differs from the `agentId` in the `ValidationRequest` event (someone else's agent may have claimed the hash first; spec-notes, row 12). The hash commits to the ABI encoding of these fields, not to the JSON bytes, so whitespace and key order don't matter.
 
 **Evidence JSON v1.** Referenced by `responseURI`. `responseHash = keccak256(bytes)`.
 ```json
