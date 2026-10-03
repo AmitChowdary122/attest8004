@@ -143,6 +143,11 @@ describe("request JSON v1", () => {
       ["a chainId that isn't a safe integer", { ...json, chainId: 2 ** 53 }],
       ["a chainId given as a string", { ...json, chainId: "10143" }],
       ["a JSON array", [json]],
+      // zod runs refinements even after the regex fails; these must not reach BigInt() and throw.
+      ["an agentId that isn't a number", { ...json, agentId: "abc" }],
+      ["a decimal point", { ...json, agentId: "1.5" }],
+      ["an exponent", withAction({ value: "1e3" })],
+      ["an empty decimal", withAction({ deadline: "" })],
     ];
     for (const [label, doc] of cases) {
       it(label, () => expect(rejection(uriOf(doc))).toBe("SCHEMA_INVALID"));

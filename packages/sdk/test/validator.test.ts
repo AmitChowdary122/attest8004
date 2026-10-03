@@ -1,7 +1,17 @@
 import { mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { getAddress, keccak256, stringToBytes, toHex, zeroHash, type Address, type Hash, type Hex } from "viem";
+import {
+  HttpRequestError,
+  getAddress,
+  keccak256,
+  stringToBytes,
+  toHex,
+  zeroHash,
+  type Address,
+  type Hash,
+  type Hex,
+} from "viem";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   MemoryCursorStore,
@@ -92,6 +102,10 @@ class FakeChain implements ValidatorChain {
 class TestValidator extends ValidatorBase {
   readonly checked: VerifiedRequest[] = [];
   result: () => CheckResult = () => ({ score: 100, reasons: ["OK"] });
+  accept: (request: VerifiedRequest) => boolean = () => true;
+  protected override async accepts(request: VerifiedRequest): Promise<boolean> {
+    return this.accept(request);
+  }
   protected override async check(request: VerifiedRequest): Promise<CheckResult> {
     this.checked.push(request);
     return this.result();
@@ -205,6 +219,13 @@ describe("ValidatorBase", () => {
           return event({ requestURI: encodeJsonDataUri(old).uri });
         },
       ],
+      [
+        "SCHEMA_INVALID",
+        () => {
+          const json = request();
+          return event({ requestURI: encodeJsonDataUri({ ...json, agentId: "abc" }).uri });
+        },
+      ],
       ["HASH_MISMATCH", () => event({ requestHash: requestHashOfJson(request({ salt: `0x${"22".repeat(32)}` })) })],
       ["WRONG_VALIDATOR", () => event({ json: request({ validator: VALIDATOR_B }) })],
       ["WRONG_VALIDATOR", () => event({ validator: VALIDATOR_B })],
@@ -224,7 +245,9 @@ describe("ValidatorBase", () => {
         expect(skipped(outcomes)).toEqual([reason]);
         expect(v.checked).toHaveLength(0);
         expect(chain.respondCalls).toBe(0);
-        expect(logs.some((l) => l.reason === reason && l.requestHash === e.requestHash)).toBe(true);
+        expect(logs.filter((l) => l.requestHash === e.requestHash)).toEqual([
+          expect.objectContaining({ level: "warn", reason }),
+        ]);
         expect(fetchSpy).not.toHaveBeenCalled();
       });
     }
@@ -243,10 +266,38 @@ describe("ValidatorBase", () => {
     expect(skipped(outcomes)).toEqual(["DEADLINE_TOO_FAR", "responded"]);
   });
 
+  it("a request the subclass declines gets no response and no retries (DECLINED)", async () => {
+    const mine = event();
+    const theirs = event({ json: request({ salt: `0x${"77".repeat(32)}` }), logIndex: 1 });
+    chain.events.push(mine, theirs);
+    const v = validator();
+    v.accept = (r) => r.event.requestHash === mine.requestHash;
+
+    const { outcomes } = await v.pollOnce();
+
+    expect(skipped(outcomes)).toEqual(["responded", "DECLINED"]);
+    expect(v.checked.map((r) => r.event.requestHash)).toEqual([mine.requestHash]);
+    expect(chain.responses.map((r) => r.requestHash)).toEqual([mine.requestHash]);
+  });
+
   it("logs a short preview, never a whole attacker-sized URI", async () => {
     chain.events.push(event({ requestURI: `data:text/plain,${"x".repeat(10_000)}` }));
     await validator().pollOnce();
     expect(JSON.stringify(logs).length).toBeLessThan(2_000);
+  });
+
+  it("logs viem's short message, never an error's RPC URL (it can carry an API key)", async () => {
+    const e = event();
+    chain.events.push(e);
+    const v = validator({ sendAttempts: 2, maxFailedCycles: 1 });
+    chain.respond = async () => {
+      throw new HttpRequestError({ url: "https://rpc.example/v2/SECRET-API-KEY", status: 429, body: { id: 1 } });
+    };
+    const { outcomes } = await v.pollOnce();
+    expect(outcomes[0]?.kind).toBe("gave-up");
+    expect(JSON.stringify(outcomes)).not.toContain("SECRET-API-KEY");
+    expect(JSON.stringify(logs)).not.toContain("SECRET-API-KEY");
+    expect(JSON.stringify(logs)).toContain("HTTP request failed");
   });
 
   describe("restart safety", () => {
@@ -381,6 +432,27 @@ describe("ValidatorBase", () => {
       }
     });
 
+    it("an option passed as undefined keeps its default (send attempts 3, failed cycles 5)", async () => {
+      const e = event();
+      chain.events.push(e);
+      chain.failures.set(e.requestHash, 10); // a wrong default would loop past 3 attempts
+      const v = validator({ sendAttempts: undefined, maxFailedCycles: undefined, retryDelayMs: 0 });
+      await v.pollOnce();
+      expect(chain.respondCalls).toBe(3);
+
+      const always = validator({ maxFailedCycles: undefined, cursor: new MemoryCursorStore(999n) });
+      always.result = () => {
+        throw new Error("model timeout");
+      };
+      chain.failures.clear();
+      chain.statuses.clear();
+      chain.events.length = 0;
+      chain.events.push(event({ json: request({ salt: `0x${"88".repeat(32)}` }) }));
+      const kinds: string[] = [];
+      for (let i = 0; i < 5; i++) kinds.push(...(await always.pollOnce()).outcomes.map((o) => o.kind));
+      expect(kinds).toEqual(["gave-up"]);
+    });
+
     it("retries a failed send", async () => {
       const e = event();
       chain.events.push(e);
@@ -400,6 +472,37 @@ describe("ValidatorBase", () => {
       expect(skipped(outcomes)).toEqual(["ALREADY_RESPONDED"]);
       expect(chain.respondCalls).toBe(1);
       expect(chain.responses).toHaveLength(1);
+    });
+
+    it("run() waits after a failed cycle, backing off, instead of retrying at once", async () => {
+      vi.useFakeTimers();
+      try {
+        chain.events.push(event());
+        const v = validator({ retryDelayMs: 1_000, maxFailedCycles: 3, pollIntervalMs: 10 });
+        v.result = () => {
+          throw new Error("429 from the model provider");
+        };
+        const controller = new AbortController();
+        const running = v.run(controller.signal);
+
+        await vi.advanceTimersByTimeAsync(0);
+        expect(v.checked).toHaveLength(1);
+        await vi.advanceTimersByTimeAsync(999);
+        expect(v.checked).toHaveLength(1);
+        await vi.advanceTimersByTimeAsync(1);
+        expect(v.checked).toHaveLength(2);
+        await vi.advanceTimersByTimeAsync(1_999);
+        expect(v.checked).toHaveLength(2);
+        await vi.advanceTimersByTimeAsync(1);
+        expect(v.checked).toHaveLength(3);
+        expect(logs.some((l) => l.msg === "gave up on request")).toBe(true);
+
+        controller.abort();
+        await vi.advanceTimersByTimeAsync(10);
+        await running;
+      } finally {
+        vi.useRealTimers();
+      }
     });
 
     it("run() polls until aborted", async () => {

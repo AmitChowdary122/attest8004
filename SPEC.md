@@ -121,7 +121,8 @@ attest8004/
   - Treat `requestURI` as attacker-controlled: accept only a `data:` URI of at most **16 KB**, with **no HTTP fetching**.
   - **Don't respond at all** (log the reason instead) if: the JSON doesn't hash to `requestHash`, `validator` isn't this validator, `agentId` differs from the event's, `chainId` isn't this chain, or the deadline has passed or is more than a configurable maximum (default 1 hour) in the future.
   - Run `check()`, then post `validationResponse` with an evidence JSON v1 and its keccak256 hash.
-  - Check `getValidationStatus` before posting, so a restart never posts twice. Retry a failed send, re-checking the status first.
+  - Check `getValidationStatus` before posting, so a restart never posts twice. Retry a failed send, re-checking the status first; retry a failing request in later cycles with a growing wait, then give up on it.
+  - Let a subclass decline a valid request without responding (`accepts()`).
   - Use **explicit gas limits** with the estimate guard (Monad charges on the gas limit, not gas used).
 - **`AgentRequestForwarder.sol`** (in `contracts/src/`; added in P3). It lets an agent's hot key request validations without any power over the agent itself. EIP-8004 accepts `validationRequest` only from the owner or an ERC-721 operator, and an operator can also transfer the agent.
   - The agent's owner calls `setApprovalForAll(forwarder, true)` once on the Identity Registry, then `setAgentKey(agentId, key)` on the forwarder. Only the current `ownerOf(agentId)` may set or revoke (`key = address(0)`) the key, and the record stores that owner.
@@ -130,7 +131,7 @@ attest8004/
   - **Tests:** wrong key, a key set by a previous owner and used after the agent is transferred, a revoked key, and that the forwarder can do nothing except `validationRequest`.
   - **Done when:** deployed on testnet, and a demo agent's hot key requests through it in the end-to-end script.
 - Request JSON schema v1: `{ "schema":"attest8004.request.v1", "chainId", "gate", "validator", "agentId", "action":{ "target", "value", "data", "deadline", "salt" } }`, one per validator (ARCHITECTURE §6). `agentId`, `value` and `deadline` are **decimal strings**; `chainId` is a JSON number. It is defined once, as a strict zod schema (unknown keys are rejected), in `packages/sdk/src/request.ts`.
-- Register two demo agents in the canonical Identity Registry using the **agent0 SDK** (sdk.ag0.xyz). Check that it supports testnet 10143; if not, call `register()` directly.
+- Register two demo agents in the canonical Identity Registry using the **agent0 SDK** (sdk.ag0.xyz). Check that it supports testnet 10143; if not, call `register()` directly. **P3:** agent0-sdk 1.7.1 has no defaults for 10143, so `register(string)` is called directly. The demo agents are **1984** and **1985**, owned by the deployer, each with its own hot key registered on the forwarder (`docs/deployments.md`).
 
 ### 4.5 Validator A — `mandate-v1` (deterministic)
 - **Checks:**

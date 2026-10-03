@@ -25,11 +25,15 @@ export const MAX_REQUEST_URI_BYTES = 16_384;
 const UINT256_MAX = 2n ** 256n - 1n;
 const UINT64_MAX = 2n ** 64n - 1n;
 
+const DECIMAL = /^(0|[1-9]\d*)$/;
+
+// zod runs a refinement even after the regex has failed, so the range check repeats the regex
+// rather than letting BigInt() throw on "abc" or "1e3".
 const decimal = (max: bigint) =>
   z
     .string()
-    .regex(/^(0|[1-9]\d*)$/, "must be a decimal string without leading zeros")
-    .refine((s) => BigInt(s) <= max, "out of range");
+    .regex(DECIMAL, "must be a decimal string without leading zeros")
+    .refine((s) => DECIMAL.test(s) && BigInt(s) <= max, "out of range");
 
 // Lower-case is accepted; mixed case must be a valid EIP-55 checksum. Output is checksummed.
 const address = z
@@ -169,7 +173,13 @@ export function parseRequestUri(
   } catch {
     return { ok: false, reason: "JSON_INVALID", detail: "the payload is not JSON" };
   }
-  const parsed = requestJsonV1Schema.safeParse(doc);
+  let parsed: ReturnType<typeof requestJsonV1Schema.safeParse>;
+  try {
+    parsed = requestJsonV1Schema.safeParse(doc);
+  } catch (error) {
+    // Defence in depth: a refinement that throws on hostile input is still a schema rejection.
+    return { ok: false, reason: "SCHEMA_INVALID", detail: error instanceof Error ? error.message : String(error) };
+  }
   if (!parsed.success) {
     const issue = parsed.error.issues[0];
     const detail = issue ? `${issue.path.join(".") || "(root)"}: ${issue.message}` : "invalid";

@@ -1,4 +1,4 @@
-import { zeroHash, type Address, type Hash, type Hex } from "viem";
+import { BaseError, zeroHash, type Address, type Hash, type Hex } from "viem";
 import type { Action } from "./action.ts";
 import { MAX_LOG_BLOCK_RANGE } from "./logs.ts";
 import {
@@ -60,7 +60,9 @@ export type SkipReason =
   | "WRONG_CHAIN"
   | "DEADLINE_PASSED"
   | "DEADLINE_TOO_FAR"
-  | "ALREADY_RESPONDED";
+  | "ALREADY_RESPONDED"
+  /** The subclass's `accepts()` turned the request away. */
+  | "DECLINED";
 
 export type Outcome =
   | { kind: "responded"; requestHash: Hex; score: number; txHash: Hash }
@@ -82,6 +84,7 @@ export interface ValidatorOptions {
   maxBlockRange?: bigint;
   /** Attempts to send one response before the cycle fails. Default 3. */
   sendAttempts?: number;
+  /** Wait between send attempts, and the first wait after a failed cycle (doubling each time). Default 2,000 ms. */
   retryDelayMs?: number;
   /** Failed cycles for one request before it is logged as given up and skipped. Default 5. */
   maxFailedCycles?: number;
@@ -105,7 +108,9 @@ const RESERVED_EVIDENCE_KEYS = ["schema", "validator", "requestHash", "score", "
  * - Checks `getValidationStatus` before working on a request and again before sending, so a
  *   restart never posts twice. Its responses always carry a non-zero responseHash and a tag.
  * - Posts `validationResponse` with an evidence JSON v1 and its keccak256, with an explicit gas
- *   limit (through the chain port), retrying a failed send.
+ *   limit (through the chain port), retrying a failed send. A request that keeps failing is retried
+ *   in later cycles, with a growing wait, then logged as given up.
+ * - Lets a subclass decline a valid request without responding (`accepts()`).
  */
 export abstract class ValidatorBase {
   private readonly options: Required<Omit<ValidatorOptions, "startBlock">> & { startBlock: bigint | undefined };
@@ -114,30 +119,45 @@ export abstract class ValidatorBase {
 
   constructor(options: ValidatorOptions) {
     if (!options.tag) throw new Error("a validator needs a non-empty tag");
+    // `??` per field: an option passed as undefined keeps its default (a spread would erase it).
     this.options = {
-      maxRequestBytes: MAX_REQUEST_URI_BYTES,
-      maxDeadlineAheadSeconds: 3_600n,
-      maxBlockRange: MAX_LOG_BLOCK_RANGE,
-      sendAttempts: 3,
-      retryDelayMs: 2_000,
-      maxFailedCycles: 5,
-      pollIntervalMs: 1_000,
-      log: (entry) => console.log(JSON.stringify(entry)),
-      ...options,
+      chain: options.chain,
+      tag: options.tag,
+      cursor: options.cursor,
       startBlock: options.startBlock,
+      maxRequestBytes: options.maxRequestBytes ?? MAX_REQUEST_URI_BYTES,
+      maxDeadlineAheadSeconds: options.maxDeadlineAheadSeconds ?? 3_600n,
+      maxBlockRange: options.maxBlockRange ?? MAX_LOG_BLOCK_RANGE,
+      sendAttempts: options.sendAttempts ?? 3,
+      retryDelayMs: options.retryDelayMs ?? 2_000,
+      maxFailedCycles: options.maxFailedCycles ?? 5,
+      pollIntervalMs: options.pollIntervalMs ?? 1_000,
+      log: options.log ?? ((entry) => console.log(JSON.stringify(entry))),
     };
   }
 
   /** Decides the verdict for a request that passed every check above. */
   protected abstract check(request: VerifiedRequest): Promise<CheckResult>;
 
+  /**
+   * Whether to answer a request that passed the base checks. Return false to turn it away with no
+   * response and no retries (logged as DECLINED), e.g. a request outside this validator's scope.
+   * Default: accept every request.
+   */
+  protected async accepts(_request: VerifiedRequest): Promise<boolean> {
+    return true;
+  }
+
   /** Where the evidence goes. Default: a data: URI; responseHash = keccak256 of the JSON bytes. */
   protected async publishEvidence(evidence: Record<string, unknown>): Promise<{ uri: string; hash: Hex }> {
     return encodeJsonDataUri(evidence);
   }
 
-  /** One polling cycle: the next window of blocks after the cursor, up to the head. */
-  async pollOnce(): Promise<{ outcomes: Outcome[]; caughtUp: boolean }> {
+  /**
+   * One polling cycle: the next window of blocks after the cursor, up to the head. After a request
+   * failed, `retryAfterMs` says how long to wait before the next cycle (`run()` does).
+   */
+  async pollOnce(): Promise<{ outcomes: Outcome[]; caughtUp: boolean; retryAfterMs?: number }> {
     const { chain, cursor, maxBlockRange, maxFailedCycles } = this.options;
     this.chainId ??= await chain.chainId();
     const head = await chain.head();
@@ -152,7 +172,7 @@ export abstract class ValidatorBase {
         outcomes.push(await this.handle(event, head.timestamp));
         this.failedCycles.delete(event.requestHash);
       } catch (error) {
-        const message = error instanceof Error ? error.message : String(error);
+        const message = errorMessage(error);
         const failures = (this.failedCycles.get(event.requestHash) ?? 0) + 1;
         if (failures >= maxFailedCycles) {
           this.failedCycles.delete(event.requestHash);
@@ -167,23 +187,28 @@ export abstract class ValidatorBase {
           error: message,
         });
         await cursor.save(event.blockNumber - 1n);
-        return { outcomes, caughtUp: false };
+        return { outcomes, caughtUp: false, retryAfterMs: this.options.retryDelayMs * 2 ** (failures - 1) };
       }
     }
     await cursor.save(to);
     return { outcomes, caughtUp: to >= head.number };
   }
 
-  /** Polls until `signal` aborts. Sleeps only when caught up or after a failed cycle. */
+  /**
+   * Polls until `signal` aborts. Sleeps `pollIntervalMs` when caught up or after a failed poll, and
+   * the growing `retryAfterMs` after a failed request; otherwise polls the next window at once.
+   */
   async run(signal?: AbortSignal): Promise<void> {
     while (!signal?.aborted) {
-      let caughtUp = true;
+      let wait = 0;
       try {
-        ({ caughtUp } = await this.pollOnce());
+        const { caughtUp, retryAfterMs } = await this.pollOnce();
+        wait = retryAfterMs ?? (caughtUp ? this.options.pollIntervalMs : 0);
       } catch (error) {
-        this.log("error", "poll failed", { error: error instanceof Error ? error.message : String(error) });
+        this.log("error", "poll failed", { error: errorMessage(error) });
+        wait = this.options.pollIntervalMs;
       }
-      if (caughtUp && !signal?.aborted) await sleep(this.options.pollIntervalMs, signal);
+      if (wait > 0 && !signal?.aborted) await sleep(wait, signal);
     }
   }
 
@@ -214,14 +239,16 @@ export abstract class ValidatorBase {
       return skip("DEADLINE_TOO_FAR", `deadline ${deadline} is more than ${maxDeadlineAheadSeconds} s ahead`);
     }
 
-    const result = await this.check({
+    const verified: VerifiedRequest = {
       event,
       json,
       action: requestJsonToAction(json),
       gate: json.gate,
       chainId: json.chainId,
       headTimestamp,
-    });
+    };
+    if (!(await this.accepts(verified))) return skip("DECLINED");
+    const result = await this.check(verified);
     if (!Number.isInteger(result.score) || result.score < 0 || result.score > 100) {
       throw new Error(`check() returned score ${result.score}; it must be an integer from 0 to 100`);
     }
@@ -259,11 +286,7 @@ export abstract class ValidatorBase {
         return { kind: "responded", requestHash, score, txHash };
       } catch (error) {
         if (attempt >= sendAttempts) throw error;
-        this.log("warn", "send failed; retrying", {
-          requestHash,
-          attempt,
-          error: error instanceof Error ? error.message : String(error),
-        });
+        this.log("warn", "send failed; retrying", { requestHash, attempt, error: errorMessage(error) });
         await sleep(retryDelayMs);
       }
     }
@@ -277,6 +300,15 @@ export abstract class ValidatorBase {
     }
     this.options.log(entry);
   }
+}
+
+/**
+ * An error for logs and outcomes. viem's full message includes request details such as the RPC
+ * URL, which can carry an API key; its shortMessage doesn't.
+ */
+function errorMessage(error: unknown): string {
+  if (error instanceof BaseError) return error.shortMessage;
+  return error instanceof Error ? error.message : String(error);
 }
 
 /** Our responses always carry a non-zero responseHash and a non-empty tag; pending ones carry neither. */
