@@ -6,6 +6,7 @@ Foundry project for the Attest8004 contracts (SPEC §4.1–4.3):
 |---|---|
 | `ValidationRegistry` | **live on Monad testnet** at `0xc4A4D0cEB3971cbE7a2536494aC106f2Cd9F9a8f` (P1; see [docs/deployments.md](../docs/deployments.md)) |
 | `AttestGate` + `DemoAgentVault` | **live on Monad testnet**: `DemoAgentVault` at `0x23BfBD12545CCd1501ddA1B65a54518FD6212a96`, for demo agent 1984, requiring validator A (P3; the P2 vault for agent 1982 is superseded; see [docs/deployments.md](../docs/deployments.md)) |
+| `AgentRequestForwarder` | **live on Monad testnet** at `0x1451F3C36545b191d3642f759D59f21DcFD657B2` (P3; see [docs/deployments.md](../docs/deployments.md)) |
 | `MandateRegistry` | planned (P4, passkeys in P6) |
 
 ```bash
@@ -31,6 +32,21 @@ implementation is in [docs/spec-notes.md](../docs/spec-notes.md).
 | `test/ValidationRegistry.t.sol` | Authorisation (owner, operator, token-approved, stranger, transfers), response range, wrong validator, unknown request, repeated responses, summary maths and filters, exact EIP signatures, fuzz (incl. a reference model for `getSummary`) |
 | `test/fork/ValidationRegistry.fork.t.sol` | The same flows against the **live canonical Identity Registry** on a fork of Monad testnet |
 | `test/DeployValidationRegistry.t.sol` | The CREATE2 deploy script: predicted address, idempotence, per-chain Identity Registry |
+
+## AgentRequestForwarder
+
+`src/AgentRequestForwarder.sol` lets an agent's hot key request validations without being able to move the agent.
+EIP-8004 accepts `validationRequest` only from the owner or an ERC-721 operator, and an operator can also transfer
+the agent. So the owner approves the forwarder once (`setApprovalForAll`) and registers one key per agent
+(`setAgentKey`, current owner only; `address(0)` revokes). `request` works only from that key, only while the owner
+who registered it still owns the agent, and makes exactly one call: `validationRequest` on the fixed registry.
+Immutable, no admin, no funds. The trade-off of the blanket approval is in ARCHITECTURE §7.
+
+| Test file | What it covers |
+|---|---|
+| `test/AgentRequestForwarder.t.sol` | Key management (owner only, not an operator or the key; rotate; revoke); requests: wrong key, another agent's key, the owner, no key, a revoked key, a key set by a previous owner after a transfer (even if the new owner approved the forwarder), the A→B→A case, a revoked approval, a reused hash; that the forwarder can only call `validationRequest` (state-diff recording of every call it makes, the compiled ABI pinned, ERC-721 calls refused, no funds, fuzzed calldata) |
+| `test/fork/AgentRequestForwarder.fork.t.sol` | The testnet configuration against the live registry and canonical Identity Registry: a key requests; a stale key after a transfer is refused |
+| `test/DeployAgentRequestForwarder.t.sol` | The CREATE2 deploy script: predicted address, idempotence, wiring, the testnet configuration |
 
 ## AttestGate and DemoAgentVault
 
@@ -64,15 +80,16 @@ CI runs them in a separate `contracts-fork` job that may fail without turning th
 
 ## Deploying
 
-`script/DeployValidationRegistry.s.sol` and `script/DeployDemoAgentVault.s.sol` deploy through the CREATE2
+`script/DeployValidationRegistry.s.sol`, `script/DeployAgentRequestForwarder.s.sol` and `script/DeployDemoAgentVault.s.sol` deploy through the CREATE2
 factory `0x4e59…956C` with a **literal gas limit** (`DEPLOY_GAS`), because Monad charges for the gas limit, not
 the gas used. The address depends on the init code, which includes the constructor arguments: the
-ValidationRegistry's address depends on the Identity Registry (so testnet and mainnet differ), and the vault's on
-its registry, agent and validator requirements. Re-running is a no-op once the contract exists.
+ValidationRegistry's address depends on the Identity Registry (so testnet and mainnet differ), the forwarder's on
+its ValidationRegistry, and the vault's on its registry, agent and validator requirements. Re-running is a no-op once the contract exists.
 
 ```bash
 ./script/deploy-testnet.sh ValidationRegistry               # dry run against Monad testnet; nothing is sent
 BROADCAST=1 ./script/deploy-testnet.sh ValidationRegistry   # deploy
+./script/deploy-testnet.sh AgentRequestForwarder            # same, for the forwarder
 ./script/deploy-testnet.sh DemoAgentVault                   # same, for the demo vault
 ```
 

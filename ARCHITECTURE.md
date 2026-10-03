@@ -1,6 +1,6 @@
 # Attest8004 — Architecture
 
-> **Status:** design reference v0.1 (2 Oct 2026), written before implementation.
+> **Status:** design reference v0.1 (2 Oct 2026), kept in sync with the code as it is built (P3, 3 Oct 2026: the forwarder, the SDK client and validator base).
 > **Rule:** any change to an interface, flow, data format or trust assumption updates this file **in the same commit**.
 > Build scope and acceptance criteria live in [`SPEC.md`](./SPEC.md). This file explains *how the system works and why*.
 
@@ -427,6 +427,6 @@ attest8004/
   indexer/          Envio HyperIndex
   web/              /approve, /inbox, /dashboard
   cre/              (stretch) Chainlink CRE workflow
-  scripts/          @attest8004/scripts: operational scripts (testnet round trip)
+  scripts/          @attest8004/scripts: operational scripts (round trip, hot keys, demo agents, end to end)
   docs/             quickstart, API ref, threat model, deployments, spec-notes.md, nansen.md, mera.md, security-review.md
 ```

@@ -2,7 +2,7 @@
 
 > **The missing ERC-8004 Validation layer for Monad.**
 > Built for Monad Metropolis, Track 04 (Trust, Identity & AI Infrastructure).
-> **Status: work in progress.** The ValidationRegistry and a demo AttestGate consumer (`DemoAgentVault`) are live on Monad testnet (see [Deployments](#deployments)); the other parts are being built. Progress is in [STATUS.md](./STATUS.md).
+> **Status: work in progress.** The ValidationRegistry, the AgentRequestForwarder and a demo AttestGate consumer (`DemoAgentVault`) are live on Monad testnet, and the TypeScript SDK (client and validator base) runs end to end against them (see [Deployments](#deployments)). The two reference validators, passkey mandates, the findings inbox and the indexer are being built. Progress is in [STATUS.md](./STATUS.md).
 
 ## What
 
@@ -31,8 +31,8 @@ Monad's ERC-8004 docs list the Validation Registry as "coming soon", and the can
 
 The flow, in short:
 
-1. An agent builds an `Action` and calls `validationRequest` on the **ValidationRegistry**, once per validator. Each `requestHash` is bound to one chain, one gate, one validator, one exact action and a deadline.
-2. Validators pick up the `ValidationRequest` event, check the action against the operator's passkey-approved **mandate** (and, for `risk-qwen-v1`, against simulation, Nansen data and ERC-8004 reputation), then post `validationResponse` with a score and an evidence hash.
+1. An agent builds an `Action` and requests validation on the **ValidationRegistry**, once per validator. Each `requestHash` is bound to one chain, one gate, one validator, one exact action and a deadline. The agent's own hot key sends the request through the **AgentRequestForwarder**, which the agent's owner approved once: the key can request validations for its agent and do nothing else with it.
+2. Validators pick up the `ValidationRequest` event (the SDK's validator base polls for it and verifies the request JSON against `requestHash`), check the action against the operator's passkey-approved **mandate** (and, for `risk-qwen-v1`, against simulation, Nansen data and ERC-8004 reputation), then post `validationResponse` with a score and an evidence hash.
 3. A consumer contract using **AttestGate** recomputes each required validator's `requestHash` from the call. It executes only if every one of those verdicts names the right agent and meets its minimum score, and each action runs once.
 4. Detailed findings go to the operator's encrypted inbox. Envio indexes everything for the trust API.
 
@@ -40,13 +40,13 @@ The diagrams, flows, data formats, trust model and key custody are in **[ARCHITE
 
 | Path | What |
 |---|---|
-| [`contracts/`](./contracts) | Foundry: ValidationRegistry, MandateRegistry, AttestGate, DemoAgentVault |
+| [`contracts/`](./contracts) | Foundry: ValidationRegistry, AgentRequestForwarder, MandateRegistry, AttestGate, DemoAgentVault |
 | [`packages/sdk/`](./packages/sdk) | `@attest8004/sdk`: client, validator base, shared types, hash test vectors |
 | [`validators/mandate/`](./validators/mandate) | `mandate-v1` deterministic validator |
 | [`validators/qwen/`](./validators/qwen) | `risk-qwen-v1` agentic validator |
 | [`indexer/`](./indexer) | Envio HyperIndex project |
 | [`web/`](./web) | `/approve`, `/inbox`, `/dashboard` |
-| [`scripts/`](./scripts) | `@attest8004/scripts`: operational scripts (testnet validation round trip) |
+| [`scripts/`](./scripts) | `@attest8004/scripts`: operational scripts (testnet round trip, demo agents, end to end) |
 | [`docs/`](./docs) | Quickstart, API reference, threat model, deployments |
 
 ## Quickstart
@@ -72,12 +72,17 @@ cd contracts && MONAD_TESTNET_RPC_URL=https://testnet-rpc.monad.xyz forge test -
 pnpm --filter @attest8004/scripts roundtrip   # register agent -> validationRequest -> validationResponse
 ```
 
-The validated execute through `DemoAgentVault` is also scripted. It acts as agent 1982, so it only runs with the key
-of that agent's owner (our deployer); it shows how the recorded testnet run was made. It is a smoke test of the gate:
-the script itself signs a score of 100 with validator A's key, and no `mandate-v1` checks run (that validator comes in P4).
+The end-to-end path is scripted too. These scripts act as our demo agents, so they only run with our deployer's,
+validator A's and the demo agents' keys; they show how the recorded testnet runs were made. The validator in them is
+a stub built on the SDK's validator base: it runs every check of the base class but passes every request, and its
+evidence says so (`mandate-v1` comes in P4).
 
 ```bash
-pnpm --filter @attest8004/scripts gated-execute   # request -> smoke-test score from validator A's key -> execute
+pnpm --filter @attest8004/scripts hot-keys                     # one hot key per demo agent into .env; prints addresses only
+pnpm --filter @attest8004/scripts setup-demo-agents            # register agents, approve the forwarder, set each agent's key
+pnpm --filter @attest8004/scripts setup-demo-agents -- --fund  # top each hot key up to four requests
+pnpm --filter @attest8004/scripts e2e                          # hot key -> forwarder -> stub validator -> gated execute
+pnpm --filter @attest8004/scripts gated-execute                # P2: the superseded agent-1982 vault, owner requests directly
 ```
 
 ## Deployments
@@ -89,7 +94,7 @@ pnpm --filter @attest8004/scripts gated-execute   # request -> smoke-test score 
 | Monad testnet (10143) | `DemoAgentVault` (AttestGate demo, demo agent 1984, requires validator A) | [`0x23BfBD12545CCd1501ddA1B65a54518FD6212a96`](https://monad-testnet.socialscan.io/address/0x23bfbd12545ccd1501dda1b65a54518fd6212a96) |
 | Monad testnet (10143) | `DemoAgentVault`, P2, agent 1982 (**superseded**) | [`0x7A5EC388CCbfD3B255CFa94fc2062c0807F2C4CD`](https://monad-testnet.socialscan.io/address/0x7a5ec388ccbfd3b255cfa94fc2062c0807f2c4cd) |
 
-Registry deploy tx [`0x724f31e0…cf64d03`](https://monad-testnet.socialscan.io/tx/0x724f31e0efd09993f2d73581cb742e71d4bef52c0f4f2a30cccd43d79cf64d03). A scripted register → request → response round trip on this registry (agentId 1982), and a validated execute through `DemoAgentVault` ([`0x59d5987e…71e3f85`](https://monad-testnet.socialscan.io/tx/0x59d5987e1d2583def79af6af40efd60daf0fa88cc7553d6f3b31a0eab71e3f85)), are recorded with their transaction hashes in [docs/deployments.md](./docs/deployments.md). That file records every deployment with its chain, address, commit and date. Differences from the EIP-8004 Draft are in [docs/spec-notes.md](./docs/spec-notes.md).
+Registry deploy tx [`0x724f31e0…cf64d03`](https://monad-testnet.socialscan.io/tx/0x724f31e0efd09993f2d73581cb742e71d4bef52c0f4f2a30cccd43d79cf64d03). A scripted register → request → response round trip on this registry (agentId 1982), a validated execute through the P2 vault ([`0x59d5987e…71e3f85`](https://monad-testnet.socialscan.io/tx/0x59d5987e1d2583def79af6af40efd60daf0fa88cc7553d6f3b31a0eab71e3f85)), the demo agents 1984 and 1985 with their hot keys, and the P3 end-to-end run (hot key → forwarder → validator → execute, [`0x6f694020…bb1336a8`](https://monad-testnet.socialscan.io/tx/0x6f6940203907d8d759e1887953d1170015be7f0c6d27b39c4e22090bbb1336a8)) are recorded with their transaction hashes in [docs/deployments.md](./docs/deployments.md). That file records every deployment with its chain, address, commit and date. Differences from the EIP-8004 Draft are in [docs/spec-notes.md](./docs/spec-notes.md).
 
 Canonical contracts this project builds on:
 
@@ -135,7 +140,7 @@ At runtime, `risk-qwen-v1` uses **Qwen 3.8 Max** (Alibaba Cloud Model Studio) fo
 - The expected values in the shared hash vectors (`packages/sdk/test/vectors.json`) are generated with Foundry's `cast`.
 - Deployment goes through the widely used deterministic deployment proxy at `0x4e59b44847b379578588920cA78FbF26c0B4956C` (Arachnid); it is called onchain, and none of its code is included here.
 
-This list grows as libraries are added (Envio, Mera, agent0 and others).
+The demo agents are registered by calling the Identity Registry's `register(string)` directly; the [agent0 SDK](https://sdk.ag0.xyz) was not used, because its latest release (1.7.1) has no defaults for Monad. This list grows as libraries are added (Envio, Mera and others).
 
 ## License
 
