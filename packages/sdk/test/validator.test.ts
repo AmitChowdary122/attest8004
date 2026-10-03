@@ -22,6 +22,7 @@ import {
   canonicalJson,
   decodeJsonDataUri,
   encodeJsonDataUri,
+  jsonLineLog,
   requestHashOfJson,
   type CheckResult,
   type CursorStore,
@@ -166,6 +167,7 @@ beforeEach(() => {
 });
 afterEach(() => {
   vi.unstubAllGlobals();
+  vi.restoreAllMocks();
 });
 
 function validator(over: Partial<ValidatorOptions> = {}): TestValidator {
@@ -358,6 +360,61 @@ describe("ValidatorBase", () => {
     expect(
       logs.some((l) => l.level === "error" && l.requestHash === e.requestHash && String(l.error).includes("subscriber failed")),
     ).toBe(true);
+  });
+
+  describe("logging never changes what the validator does", () => {
+    it("a logger that throws on every call: the request still responds exactly once and onResponded fires once", async () => {
+      const responds = event();
+      const ignored = event({ json: request({ salt: `0x${"33".repeat(32)}` }), validator: VALIDATOR_B });
+      chain.events.push(responds, ignored);
+      const stderr = vi.spyOn(console, "error").mockImplementation(() => {});
+      const v = validator({
+        log: () => {
+          throw new Error("logger is down");
+        },
+      });
+
+      const { outcomes, caughtUp } = await v.pollOnce();
+
+      expect(outcomes).toEqual([
+        { kind: "responded", requestHash: responds.requestHash, score: 100, txHash: expect.any(String), blockNumber: chain.respondBlock },
+        { kind: "skipped", requestHash: ignored.requestHash, reason: "WRONG_VALIDATOR", detail: expect.any(String) },
+      ]);
+      expect(caughtUp).toBe(true);
+      expect(chain.respondCalls).toBe(1);
+      expect(v.responded).toEqual([expect.objectContaining({ requestHash: responds.requestHash, blockNumber: chain.respondBlock })]);
+      // Each dropped line leaves a minimal note on stderr instead.
+      expect(stderr).toHaveBeenCalled();
+      expect(String(stderr.mock.calls[0]?.[0])).toContain("logger is down");
+    });
+
+    it("the default logger writes bigints as decimal strings, so a landed response is reported once and notified", async () => {
+      const lines: string[] = [];
+      vi.spyOn(console, "log").mockImplementation((line: unknown) => {
+        lines.push(String(line));
+      });
+      const e = event();
+      chain.events.push(e);
+      const v = validator({ log: undefined });
+
+      const { outcomes } = await v.pollOnce();
+
+      expect(outcomes).toEqual([expect.objectContaining({ kind: "responded", requestHash: e.requestHash })]);
+      expect(chain.respondCalls).toBe(1);
+      expect(v.responded).toHaveLength(1);
+      expect(lines.map((line) => JSON.parse(line) as Record<string, unknown>)).toContainEqual(
+        expect.objectContaining({ level: "info", msg: "responded", blockNumber: "1001", gasLimit: "84010" }),
+      );
+    });
+
+    it("jsonLineLog: one JSON line, bigints (nested too) as decimal strings", () => {
+      const lines: string[] = [];
+      vi.spyOn(console, "log").mockImplementation((line: unknown) => {
+        lines.push(String(line));
+      });
+      jsonLineLog({ a: 2n ** 70n, nested: { b: [1n, "x"] }, c: 3 });
+      expect(lines).toEqual(['{"a":"1180591620717411303424","nested":{"b":["1","x"]},"c":3}']);
+    });
   });
 
   it("logs a short preview, never a whole attacker-sized URI", async () => {

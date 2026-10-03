@@ -89,8 +89,21 @@ export interface ValidatorOptions {
   /** Failed cycles for one request before it is logged as given up and skipped. Default 5. */
   maxFailedCycles?: number;
   pollIntervalMs?: number;
-  /** One JSON object per line on stdout by default. Never given keys or whole request URIs. */
+  /**
+   * Where log entries go. Default {@link jsonLineLog}: one JSON object per line on stdout, bigints
+   * as decimal strings. Never given keys or whole request URIs. Entries carry bigints (block numbers,
+   * gas limits), so a custom logger must handle them. A logger that throws never changes what the
+   * validator does: the entry is dropped, with a one-line note on stderr.
+   */
   log?: (entry: Record<string, unknown>) => void;
+}
+
+/**
+ * Writes `entry` as one JSON line on stdout, every `bigint` (at any depth) as a decimal string:
+ * `JSON.stringify` alone throws on a bigint. The validator base's default logger.
+ */
+export function jsonLineLog(entry: Record<string, unknown>): void {
+  console.log(JSON.stringify(entry, (_key, value: unknown) => (typeof value === "bigint" ? value.toString() : value)));
 }
 
 /** The `schema` of every evidence document `buildEvidence` builds (ARCHITECTURE §6). */
@@ -154,7 +167,7 @@ export abstract class ValidatorBase {
       retryDelayMs: options.retryDelayMs ?? 2_000,
       maxFailedCycles: options.maxFailedCycles ?? 5,
       pollIntervalMs: options.pollIntervalMs ?? 1_000,
-      log: options.log ?? ((entry) => console.log(JSON.stringify(entry))),
+      log: options.log ?? jsonLineLog,
     };
   }
 
@@ -308,22 +321,26 @@ export abstract class ValidatorBase {
         this.log("warn", "request ignored; no response sent", { requestHash, reason: "ALREADY_RESPONDED" });
         return { kind: "skipped", requestHash, reason: "ALREADY_RESPONDED" };
       }
+      // Only the send itself is retried: once it resolves, the response has landed, whatever happens next.
+      let sent: { txHash: Hash; blockNumber: bigint; gasLimit: bigint };
       try {
-        const { txHash, blockNumber, gasLimit } = await chain.respond({
+        sent = await chain.respond({
           requestHash,
           response: score,
           responseURI: evidence.uri,
           responseHash: evidence.hash,
           tag,
         });
-        this.log("info", "responded", { requestHash, score, txHash, blockNumber, gasLimit });
-        this.notifyResponded({ requestHash, score, txHash, blockNumber, gasLimit });
-        return { kind: "responded", requestHash, score, txHash, blockNumber };
       } catch (error) {
         if (attempt >= sendAttempts) throw error;
         this.log("warn", "send failed; retrying", { requestHash, attempt, error: errorMessage(error) });
         await sleep(retryDelayMs);
+        continue;
       }
+      const { txHash, blockNumber, gasLimit } = sent;
+      this.log("info", "responded", { requestHash, score, txHash, blockNumber, gasLimit });
+      this.notifyResponded({ requestHash, score, txHash, blockNumber, gasLimit });
+      return { kind: "responded", requestHash, score, txHash, blockNumber };
     }
   }
 
@@ -339,13 +356,27 @@ export abstract class ValidatorBase {
     }
   }
 
+  /**
+   * Logs one entry through the configured logger. Never throws: a logger that fails must not turn a
+   * landed response into a retry, or a skip into a failed cycle. The entry is dropped, with a
+   * minimal note on stderr (our own fixed message and the request hash, nothing else from it).
+   */
   private log(level: "info" | "warn" | "error", msg: string, fields: Record<string, unknown>): void {
     const entry: Record<string, unknown> = { level, msg, validator: this.options.tag };
     for (const [key, value] of Object.entries(fields)) {
       if (value === undefined) continue;
       entry[key] = typeof value === "string" && value.length > 200 ? `${value.slice(0, 200)}…` : value;
     }
-    this.options.log(entry);
+    try {
+      this.options.log(entry);
+    } catch (error) {
+      try {
+        const request = typeof fields.requestHash === "string" ? ` (request ${fields.requestHash})` : "";
+        console.error(`${this.options.tag}: the logger threw (${errorMessage(error)}); dropped a ${level} line "${msg}"${request}`);
+      } catch {
+        // Nothing left to report to; the validator carries on regardless.
+      }
+    }
   }
 }
 

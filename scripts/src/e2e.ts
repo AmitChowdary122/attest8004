@@ -191,7 +191,8 @@ function stubValidator(fromBlock: bigint, requestHash: Hex, name: string): StubV
     tag: STUB_TAG,
     cursor: new MemoryCursorStore(fromBlock - 1n),
     onlyRequestHashes: [requestHash],
-    log: (entry) => console.log(`    ${name}: ${JSON.stringify(entry)}`),
+    // Entries carry bigints (block numbers, gas limits), which JSON.stringify can't write on its own.
+    log: (entry) => console.log(`    ${name}: ${JSON.stringify(entry, (_k, v: unknown) => (typeof v === "bigint" ? v.toString() : v))}`),
   });
 }
 
