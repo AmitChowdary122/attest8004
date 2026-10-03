@@ -10,6 +10,7 @@ interface IERC8004IdentityRegistry is IIdentityRegistry {
     function register(string calldata agentURI) external returns (uint256 agentId);
     function setApprovalForAll(address operator, bool approved) external;
     function approve(address to, uint256 agentId) external;
+    function transferFrom(address from, address to, uint256 agentId) external;
     function name() external view returns (string memory);
 }
 
