@@ -73,10 +73,11 @@ pnpm --filter @attest8004/scripts roundtrip   # register agent -> validationRequ
 ```
 
 The validated execute through `DemoAgentVault` is also scripted. It acts as agent 1982, so it only runs with the key
-of that agent's owner (our deployer); it shows how the recorded testnet run was made:
+of that agent's owner (our deployer); it shows how the recorded testnet run was made. It is a smoke test of the gate:
+the script itself signs a score of 100 with validator A's key, and no `mandate-v1` checks run (that validator comes in P4).
 
 ```bash
-pnpm --filter @attest8004/scripts gated-execute   # request -> verdict -> execute through AttestGate
+pnpm --filter @attest8004/scripts gated-execute   # request -> smoke-test score from validator A's key -> execute
 ```
 
 ## Deployments

@@ -90,7 +90,7 @@ flowchart TB
   ID["ERC-8004 IdentityRegistry (canonical)<br/>ownerOf · isApprovedForAll · getApproved"]
   VR["ValidationRegistry<br/>validationRequest · validationResponse<br/>getValidationStatus · getSummary<br/>getAgentValidations · getValidatorRequests"]
   MR["MandateRegistry<br/>setPasskey · setMandate · setInboxKey<br/>(WebAuthn → P256 @ 0x0100)"]
-  G["AttestGate<br/>onlyValidated(action, minScore)"]
+  G["AttestGate<br/>onlyValidated(action)<br/>immutable (validator, minScore)[]"]
   V["DemoAgentVault<br/>execute(action)"]
   ID --> VR
   ID --> MR
@@ -151,10 +151,16 @@ actionHash = keccak256(abi.encode(
    1. Recompute `requestHash` for that validator from the call arguments.
    2. `getValidationStatus(requestHash)` must exist. The registry reverts for an unknown hash, and the gate reports `ValidationNotFound`.
    3. The stored `validatorAddress` must be that validator, and the stored `agentId` must be the action's. Anyone who owns an agent can claim a `requestHash` first and name any validator (spec-notes, row 12), so the score alone proves nothing.
-   4. `response >= minScore`. `minScore` is at least 1, because a pending request reads as response 0. The latest response counts, so a validator can withdraw a pass before execution.
+   4. `response >= minScore`. `minScore` is at least 1, because a pending request reads as response 0. The latest response counts, so a validator can withdraw a pass, but only if the withdrawal lands before someone executes the action (see below).
 4. Mark `actionHash` consumed and emit `ActionConsumed`, **then** make the external call. `execute` also runs under a reentrancy guard (OpenZeppelin `ReentrancyGuardTransient`).
 
 If the call reverts, the whole transaction reverts, consumption included, so the action can be retried until its deadline. `execute` is permissionless: the validated, deadline-bound action is the authorisation, and to cancel it the agent lets it expire. The requirements are packed into immutables, so the check costs one registry read per validator and one storage write.
+
+**For integrators, because anyone can submit a validated action, with any gas limit:**
+- A withdrawn pass (a validator lowering its score) can be front-run by someone executing the action first.
+- If the target tolerates a failed sub-call (a `try`/`catch`, or a router that skips a failed hop), a submitter can make it fail on purpose with a low gas limit, and the action still counts as executed and consumed. Gate such targets only if a partial execution is acceptable, or restrict who may call the gated function.
+
+`DemoAgentVault`'s actions (native and ERC-20 transfers) don't have the second problem: the call either succeeds or reverts the whole execute.
 
 ---
 
@@ -334,7 +340,7 @@ The LLM never sees or holds any private key. Validators sign; the model only pro
 - **Low-s enforced** (the precompile doesn't), so a passkey signature can't be altered into a second valid form.
 - **WebAuthn binding:** the challenge commits to the chain, the contract, the agent, the payload hash and a nonce. Checks cover `type == "webauthn.get"`, the UP and UV flags, and the rpIdHash.
 - **Replay:** a per-agent nonce on mandate and inbox changes. At the gate, each `actionHash` is single use, marked before the external call, under a reentrancy guard.
-- **Verdict reuse** across actions, gates, chains or validators is impossible: the gate recomputes each validator's `requestHash` from the call. It also checks the stored validator and `agentId`, so a hash that another agent claimed first doesn't pass.
+- **Verdict reuse** across actions, gates, chains or validators is impossible: the gate recomputes each validator's `requestHash` from the call. It also checks the stored validator and `agentId`, so a hash that another agent claimed first doesn't pass. Execution is permissionless, so a validator's withdrawn pass can be front-run (§4.4).
 - **Gas:** Monad charges on the *gas limit*, so every transaction sets an explicit, tight limit.
 - **LLM output** is untrusted data: schema-validated, capped tool calls and tokens, temperature 0–0.2, full trace kept.
 - **Secrets:** gitleaks runs as a pre-commit hook and over the full history before the repo goes public. Only `.env.example` is committed.
@@ -365,7 +371,7 @@ The web app is deployed early to a **fixed domain**, because passkeys are bound 
 
 ## 12. Extension points and roadmap
 
-- **Canonical registry migration:** same interface, so consumers switch the address when the official Validation Registry ships.
+- **Canonical registry migration:** the same EIP-8004 interface, so offchain clients only switch the address when the official Validation Registry ships. An `AttestGate` consumer has the registry as an immutable and no owner, so it is redeployed pointing at the new registry.
 - **Economic security:** validator staking and slashing for provably wrong `mandate-v1` verdicts (proved by re-execution).
 - **More validator types:** TEE-attested validators and zk proofs of model inference, using the ERC-8004 `supportedTrust` modes.
 - **Paid validations:** validators charge per request via x402 (Monad facilitator).
