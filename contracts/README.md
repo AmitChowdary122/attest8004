@@ -5,10 +5,10 @@ Foundry project for the Attest8004 contracts (SPEC §4.1–4.4):
 | Contract | Status |
 |---|---|
 | `ValidationRegistry` | **live on Monad testnet** at `0xc4A4D0cEB3971cbE7a2536494aC106f2Cd9F9a8f` (P1; see [docs/deployments.md](../docs/deployments.md)) |
-| `AttestGate` + `DemoAgentVault` | **live on Monad testnet**: `DemoAgentVault` at `0x23BfBD12545CCd1501ddA1B65a54518FD6212a96`, for demo agent 1984, requiring validator A (P3; the P2 vault for agent 1982 is superseded; see [docs/deployments.md](../docs/deployments.md)) |
+| `AttestGate` + `DemoAgentVault` | **live on Monad testnet**: `DemoAgentVault` at `0x12fAb3E3cA810Cc44bD9f537613a230a2be8D614`, for demo agent 1984, requiring both `mandate-v1` and `risk-v1` (the P2 vault for agent 1982 and the single-validator P3 vault for agent 1984 are superseded; see [docs/deployments.md](../docs/deployments.md)) |
 | `AgentRequestForwarder` | **live on Monad testnet** at `0x1451F3C36545b191d3642f759D59f21DcFD657B2` (P3; see [docs/deployments.md](../docs/deployments.md)) |
 | `MandateRegistry` | **live on Monad testnet** at `0x2523197373ef813E19b5b14Ef2984130868cD17c`, owner-set mandates (P4; passkey approval is a new deployment in P6; see [docs/deployments.md](../docs/deployments.md)) |
-| `DemoPassThrough` | demo-only, **not yet deployed**: the P5 risky-but-mandated target (SPEC §4.6) that forwards every payment to a fixed sink nobody controls (`script/DeployDemoPassThrough.s.sol`) |
+| `DemoPassThrough` | demo-only, **live on Monad testnet** at `0xEEEBBa55620afC42E9c88b5d962476367b8da338`: the P5 risky-but-mandated target (SPEC §4.6) that forwards every payment to a fixed sink nobody controls; not yet allowlisted in any mandate (see [docs/deployments.md](../docs/deployments.md)) |
 
 ```bash
 forge build
@@ -85,9 +85,9 @@ answer for this action — the tag is what makes "validator A's key signs only `
 §9) a contract rule. The constructor rejects a zero `tagHash`, because no real tag hashes to it, so it would be a
 requirement nothing could ever satisfy. It marks `actionHash` consumed before the consumer's external call.
 `src/DemoAgentVault.sol` is the example consumer: bound to one agentId, it holds native funds and makes validated
-calls under a transient reentrancy guard. `script/DeployDemoAgentVault.s.sol` now configures the P5 vault to
-require both `mandate-v1` (validator A, minimum 100) and `risk-v1` (validator B, minimum 80) — **not yet
-deployed**; the live testnet deployment (status table above) still requires validator A only. See
+calls under a transient reentrancy guard. `script/DeployDemoAgentVault.s.sol` configures the vault to require both
+`mandate-v1` (validator A, minimum 100) and `risk-v1` (validator B, minimum 80), each under its own tag; the live
+testnet deployment (status table above) matches, superseding the single-validator P3 vault. See
 `docs/deployments.md`.
 
 | Test file | What it covers |

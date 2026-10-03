@@ -19,7 +19,7 @@ export interface Deployment {
    * so it never pins before this, and `verify` rejects evidence pinned before it without reading there.
    */
   mandateRegistryDeployBlock: bigint;
-  /** The two reference validators (SPEC §4.4 `mandate-v1`, live; §4.6 `risk-v1`, still being built). */
+  /** The two reference validators (SPEC §4.5 `mandate-v1`, live; §4.6 `risk-v1`, still being built). */
   validators: {
     mandateV1: Address;
     riskV1: Address;
