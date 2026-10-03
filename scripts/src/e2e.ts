@@ -10,8 +10,9 @@
  *   4. Simulate (never send) two refused requests: the owner, and agent 1985's hot key, calling the
  *      forwarder for agent 1984.
  *   5. Agent 1984's hot key calls Attest8004Client.requestValidation through the forwarder.
- *   6. A StubValidator (the SDK base with a pass-everything check) polls from the request's block
- *      and responds once. A second, freshly started one re-reads the same blocks and must not post.
+ *   6. A StubValidator (the SDK base with a stub check that passes only this run's request) polls
+ *      from the request's block and responds once. A second, freshly started one re-reads the same
+ *      blocks and must not post.
  *   7. awaitVerdict and isValidated confirm the verdict; the deployer submits execute (permissionless).
  *   8. Check the ActionConsumed event, the vault's balance and consumed(); a replay must be refused.
  *
@@ -162,7 +163,7 @@ async function pollUntil(validator: ValidatorBase, requestHash: Hex, want: (o: O
 /** Monad's estimate for each response the stub sends, taken with its exact arguments. */
 const responseEstimates: bigint[] = [];
 
-function stubValidator(fromBlock: bigint, name: string): StubValidator {
+function stubValidator(fromBlock: bigint, requestHash: Hex, name: string): StubValidator {
   const port = viemValidatorChain({
     publicClient,
     walletClient: walletFor(validator),
@@ -189,6 +190,7 @@ function stubValidator(fromBlock: bigint, name: string): StubValidator {
     chain: measured,
     tag: STUB_TAG,
     cursor: new MemoryCursorStore(fromBlock - 1n),
+    onlyRequestHashes: [requestHash],
     log: (entry) => console.log(`    ${name}: ${JSON.stringify(entry)}`),
   });
 }
@@ -294,13 +296,13 @@ async function main(): Promise<void> {
 
   // 6. The stub validator answers; a restarted one doesn't answer again.
   console.log("\nvalidator (SDK ValidatorBase, polling eth_getLogs up to the finalized block)");
-  const responded = await pollUntil(stubValidator(requested.blockNumber, "validator"), requestHash, (o) => o.kind === "responded");
+  const responded = await pollUntil(stubValidator(requested.blockNumber, requestHash, "validator"), requestHash, (o) => o.kind === "responded");
   if (responded.kind !== "responded") throw new Error("unreachable");
   txs.response = responded.txHash;
   await checkSent("the response", responded.txHash, validator.address, GAS.validationResponse);
 
   console.log("\nrestart (a fresh validator re-reads the same blocks)");
-  const again = await pollUntil(stubValidator(requested.blockNumber, "restarted"), requestHash, () => true);
+  const again = await pollUntil(stubValidator(requested.blockNumber, requestHash, "restarted"), requestHash, () => true);
   check("the restarted validator skips it: ALREADY_RESPONDED", again.kind === "skipped" && again.reason === "ALREADY_RESPONDED", JSON.stringify(again));
   const head = await publicClient.getBlockNumber();
   const responses = [];
