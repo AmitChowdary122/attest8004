@@ -333,19 +333,22 @@ contract MandateRegistryTest is Test {
 
         harness.setShouldRevert(true);
 
+        // A reverted call rolls back every state change it made, including the harness's own
+        // counters (EVM semantics) — so the observable proof here is that the registry's own
+        // state survives untouched, not that authorizeCalls kept counting.
         MandateRegistry.Mandate memory second = _validMandate();
         second.allowedTargets = _addresses(5);
         vm.expectRevert(bytes("MandateRegistryHookHarness: reverted"));
         vm.prank(owner);
         harness.setMandate(agent1, second);
-        assertEq(harness.authorizeCalls(), 4, "the hook still runs before refusing");
+        assertEq(harness.authorizeCalls(), 3, "the reverted call's own counter increment is rolled back too");
         (, bytes32 hashUnchangedAfterSet,,) = harness.getMandate(agent1);
         assertEq(hashUnchangedAfterSet, firstHash, "setMandate must not write when the hook reverts");
 
         vm.expectRevert(bytes("MandateRegistryHookHarness: reverted"));
         vm.prank(owner);
         harness.revokeMandate(agent1);
-        assertEq(harness.authorizeCalls(), 5, "the hook still runs before refusing");
+        assertEq(harness.authorizeCalls(), 3, "the reverted call's own counter increment is rolled back too");
         (, bytes32 hashUnchangedAfterRevoke,,) = harness.getMandate(agent1);
         assertEq(hashUnchangedAfterRevoke, firstHash, "revokeMandate must not clear when the hook reverts");
     }
@@ -358,7 +361,7 @@ contract MandateRegistryTest is Test {
         uint128 maxTx,
         uint128 maxDayExtra,
         uint64 validUntil
-    ) public {
+    ) public view {
         vm.assume(target != address(0));
         uint256 maxDay = uint256(maxTx) + maxDayExtra;
 

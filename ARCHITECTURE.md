@@ -72,7 +72,7 @@ flowchart LR
 |---|---|---|---|
 | Onchain | `ValidationRegistry` | `contracts/src/` | Stores validation requests and responses. EIP-8004 interface. Authorises requesters via the canonical Identity Registry. No admin, not upgradeable. |
 | Onchain | `AgentRequestForwarder` | `contracts/src/` | The agent owner's ERC-721 operator for validation requests only. Forwards `validationRequest` for the hot key the agent's owner registered, while that owner still owns the agent. No admin, not upgradeable, holds no funds. |
-| Onchain | `MandateRegistry` | `contracts/src/` | Per-agent operator passkey public key, the current mandate, and the inbox public key. Changes require a WebAuthn assertion verified via `0x0100`. |
+| Onchain | `MandateRegistry` | `contracts/src/` | The current spending mandate per agent (targets, selectors, value caps, expiry). P4: owner-set, via `setMandate`/`revokeMandate`, both routed through an internal `_authorize` hook. P6 replaces that hook's body with a WebAuthn assertion verified via `0x0100`, and adds the passkey public key and the inbox public key. |
 | Onchain | `AttestGate` (abstract contract with the `onlyValidated` modifier) | `contracts/src/` | For each required validator, recomputes that validator's `requestHash` from the call and checks its verdict: the named validator, the agentId and the minimum score. Every requirement must pass, and each action runs once. |
 | Onchain | `DemoAgentVault` | `contracts/src/` | Example consumer, bound to one agentId: holds that agent's test funds; `execute(Action)` is gated. |
 | Offchain | `@attest8004/sdk` client | `packages/sdk/` | Builds actions, computes `requestHash`, submits requests, waits for verdicts, reads trust summaries. |
@@ -94,7 +94,7 @@ flowchart TB
   ID["ERC-8004 IdentityRegistry (canonical)<br/>ownerOf · isApprovedForAll · getApproved"]
   VR["ValidationRegistry<br/>validationRequest · validationResponse<br/>getValidationStatus · getSummary<br/>getAgentValidations · getValidatorRequests"]
   FW["AgentRequestForwarder<br/>setAgentKey · request"]
-  MR["MandateRegistry<br/>setPasskey · setMandate · setInboxKey<br/>(WebAuthn → P256 @ 0x0100)"]
+  MR["MandateRegistry<br/>setMandate · revokeMandate<br/>(P4: owner-set · P6: WebAuthn → P256 @ 0x0100)"]
   G["AttestGate<br/>onlyValidated(action)<br/>immutable (validator, minScore)[]"]
   V["DemoAgentVault<br/>execute(action)"]
   ID --> VR
@@ -107,7 +107,7 @@ flowchart TB
 
 - **ValidationRegistry** reads the Identity Registry only to check that `msg.sender` is the owner or approved operator of `agentId` (`ownerOf`, `isApprovedForAll`, `getApproved`). It never trusts its own callers for this. The Identity Registry address is a **constructor argument** stored as an `immutable`. The EIP describes an `initialize(address)` instead, as used by the reference's upgradeable proxy; we have no proxy, owner or `initialize`, and `getIdentityRegistry()` returns the address. Because the Identity Registry address is part of the init code, the registry's CREATE2 address depends on it: testnet and mainnet use different Identity Registries, so their addresses differ. All differences from the EIP are in [`docs/spec-notes.md`](./docs/spec-notes.md).
 - **AgentRequestForwarder** takes the ValidationRegistry as its only constructor argument and reads that registry's Identity Registry (`getIdentityRegistry()`), so the two can't disagree about who owns an agent. The owner approves it as an ERC-721 operator. Its `request` checks the caller is the agent's registered key and that the owner who registered it still owns the agent, then makes exactly one call, `validationRequest`, which the registry accepts because the forwarder is the owner's operator (§7).
-- **MandateRegistry** reads the Identity Registry so that only the agent's owner can set the initial passkey key. After that, every mandate or inbox-key change requires the passkey.
+- **MandateRegistry** reads the Identity Registry to authorize every mandate change. P4: `setMandate`/`revokeMandate` route through an internal `_authorize(agentId, changeHash)` hook, called before any write, that requires `msg.sender == identityRegistry.ownerOf(agentId)` — the record stores that owner, so a mandate goes stale the moment the agent is transferred, even to an owner who already approved other operators. P6 replaces `_authorize`'s body with a WebAuthn assertion over the agent's passkey; because the hook is internal, that is a new deployment, not an upgrade, and after P6 every mandate or inbox-key change requires the passkey.
 - **AttestGate** reads the ValidationRegistry. It holds an **immutable list of `(validator, minScore)` requirements** (1 to 4), chosen by whoever deploys the consumer contract, not by Attest8004, and fixed at deployment. Every requirement must pass.
 
 ### 4.2 Canonical addresses used
@@ -200,6 +200,8 @@ sequenceDiagram
   Op->>W: open /inbox → passkey PRF → X25519 public key
   W->>MR: setInboxKey(agentId, x25519Pub, webauthnAuth)
 ```
+
+> **P4 vs. P6.** This diagram is the P6 target. As built in P4, there is no passkey yet: the operator's own wallet calls `setMandate(agentId, mandate)` and `revokeMandate(agentId)` directly on `MandateRegistry`, authorized by `_authorize` requiring `msg.sender == IdentityRegistry.ownerOf(agentId)`. The `setPasskey`, WebAuthn-assertion and `setInboxKey` steps above (and `/inbox`) arrive in P6, which replaces `_authorize`'s owner check with WebAuthn verification.
 
 ### 5.2 Validated action (happy path)
 
