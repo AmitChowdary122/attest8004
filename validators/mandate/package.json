@@ -6,6 +6,7 @@
   "license": "MIT",
   "type": "module",
   "scripts": {
+    "start": "node --conditions=@attest8004/source --env-file=../../.env src/main.ts",
     "typecheck": "tsc --noEmit",
     "test": "vitest run"
   },

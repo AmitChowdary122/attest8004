@@ -18,6 +18,9 @@ pnpm-debug.log*
 contracts/out/
 contracts/cache/
 
+# Validator state (block cursors)
+validators/mandate/.state/
+
 # Envio HyperIndex
 indexer/generated/
 indexer/.envio/

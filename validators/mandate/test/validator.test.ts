@@ -314,7 +314,7 @@ describe("MandateValidator: verdicts", () => {
   });
 
   it("posts 0 with its reasons for a request that breaks the mandate", async () => {
-    const e = addRequest(requestJson({ target: UNLISTED, value: 3_000n }));
+    const e = addRequest(requestJson({ target: UNLISTED, value: 2_200n })); // over the tx cap, within the daily cap
 
     const { outcomes } = await validator().pollOnce();
 
@@ -322,7 +322,7 @@ describe("MandateValidator: verdicts", () => {
     const { response, doc } = posted(e.requestHash);
     expect(response.response).toBe(0);
     expect(doc.reasons).toEqual(["TARGET_NOT_ALLOWED", "VALUE_OVER_TX_CAP"]);
-    expect(doc.request).toMatchObject({ target: UNLISTED, value: "3000" });
+    expect(doc.request).toMatchObject({ target: UNLISTED, value: "2200" });
   });
 
   it("re-checks the deadline at P: ACTION_EXPIRED when P's time is past a deadline the cycle head still allowed", async () => {

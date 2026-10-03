@@ -303,18 +303,46 @@ Validators **must** recompute `requestHash` from this JSON (§4.3) and reject it
 4. A subclass may turn a valid request away with `accepts()`. Returning `false` declines it silently: no response, no retries, logged as `DECLINED` with no detail. Returning `{ decline: "<reason>" }` does the same but carries that reason: it becomes the outcome's `detail` and is logged once at `warn` (e.g. a per-agent rate limit or a daily gas budget exhausted). The e2e's stub validator declines every request except its own this way.
 5. Otherwise it runs the subclass's `check()` and builds the evidence JSON v1 with `buildEvidence()` (the base's fields, then the subclass's own), publishes it as **canonical JSON** so `responseHash = keccak256` of those exact bytes, checks the status again, and sends `validationResponse` with a gas limit resolved from either a literal or an evidence-sized headroom policy (`writeWithGasGuard`), after the estimate guard. Once the send lands, it calls the subclass's `onResponded()` once with the block the response landed in and the gas limit that was sent — never when the status check alone found it already answered, since nothing landed through that call. A subclass can use the hook to record spend or update a rate-limit counter; a throw from it is logged and swallowed, because the response already landed and retrying would double-post. A failed send is retried, after checking that it didn't land. A request that keeps failing stops the cursor just before its block, and the next cycle retries it after a wait that doubles each time (2 s, 4 s, 8 s, … by default); after 5 failed cycles it is logged as given up and skipped. Errors are logged with viem's short message, never the full one, which can contain the RPC URL and its API key.
 
-**Evidence JSON v1.** Referenced by `responseURI`, as **canonical JSON** (the "Reproducibility" constraint: sorted keys, no whitespace, integers above 2^53 as decimal strings — `packages/sdk/src/canonical.ts`). `responseHash = keccak256` of those exact bytes, so a `verify` command can recompute a `CheckResult`, rebuild the document byte for byte with the same `buildEvidence()` the base used, and get the same hash. Shown here with whitespace for readability; the real bytes have none, and sort these keys alphabetically.
+**Evidence JSON v1.** Referenced by `responseURI`, as **canonical JSON** (the "Reproducibility" constraint: sorted keys, no whitespace, integers above 2^53 as decimal strings — `packages/sdk/src/canonical.ts`; in practice every `bigint` in code, such as a block number, a timestamp, a wei amount or a gas figure, is written as a decimal string, while `chainId` and `logIndex` are JSON numbers). `responseHash = keccak256` of those exact bytes, so a `verify` command can recompute a `CheckResult`, rebuild the document byte for byte with the same `buildEvidence()` the base used, and get the same hash. Every validator's document starts with the base's keys (`schema`, `validator`, `requestHash`, `score`, `reasons`); the validator adds its own after them and may not reuse those. `mandate-v1`'s document (`mandateEvidence()` in `validators/mandate/src/evidence.ts`) is shown here with whitespace for readability; the real bytes have none, and sort these keys alphabetically.
 ```json
 {
   "schema": "attest8004.evidence.v1",
   "validator": "mandate-v1",
   "requestHash": "0x…",
-  "blockNumber": 123456,
   "score": 0,
-  "reasons": ["TARGET_NOT_ALLOWED", "PERMISSION_CHANGED_AFTER_MANDATE"],
-  "findingsCiphertext": "<optional: encrypted findings envelope or URI>"
+  "reasons": ["TARGET_NOT_ALLOWED", "VALUE_OVER_TX_CAP"],
+  "block": { "number": "67900000", "hash": "0x…", "timestamp": "1790000000" },
+  "request": {
+    "block": "67899990", "chainId": 10143, "gate": "0x…", "agentId": "1984", "target": "0x…",
+    "value": "3000000000000000", "dataHash": "0x…", "selector": "0x00000000", "deadline": "1790000600", "salt": "0x…"
+  },
+  "params": {
+    "permissionWindowBlocks": "6000", "spendWindowSeconds": "90000", "maxDeadlineAheadSeconds": "3600",
+    "simulationGas": "1000000", "identityRegistry": "0x…", "agentRequestForwarder": "0x…", "mandateRegistry": "0x…"
+  },
+  "mandate": {
+    "allowedTargets": ["0x…"], "allowedSelectors": ["0x00000000"], "maxValuePerTx": "2000000000000000",
+    "maxValuePerDay": "5000000000000000", "validUntil": "1793404800", "mandateHash": "0x…", "owner": "0x…",
+    "setAtBlock": "67890000", "currentOwner": "0x…"
+  },
+  "spend": {
+    "since": "1789910000", "total": "1000000000000000",
+    "entries": [{ "requestHash": "0x…", "approvedAt": "1789990000", "gate": "0x…", "value": "1000000000000000",
+                  "deadline": "1789990600", "consumed": true, "counted": true }]
+  },
+  "permissions": { "fromBlock": "67894001", "toBlock": "67900000", "events": [] },
+  "simulation": { "ok": true }
 }
 ```
+- `block` is the pinned block `P`. Every input is read at `P`, and the verdict's clock is `P`'s timestamp. `P` is the finalized head when the check ran, but never below the request's own block or the block this validator process's last response landed in, and it waits until the process's last approval is visible there; so two requests checked back to back see each other's approval, and `P` always falls between the request's block and the response's. This assumes one validator process per key.
+- `request` is the action as its `requestHash` commits to it: `dataHash` instead of the raw `data`, plus the request's block and its `selector` (`0x00000000` for empty data, `null` when the data holds no selector an allowlist can match: 1–3 bytes, or non-empty data starting with `0x00000000`). Spend accounting reads past approvals back from this object (`parseApprovalParts`), so its form is strict: it must recompute to `requestHash`.
+- `params` are `mandate-v1`'s constants and the contracts it read; changing any of them means a new tag.
+- `mandate` is the record at `P` plus the agent's `currentOwner` there, or `null` when there is none.
+- `spend` lists this validator's `mandate-v1` approvals of the agent in the 25 h window, each with whether it counts toward the daily cap (`counted`); it is `{ "unreadable": "…" }` when an approval's evidence was found but failed its checks, and `null` without a mandate.
+- `permissions` covers the window `(P − 6,000, P]`, each event with whether it came after the current mandate (`afterMandate`).
+- `simulation` is `{ "ok": true }` or `{ "ok": false, "error": "REVERTED" | "INSUFFICIENT_FUNDS" | "OUT_OF_GAS", "revertSelector": "0x…" | null }`.
+
+Because spend accounting and `verify` read it, `mandate-v1`'s evidence stays public plaintext at `responseURI`.
 
 **Findings envelope.** Encrypted to the operator's inbox key.
 ```json
