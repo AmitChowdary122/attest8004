@@ -3,12 +3,20 @@ import {
   IntegerOutOfRangeError,
   InvalidAddressError,
   getAddress,
+  keccak256,
   type Address,
   type Hex,
 } from "viem";
 import { describe, expect, it } from "vitest";
 import { z } from "zod";
-import { computeActionHash, computeRequestHash, type Action } from "../src/index.ts";
+import {
+  computeActionHash,
+  computeActionHashFromParts,
+  computeRequestHash,
+  computeRequestHashFromParts,
+  type Action,
+  type RequestParts,
+} from "../src/index.ts";
 
 // vectors.json is shared with contracts/test/ActionHash.t.sol; its hashes come from cast (vectors.sh).
 const hex = z.string().regex(/^0x[0-9a-fA-F]*$/);
@@ -94,6 +102,26 @@ describe("computeActionHash / computeRequestHash", () => {
   it("accepts chainId as a number or a bigint", () => {
     expect(computeRequestHash({ ...baseArgs, chainId: 10143 })).toBe(base.requestHash);
     expect(computeRequestHash({ ...baseArgs, chainId: 10143n })).toBe(base.requestHash);
+  });
+
+  it("computeRequestHashFromParts / computeActionHashFromParts equal the data-based functions for every vector", () => {
+    for (const v of vectors) {
+      const action = toAction(v);
+      const parts: RequestParts = {
+        chainId: BigInt(v.chainId),
+        gate: v.gate as Address,
+        validator: v.validator as Address,
+        agentId: action.agentId,
+        target: action.target,
+        value: action.value,
+        dataHash: keccak256(action.data),
+        deadline: action.deadline,
+        salt: action.salt,
+      };
+      expect(computeRequestHashFromParts(parts), `${v.name} requestHash`).toBe(v.requestHash);
+      const { validator: _validator, ...actionParts } = parts;
+      expect(computeActionHashFromParts(actionParts), `${v.name} actionHash`).toBe(v.actionHash);
+    }
   });
 
   describe("rejects an action the contract would see differently", () => {

@@ -8,7 +8,7 @@
   "scripts": {
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
-    "roundtrip": "node --env-file=../.env src/validation-roundtrip.ts",
+    "roundtrip": "node --conditions=@attest8004/source --env-file=../.env src/validation-roundtrip.ts",
     "gated-execute": "node --conditions=@attest8004/source --env-file=../.env src/gated-execute.ts",
     "hot-keys": "node src/hot-keys.ts",
     "setup-demo-agents": "node --conditions=@attest8004/source --env-file=../.env src/setup-demo-agents.ts",

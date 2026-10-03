@@ -1,5 +1,16 @@
 import type { Address } from "viem";
 
+/** One chain's recorded Attest8004 addresses and demo-agent data. */
+export interface Deployment {
+  identityRegistry: Address;
+  validationRegistry: Address;
+  agentRequestForwarder: Address;
+  mandateRegistry: Address;
+  demoAgents: readonly bigint[];
+  demoAgentVault: Address;
+  demoAgentVaultP2: Address;
+}
+
 /**
  * Attest8004 addresses per chain. Mirrors docs/deployments.md; keep the two in sync.
  * The ValidationRegistry address depends on the Identity Registry in its init code, so testnet and
@@ -20,12 +31,11 @@ export const DEPLOYMENTS = {
     /** The P2 vault, bound to test agent 1982. Superseded in P3; gated-execute still uses it. */
     demoAgentVaultP2: "0x7A5EC388CCbfD3B255CFa94fc2062c0807F2C4CD",
   },
-} as const satisfies Record<number, {
-  identityRegistry: Address;
-  validationRegistry: Address;
-  agentRequestForwarder: Address;
-  mandateRegistry: Address;
-  demoAgents: readonly bigint[];
-  demoAgentVault: Address;
-  demoAgentVaultP2: Address;
-}>;
+} as const satisfies Record<number, Deployment>;
+
+/** `DEPLOYMENTS[chainId]`, or throws (`verify` and the validators share this check: SPEC §4.5). */
+export function deploymentsFor(chainId: number): Deployment {
+  const deployment = (DEPLOYMENTS as Record<number, Deployment>)[chainId];
+  if (!deployment) throw new Error(`no Attest8004 deployment recorded for chain ${chainId}`);
+  return deployment;
+}

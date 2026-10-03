@@ -24,6 +24,29 @@ export interface RequestHashArgs extends ActionHashArgs {
   validator: Address;
 }
 
+/**
+ * The fields `computeRequestHashFromParts`/`computeActionHashFromParts` hash directly, with
+ * `dataHash` already computed (`keccak256(data)`) instead of raw `data`. A caller that already
+ * holds these parts — recomputed from on-chain state, or from a verified `mandate-v1` evidence
+ * `request` — hashes them straight through, without reassembling an `Action`.
+ */
+export interface RequestParts {
+  chainId: number | bigint;
+  /** The gate contract that will execute the action (e.g. a DemoAgentVault). */
+  gate: Address;
+  /** The validator this request is addressed to: one requestHash per validator. */
+  validator: Address;
+  agentId: bigint;
+  target: Address;
+  value: bigint;
+  /** keccak256 of the action's `data`. */
+  dataHash: Hex;
+  /** Unix seconds; the gate rejects the action after this time. uint64. */
+  deadline: bigint;
+  /** 32 bytes that make otherwise identical actions distinct. */
+  salt: Hex;
+}
+
 const EVEN_HEX = /^0x([0-9a-fA-F]{2})*$/;
 const BYTES32 = /^0x[0-9a-fA-F]{64}$/;
 
@@ -33,30 +56,16 @@ const BYTES32 = /^0x[0-9a-fA-F]{64}$/;
  * contracts/src/ActionHash.sol; both are checked against test/vectors.json.
  */
 export function computeActionHash({ chainId, gate, action }: ActionHashArgs): Hex {
-  return keccak256(
-    encodeAbiParameters(
-      [
-        { type: "uint256" },
-        { type: "address" },
-        { type: "uint256" },
-        { type: "address" },
-        { type: "uint256" },
-        { type: "bytes32" },
-        { type: "uint64" },
-        { type: "bytes32" },
-      ],
-      [
-        chainIdOf(chainId),
-        gate,
-        action.agentId,
-        action.target,
-        action.value,
-        dataHash(action.data),
-        action.deadline,
-        salt(action.salt),
-      ],
-    ),
-  );
+  return computeActionHashFromParts({
+    chainId,
+    gate,
+    agentId: action.agentId,
+    target: action.target,
+    value: action.value,
+    dataHash: dataHash(action.data),
+    deadline: action.deadline,
+    salt: salt(action.salt),
+  });
 }
 
 /**
@@ -65,6 +74,48 @@ export function computeActionHash({ chainId, gate, action }: ActionHashArgs): He
  * The gate recomputes it for each validator it requires. Same encoding as contracts/src/ActionHash.sol.
  */
 export function computeRequestHash({ chainId, gate, validator, action }: RequestHashArgs): Hex {
+  return computeRequestHashFromParts({
+    chainId,
+    gate,
+    validator,
+    agentId: action.agentId,
+    target: action.target,
+    value: action.value,
+    dataHash: dataHash(action.data),
+    deadline: action.deadline,
+    salt: salt(action.salt),
+  });
+}
+
+/**
+ * `computeActionHash`, taking `dataHash` (`keccak256(data)`) directly instead of `data`. Unlike
+ * `computeActionHash`, this does not check that `dataHash`/`salt` are well-formed 32-byte hex (the
+ * caller is expected to already hold them in that form); `chainId` is still range-checked.
+ */
+export function computeActionHashFromParts(p: Omit<RequestParts, "validator">): Hex {
+  return keccak256(
+    encodeAbiParameters(
+      [
+        { type: "uint256" },
+        { type: "address" },
+        { type: "uint256" },
+        { type: "address" },
+        { type: "uint256" },
+        { type: "bytes32" },
+        { type: "uint64" },
+        { type: "bytes32" },
+      ],
+      [chainIdOf(p.chainId), p.gate, p.agentId, p.target, p.value, p.dataHash, p.deadline, p.salt],
+    ),
+  );
+}
+
+/**
+ * `computeRequestHash`, taking `dataHash` (`keccak256(data)`) directly instead of `data`. Unlike
+ * `computeRequestHash`, this does not check that `dataHash`/`salt` are well-formed 32-byte hex (the
+ * caller is expected to already hold them in that form); `chainId` is still range-checked.
+ */
+export function computeRequestHashFromParts(p: RequestParts): Hex {
   return keccak256(
     encodeAbiParameters(
       [
@@ -78,17 +129,7 @@ export function computeRequestHash({ chainId, gate, validator, action }: Request
         { type: "uint64" },
         { type: "bytes32" },
       ],
-      [
-        chainIdOf(chainId),
-        gate,
-        validator,
-        action.agentId,
-        action.target,
-        action.value,
-        dataHash(action.data),
-        action.deadline,
-        salt(action.salt),
-      ],
+      [chainIdOf(p.chainId), p.gate, p.validator, p.agentId, p.target, p.value, p.dataHash, p.deadline, p.salt],
     ),
   );
 }

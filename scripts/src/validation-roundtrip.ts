@@ -30,7 +30,7 @@ import {
 } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
 import { monadTestnet } from "viem/chains";
-import { DEPLOYMENTS } from "./deployments.ts";
+import { DEPLOYMENTS } from "@attest8004/sdk";
 
 /**
  * Explicit gas limits (Monad charges for the limit): Monad testnet eth_estimateGas on 2 Oct 2026

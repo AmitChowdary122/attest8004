@@ -39,6 +39,7 @@ import { privateKeyToAccount } from "viem/accounts";
 import {
   Attest8004Client,
   DEFAULT_GAS,
+  DEPLOYMENTS,
   MemoryCursorStore,
   agentRequestForwarderAbi,
   attestGateAbi,
@@ -64,7 +65,6 @@ import {
   requireEnv,
   walletFor,
 } from "./common.ts";
-import { DEPLOYMENTS } from "./deployments.ts";
 import { STUB_TAG, StubValidator } from "./stub-validator.ts";
 
 /**

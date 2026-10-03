@@ -3,7 +3,7 @@
  *
  *   1. If DEPLOYMENTS has no demo agents yet, the deployer registers two agents in the canonical
  *      Identity Registry by calling register(string) directly: agent0-sdk 1.7.1 has no defaults
- *      for chain 10143. Record the printed agentIds in deployments.ts.
+ *      for chain 10143. Record the printed agentIds in packages/sdk/src/deployments.ts.
  *   2. The deployer, as owner, approves the AgentRequestForwarder once: setApprovalForAll.
  *   3. For each agent, the deployer registers its hot key: forwarder.setAgentKey(agentId, hotKey).
  *   4. Estimates forwarder.request from each hot key (a representative request JSON v1) and checks
@@ -20,6 +20,7 @@ import { getAddress, parseAbi, parseEventLogs, type Address, type Hex } from "vi
 import { privateKeyToAccount } from "viem/accounts";
 import {
   DEFAULT_GAS,
+  DEPLOYMENTS,
   agentRequestForwarderAbi,
   buildAction,
   buildRequestJson,
@@ -39,7 +40,6 @@ import {
   requireEnv,
   walletFor,
 } from "./common.ts";
-import { DEPLOYMENTS } from "./deployments.ts";
 
 /**
  * Explicit gas limits: Monad testnet eth_estimateGas on 3 Oct 2026 x 1.2, rounded up to 1k.
@@ -102,7 +102,7 @@ async function registerAgents(): Promise<readonly bigint[]> {
     if (!registered) throw new Error("no Registered event from the Identity Registry in the receipt");
     ids.push(registered.args.agentId);
   }
-  console.log(`\nregistered demo agents ${ids.join(", ")}: record them as demoAgents in scripts/src/deployments.ts\n`);
+  console.log(`\nregistered demo agents ${ids.join(", ")}: record them as demoAgents in packages/sdk/src/deployments.ts\n`);
   return ids;
 }
 

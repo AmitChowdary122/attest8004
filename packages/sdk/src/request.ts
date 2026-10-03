@@ -193,7 +193,7 @@ function preview(text: string): string {
 }
 
 // atob/btoa exist in browsers and Node, so the SDK's root entry needs no Node-only APIs.
-function toBase64(bytes: Uint8Array): string {
+export function toBase64(bytes: Uint8Array): string {
   let binary = "";
   for (const b of bytes) binary += String.fromCharCode(b);
   return btoa(binary);
