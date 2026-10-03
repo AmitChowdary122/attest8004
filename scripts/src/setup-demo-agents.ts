@@ -133,13 +133,14 @@ async function main(): Promise<void> {
   }
 
   // 2. One approval for the forwarder (covers all of the deployer's agents; ARCHITECTURE §7).
-  const approved = await publicClient.readContract({
-    address: identityRegistry,
-    abi: identityAbi,
-    functionName: "isApprovedForAll",
-    args: [owner.address, forwarder],
-  });
-  if (!approved) {
+  const isApproved = () =>
+    publicClient.readContract({
+      address: identityRegistry,
+      abi: identityAbi,
+      functionName: "isApprovedForAll",
+      args: [owner.address, forwarder],
+    });
+  if (!(await isApproved())) {
     const sent = await writeWithGasGuard({
       publicClient,
       walletClient: ownerWallet,
@@ -152,19 +153,23 @@ async function main(): Promise<void> {
     });
     printTx("setApprovalForAll", sent);
   }
-  check("the deployer approved the forwarder", true, "");
+  const approved = await isApproved();
+  check("the deployer approved the forwarder", approved, String(approved));
 
   // 3. Each agent's hot key, then 4. what a forwarded request costs from it.
   const latest = await publicClient.getBlock();
   for (const [i, id] of agents.entries()) {
     const hotKey = hotKeys[i] as Address;
-    const [key, keyOwner] = await publicClient.readContract({
-      address: forwarder,
-      abi: agentRequestForwarderAbi,
-      functionName: "agentKeyOf",
-      args: [id],
-    });
-    if (getAddress(key) !== hotKey || getAddress(keyOwner) !== owner.address) {
+    const keyOf = async () => {
+      const [key, keyOwner] = await publicClient.readContract({
+        address: forwarder,
+        abi: agentRequestForwarderAbi,
+        functionName: "agentKeyOf",
+        args: [id],
+      });
+      return getAddress(key) === hotKey && getAddress(keyOwner) === owner.address;
+    };
+    if (!(await keyOf())) {
       const sent = await writeWithGasGuard({
         publicClient,
         walletClient: ownerWallet,
@@ -177,7 +182,8 @@ async function main(): Promise<void> {
       });
       printTx(`setAgentKey ${id}`, sent);
     }
-    check(`agent ${id}'s key is ${hotKey}, set by the deployer`, true, "");
+    const keySet = await keyOf();
+    check(`agent ${id}'s key is ${hotKey}, set by the deployer`, keySet, String(keySet));
 
     const request = buildRequestJson({
       chainId: chain.id,
