@@ -59,19 +59,24 @@ contract DemoAgentVaultForkTest is Test {
     }
 
     /// The exact testnet configuration, deployed through the script (or found, once it is live),
-    /// runs a validated action for its agent (demo agent 1984) as the agent's real owner and validator A.
+    /// runs a validated action for its agent (demo agent 1984) as the agent's real owner, once
+    /// both validators have answered with their own tag.
     function testFork_TestnetConfig_EndToEnd() public {
         DeployDemoAgentVault script = new DeployDemoAgentVault();
         (address registry, uint256 agentId, AttestGate.Requirement[] memory reqs) = script.configFor(10143);
         assertGt(registry.code.length, 0);
         assertEq(IValidationRegistry(registry).getIdentityRegistry(), address(IDENTITY));
+        assertEq(reqs.length, 2);
 
         DemoAgentVault vault = script.deploy(registry, agentId, reqs);
         vm.deal(address(vault), address(vault).balance + 1 ether);
         Action memory a = _transfer(agentId, keccak256(abi.encode("fork.3", block.number)));
 
-        _request(IDENTITY.ownerOf(agentId), vault, a, reqs[0].validator, agentId);
-        _respond(reqs[0].validator, vault.requestHashOf(a, reqs[0].validator));
+        address owner = IDENTITY.ownerOf(agentId);
+        _request(owner, vault, a, reqs[0].validator, agentId);
+        _respond(reqs[0].validator, vault.requestHashOf(a, reqs[0].validator), "mandate-v1");
+        _request(owner, vault, a, reqs[1].validator, agentId);
+        _respond(reqs[1].validator, vault.requestHashOf(a, reqs[1].validator), "risk-v1");
 
         uint256 before = payee.balance;
         vault.execute(a);
@@ -79,8 +84,12 @@ contract DemoAgentVaultForkTest is Test {
     }
 
     function _respond(address v, bytes32 rh) internal {
+        _respond(v, rh, "fork-test");
+    }
+
+    function _respond(address v, bytes32 rh, string memory tag) internal {
         vm.prank(v);
-        REGISTRY.validationResponse(rh, 100, "", bytes32(0), "fork-test");
+        REGISTRY.validationResponse(rh, 100, "", bytes32(0), tag);
     }
 
     function _register(address who) internal returns (uint256 agentId) {
@@ -90,7 +99,7 @@ contract DemoAgentVaultForkTest is Test {
 
     function _vault(uint256 agentId, address v) internal returns (DemoAgentVault vault) {
         AttestGate.Requirement[] memory reqs = new AttestGate.Requirement[](1);
-        reqs[0] = AttestGate.Requirement(v, 100);
+        reqs[0] = AttestGate.Requirement(v, 100, keccak256(bytes("fork-test")));
         vault = new DemoAgentVault(address(REGISTRY), agentId, reqs);
         vm.deal(address(vault), 1 ether);
     }

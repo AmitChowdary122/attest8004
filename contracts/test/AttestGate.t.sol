@@ -29,7 +29,7 @@ contract AttestGateTest is AttestGateFixture {
     function test_Constructor_RevertWhen_TooManyRequirements() public {
         AttestGate.Requirement[] memory r = new AttestGate.Requirement[](5);
         for (uint256 i; i < 5; ++i) {
-            r[i] = AttestGate.Requirement(address(uint160(0x1000 + i)), 50);
+            r[i] = AttestGate.Requirement(address(uint160(0x1000 + i)), 50, keccak256(bytes(TAG_A)));
         }
         vm.expectRevert(abi.encodeWithSelector(AttestGate.TooManyRequirements.selector, 5, 4));
         new DemoAgentVault(address(registry), agentId, r);
@@ -56,12 +56,22 @@ contract AttestGateTest is AttestGateFixture {
         new DemoAgentVault(address(registry), agentId, _reqs(validatorA, 100, validatorA, 50));
     }
 
-    function test_Requirements_ReturnsAllFourInOrder() public {
+    /// A pending request's tag doesn't matter, but a zero tagHash is never a validator anyone can
+    /// answer under, so it would lock the requirement shut; the constructor rejects it up front.
+    function test_Constructor_RevertWhen_ZeroTagHash() public {
+        AttestGate.Requirement[] memory r = new AttestGate.Requirement[](1);
+        r[0] = AttestGate.Requirement(validatorA, 100, bytes32(0));
+        vm.expectRevert(abi.encodeWithSelector(AttestGate.ZeroTagHash.selector, validatorA));
+        new DemoAgentVault(address(registry), agentId, r);
+    }
+
+    function test_Requirements_ReturnsTagHashes() public {
+        string[4] memory tags = ["mandate-v1", "risk-v1", "tag-c", "tag-d"];
         AttestGate.Requirement[] memory r = new AttestGate.Requirement[](4);
-        r[0] = AttestGate.Requirement(validatorA, 100);
-        r[1] = AttestGate.Requirement(validatorB, 1);
-        r[2] = AttestGate.Requirement(validatorC, 99);
-        r[3] = AttestGate.Requirement(address(type(uint160).max), 50);
+        r[0] = AttestGate.Requirement(validatorA, 100, keccak256(bytes(tags[0])));
+        r[1] = AttestGate.Requirement(validatorB, 1, keccak256(bytes(tags[1])));
+        r[2] = AttestGate.Requirement(validatorC, 99, keccak256(bytes(tags[2])));
+        r[3] = AttestGate.Requirement(address(type(uint160).max), 50, keccak256(bytes(tags[3])));
         DemoAgentVault v = new DemoAgentVault(address(registry), agentId, r);
 
         AttestGate.Requirement[] memory got = v.requirements();
@@ -69,6 +79,7 @@ contract AttestGateTest is AttestGateFixture {
         for (uint256 i; i < 4; ++i) {
             assertEq(got[i].validator, r[i].validator);
             assertEq(got[i].minScore, r[i].minScore);
+            assertEq(got[i].tagHash, keccak256(bytes(tags[i])));
         }
         assertEq(v.MAX_REQUIREMENTS(), 4);
     }
@@ -114,6 +125,30 @@ contract AttestGateTest is AttestGateFixture {
         Action memory a = _action();
         bytes32 rh = _requestOnly(vault, a, validatorA);
         vm.expectRevert(abi.encodeWithSelector(AttestGate.ScoreTooLow.selector, validatorA, rh, 0, 100));
+        vault.execute(a);
+    }
+
+    /// Validator A names the right validator and a sufficient score, but a tag that isn't the
+    /// requirement's: the gate must still refuse the action.
+    function test_Execute_RevertWhen_WrongTag() public {
+        Action memory a = _action();
+        bytes32 rh = _requestOnly(vault, a, validatorA);
+        _respond(validatorA, rh, 100, "other");
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                AttestGate.TagMismatch.selector, validatorA, rh, keccak256(bytes(TAG_A)), keccak256(bytes("other"))
+            )
+        );
+        vault.execute(a);
+    }
+
+    /// The score is checked before the tag, so an insufficient score reverts ScoreTooLow even when
+    /// the tag is also wrong.
+    function test_Execute_ScoreCheckedBeforeTag() public {
+        Action memory a = _action();
+        bytes32 rh = _requestOnly(vault, a, validatorA);
+        _respond(validatorA, rh, 99, "other");
+        vm.expectRevert(abi.encodeWithSelector(AttestGate.ScoreTooLow.selector, validatorA, rh, 99, 100));
         vault.execute(a);
     }
 
@@ -249,6 +284,22 @@ contract AttestGateTest is AttestGateFixture {
         v.execute(a);
     }
 
+    /// B's requirement is tagged TAG_B ("risk-v1"); B answers with TAG_A's string ("mandate-v1")
+    /// instead, as if it had posted mandate-v1's verdict under its own key.
+    function test_TwoValidators_RevertWhen_SecondWrongTag() public {
+        DemoAgentVault v = _vault(_reqs(validatorA, 100, validatorB, 70));
+        Action memory a = _action();
+        _validate(v, a, validatorA, 100);
+        bytes32 rhB = _requestOnly(v, a, validatorB);
+        _respond(validatorB, rhB, 100, TAG_A);
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                AttestGate.TagMismatch.selector, validatorB, rhB, keccak256(bytes(TAG_B)), keccak256(bytes(TAG_A))
+            )
+        );
+        v.execute(a);
+    }
+
     // ------------------------------------------------------------------ fuzz
 
     function testFuzz_Execute_OnlyIfScoreAtLeastMin(uint8 score) public {
@@ -262,6 +313,25 @@ contract AttestGateTest is AttestGateFixture {
         }
         v.execute(a);
         assertEq(v.consumed(v.actionHashOf(a)), score >= 70);
+    }
+
+    /// The gate accepts an action's tag iff it hashes to the requirement's tagHash, whatever the
+    /// string (including one that happens to collide only by being identical).
+    function testFuzz_Execute_TagMustMatch(string memory tag) public {
+        Action memory a = _action();
+        bytes32 rh = _requestOnly(vault, a, validatorA);
+        _respond(validatorA, rh, 100, tag);
+
+        bool matches = keccak256(bytes(tag)) == keccak256(bytes(TAG_A));
+        if (!matches) {
+            vm.expectRevert(
+                abi.encodeWithSelector(
+                    AttestGate.TagMismatch.selector, validatorA, rh, keccak256(bytes(TAG_A)), keccak256(bytes(tag))
+                )
+            );
+        }
+        vault.execute(a);
+        assertEq(vault.consumed(vault.actionHashOf(a)), matches);
     }
 
     function testFuzz_Execute_RevertWhen_AnyFieldChanged(uint8 field, bytes32 noise) public {

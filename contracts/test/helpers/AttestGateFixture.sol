@@ -30,6 +30,11 @@ abstract contract AttestGateFixture is Test {
 
     uint256 internal constant VAULT_BALANCE = 10 ether;
 
+    /// The tags the gate's two named validators answer under (SPEC §4.3): mandate-v1 (deterministic)
+    /// and risk-v1 (agentic). `_reqs`/`_respond` default to these so most tests don't name a tag.
+    string internal constant TAG_A = "mandate-v1";
+    string internal constant TAG_B = "risk-v1";
+
     function setUp() public virtual {
         vm.warp(1_790_000_000);
         identity = new MockIdentityRegistry();
@@ -47,19 +52,37 @@ abstract contract AttestGateFixture is Test {
         vm.deal(address(v), VAULT_BALANCE);
     }
 
+    /// One requirement, tagged `TAG_A` by default.
     function _reqs(address v, uint8 minScore) internal pure returns (AttestGate.Requirement[] memory r) {
-        r = new AttestGate.Requirement[](1);
-        r[0] = AttestGate.Requirement(v, minScore);
+        return _reqs(v, minScore, TAG_A);
     }
 
+    function _reqs(address v, uint8 minScore, string memory tag)
+        internal
+        pure
+        returns (AttestGate.Requirement[] memory r)
+    {
+        r = new AttestGate.Requirement[](1);
+        r[0] = AttestGate.Requirement(v, minScore, keccak256(bytes(tag)));
+    }
+
+    /// Two requirements, tagged `TAG_A` and `TAG_B` by default.
     function _reqs(address v1, uint8 min1, address v2, uint8 min2)
         internal
         pure
         returns (AttestGate.Requirement[] memory r)
     {
+        return _reqs(v1, min1, TAG_A, v2, min2, TAG_B);
+    }
+
+    function _reqs(address v1, uint8 min1, string memory tag1, address v2, uint8 min2, string memory tag2)
+        internal
+        pure
+        returns (AttestGate.Requirement[] memory r)
+    {
         r = new AttestGate.Requirement[](2);
-        r[0] = AttestGate.Requirement(v1, min1);
-        r[1] = AttestGate.Requirement(v2, min2);
+        r[0] = AttestGate.Requirement(v1, min1, keccak256(bytes(tag1)));
+        r[1] = AttestGate.Requirement(v2, min2, keccak256(bytes(tag2)));
     }
 
     /// 1 ether to MockTarget.ping(7), valid for an hour.
@@ -83,6 +106,14 @@ abstract contract AttestGateFixture is Test {
         _respond(validator, rh, score);
     }
 
+    function _validate(DemoAgentVault gate, Action memory a, address validator, uint8 score, string memory tag)
+        internal
+        returns (bytes32 rh)
+    {
+        rh = _requestOnly(gate, a, validator);
+        _respond(validator, rh, score, tag);
+    }
+
     function _requestOnly(DemoAgentVault gate, Action memory a, address validator) internal returns (bytes32 rh) {
         rh = gate.requestHashOf(a, validator);
         _request(identity.ownerOf(a.agentId), a.agentId, validator, rh);
@@ -93,9 +124,15 @@ abstract contract AttestGateFixture is Test {
         registry.validationRequest(namedValidator, id, "data:application/json,{}", rh);
     }
 
+    /// Answers with the default tag for `validator` (`TAG_B` for validatorB, `TAG_A` otherwise),
+    /// which is the requirement's own tag for every requirement these fixtures build.
     function _respond(address validator, bytes32 rh, uint8 score) internal {
+        _respond(validator, rh, score, validator == validatorB ? TAG_B : TAG_A);
+    }
+
+    function _respond(address validator, bytes32 rh, uint8 score, string memory tag) internal {
         vm.prank(validator);
-        registry.validationResponse(rh, score, "", bytes32(0), "test");
+        registry.validationResponse(rh, score, "", bytes32(0), tag);
     }
 
     function _err(bytes4 selector, address validator, bytes32 rh) internal pure returns (bytes memory) {
