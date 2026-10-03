@@ -33,9 +33,9 @@ Running log, updated at the end of every session (CLAUDE.md, rule 10). Newest se
   - Pure rules (`rules.ts`): 12 reasons in a fixed order; any failure scores 0.
   - A pinned-block reader (`reader.ts`). Every read is a raw `eth_call` at the pin, behind one shared concurrency limit.
   - The collector (`collect.ts`): the mandate and owner, spend (above), the permission window `(P − 6,000, P]` (Identity Registry `Transfer`/`Approval`/`ApprovalForAll`, the forwarder's `AgentKeySet`, `MandateSet`/`MandateRevoked`, compared by `(block, logIndex)`), and a simulation of the action from the gate.
-  - `MandateValidator` (`validator.ts`): `accepts()` answers only allowlisted gates and agents with an unexpired mandate set by their current owner, then applies admission. The pin is the finalized head, never below the request's block, this process's last response or the MandateRegistry's deploy block, and it waits until this process's last approval is visible there.
+  - `MandateValidator` (`validator.ts`): `accepts()` answers only allowlisted (gate, agent) pairs and agents with an unexpired mandate set by their current owner, then applies admission. The pin is 5 blocks below the finalized head (`PIN_LAG_BLOCKS`), never below the request's block, this process's last response or the MandateRegistry's deploy block; it waits until this process's last approval is visible there and until its time is within 3,600 s of the action's deadline.
   - **The service:** `pnpm --filter @attest8004/validator-mandate start`. Settings come from `.env` (`MANDATE_V1_*` in `.env.example`); it refuses to start unless the RPC's chain and both registries' Identity Registry match the recorded deployment. One process per key.
-  - **`verify`:** `pnpm attest8004 verify <requestHash> [--rpc-url URL] [--json]` from the repo root. It re-runs the verdict at its pinned block with an empty cache and compares the score and `responseHash`. Exit 0 match, 1 mismatch (public proof the validator misbehaved), 2 could not verify. It defaults to the public RPC, needs no `.env`, and never prints the URL. There is no `npx attest8004`: the package is private and has no `bin`.
+  - **`verify`:** `pnpm attest8004 verify <requestHash> [--rpc-url URL] [--json]` from the repo root. It re-runs the verdict at its pinned block with an empty cache and compares the score and `responseHash`. Exit 0 match, 1 mismatch (public proof the validator misbehaved), 2 could not verify. It defaults to the public RPC, needs no `.env`, and never prints the URL. There is no `npx attest8004`: the package is private and declares no `bin` in its `package.json`.
 - **Scripts:**
   - `setup-demo-agents`: per-token approvals, revokes the blanket one, and `--fund-validator` tops validator A up to 2 MON (read back afterwards).
   - `set-mandate`: agent 1984's e2e mandate. It is idempotent, and checks the permission window the way `mandate-v1` does (at most 60 queries).
@@ -62,6 +62,11 @@ Running log, updated at the end of every session (CLAUDE.md, rule 10). Newest se
   | e2e `validationResponse` A → 100 `0xef94ea65…` | 67,896,224 | 127,781 | 153,338 (estimate × 1.2, cap 400,000) |
   | e2e `validationResponse` B → 0 `0xc429d953…` | 67,896,251 | 148,451 | 178,142 (same policy) |
   | e2e `execute(A)` `0xb666247e…` | 67,896,267 | 87,626 | 106,000 |
+  | e2e run 2 `forwarder.request` A `0x0c2fe788…` | 67,910,183 | — | 315,000 (SDK default) |
+  | e2e run 2 `forwarder.request` B `0x84b56a7e…` | 67,910,189 | — | 315,000 |
+  | e2e run 2 `validationResponse` A → 100 `0xd48cde82…` | 67,910,223 | 136,216 | 163,460 (estimate × 1.2, cap 400,000) |
+  | e2e run 2 `validationResponse` B → 0 `0xe0048865…` | 67,910,257 | 145,463 | 174,556 (same policy) |
+  | e2e run 2 `execute(A)` `0x533bdb52…` | 67,910,274 | 87,626 | 106,000 |
 
   Full hashes of the P4 transactions are in `docs/deployments.md` (the P3 rerun was a check of the P3 fixes and isn't recorded there). Negative cases were simulated, never sent.
 - **End to end with `mandate-v1`** (`pnpm --filter @attest8004/scripts e2e`, `e2e OK` on the first live run). Agent 1984's hot key requested two actions through the forwarder before any validator ran:
@@ -91,6 +96,15 @@ Running log, updated at the end of every session (CLAUDE.md, rule 10). Newest se
     exit: 0
     ```
   - Balances afterwards: agent 1984's hot key 0.08946 MON (one more run at the 122 gwei maximum fee), validator A 1.966 MON, the vault 0.007 MON. Validator B holds 0 MON.
+- **Final-review fixes** (each test-first, except the docs; `git log f35cf4d..`):
+  - **The pin lags the finalized head by 5 blocks** (`PIN_LAG_BLOCKS`). A load-balanced RPC can answer `finalized` from one node and `eth_getLogs` from another a few blocks behind, and a log range straddling that node's head comes back empty or short with no error (measured: a `[H − 3, H + 20]` query returned logs only up to `H + 5`). At the head, a permission event just before `P` could vanish, turning a 0 into a 100 that `verify` would later call a mismatch. A test with a log node one block behind the finalized head fails without the lag. The pin still never goes below its floors, and now also waits until its time is within 3,600 s of the action's deadline (the base checked that horizon at the cycle head, which can be later than `P`).
+  - **(gate, agent) pairs, not gates.** An outsider could register an agent, set their own mandate and request through our vault: the vault would refuse the action, but each answer cost about 150k gas, and a few such agents could exhaust the validator-wide budget. `accepts()` now declines `GATE_NOT_SERVED` or `GATE_NOT_FOR_AGENT` before any RPC; `MANDATE_V1_GATES` is `gate:agentId,…` (default: the demo vault with agent 1984).
+  - **The e2e expects B's reasons from B's own evidence** (adding `DAILY_CAP_EXCEEDED` once spend + 0.003 MON is over the cap) and its preflight reads agent 1984's counted spend with `mandate-v1`'s own collector (`collectSpend`, now exported) and stops before sending anything if A won't fit, saying when the oldest counted approval leaves the 25 h window. It used to fail from the third run in any 25 h.
+  - **`verify` calls a request on another chain, or with a deadline more than 3,600 s after `P`'s time, `REQUEST_INVALID`** (the base never answers either).
+  - **`pnpm attest8004` runs a plain-JavaScript entry** (`validators/mandate/bin/attest8004.mjs`): it refuses a Node older than 22.18 (no type stripping by default) and turns a load failure or an uncaught error into exit 2, not Node's 1 (which means "mismatch"). `engines` is `>=22.18 <23`; the usage's exit-2 line names `NOT_MANDATE_V1` and `EVIDENCE_NOT_DECODED`.
+  - **`set-mandate -- --force`** sets the same mandate again (a new `MandateSet` baseline), and its permission-window error now says so instead of sending the operator in a circle.
+  - A forge test for the passing boundary at exactly 16 targets and 16 selectors; corrected comments and docs on what `params` records; the README says to stop the `mandate-v1` service before the e2e.
+- **Second e2e run, after the fixes** (19:15 UTC, 3 Oct; `e2e OK`, details and full hashes in `docs/deployments.md`). The preflight counted 0.001 MON (run 1's A). **A** (`0x04596749…`) scored 100 and executed; **B** (`0xbe4e1c24…`) scored 0 with exactly `[TARGET_NOT_ALLOWED, VALUE_OVER_TX_CAP]`: its spend counted both As (0.002 MON), and 0.002 + 0.003 MON is the cap, not over it. The pins were 67,910,189 (A) and 67,910,224 (B, one block after A's response). `pnpm --loglevel silent attest8004 verify` gave **match, exit 0** for both new verdicts and for run 1's `0xd0ca15ea…` and `0x85b92cb2…`, so the recorded verdicts still verify with the new code. Balances afterwards: agent 1984's hot key 0.0252 MON (no run left), validator A 1.9317 MON, the vault 0.006 MON.
 - **Review-driven fixes worth knowing** (each test-first):
   - **No CCIP-Read.** viem's `call` and `readContract` follow an `OffchainLookup` revert: an unpinned second call and a request to an attacker's URL from the validator. Every reader call is now a raw `eth_call` at the pin, and a test proves `fetch` is never called.
   - **A malformed RPC answer never becomes chain state.** A reply whose result isn't a 0x-hex string is an RPC failure (retry), checked once in the reader's `eth_call`, which covers simulation and `consumed()` too.
@@ -105,10 +119,10 @@ Running log, updated at the end of every session (CLAUDE.md, rule 10). Newest se
   - **`set-mandate`'s ordering check** scanned back from the head with no real bound; it now checks exactly `mandate-v1`'s rule in its 6,000-block window.
   - **`pnpm -s` doesn't exist in pnpm 12.8.1** (`pnpm run`'s `-s` is gone). The CLI usage, its test and ARCHITECTURE §5.5 now say `pnpm --loglevel silent attest8004 verify … --rpc-url <url>`, checked to print no echoed command line.
 - **Tests:**
-  - 146 forge unit and fuzz tests (10k fuzz runs in `ci`) and 14 fork tests;
+  - 147 forge unit and fuzz tests (10k fuzz runs in `ci`) and 14 fork tests;
   - 157 SDK tests;
-  - 311 `mandate-v1` tests (rules, reader, block search, concurrency, collector, validator, evidence, config, verify, CLI);
-  - 7 script tests.
+  - 330 `mandate-v1` tests (rules, reader, block search, concurrency, collector, validator, evidence, config, verify, CLI and its entry);
+  - 19 script tests (the env file, the e2e's daily-cap expectations, set-mandate's decisions).
 - **Whole-branch check, fresh runs on the final tree:** `forge fmt --check`, `forge build --sizes` (MandateRegistry 3,527 B runtime), the `ci`-profile unit and fuzz tests, the fork tests against Monad testnet, `vectors.sh --check` (8 vectors match `cast`), `pnpm -r typecheck`, `pnpm test`, the SDK build and `gitleaks` over the full history: all clean.
 - **Docs:** README (status, `mandate-v1` leads the architecture as the reason to trust a verdict, the MandateRegistry in the deployments table, the quickstart's `set-mandate`, `e2e`, `verify` and the validator service); `contracts/README.md` (MandateRegistry and its tests, the deploy script); `docs/README.md`; `docs/deployments.md`; ARCHITECTURE header, §2, §5.1, §5.2, §5.5, §6, §7, §9 (the daily cap; caps are native MON only) and §13; SPEC §4.2, §4.4, §4.5 and §4.8.
 
@@ -132,17 +146,19 @@ Running log, updated at the end of every session (CLAUDE.md, rule 10). Newest se
   - **Simulation outcomes are classified partly by the node's error text** (`reader.ts`, `callOutcome`: a revert by JSON-RPC code 3, but `INSUFFICIENT_FUNDS` and `OUT_OF_GAS` by matching `insufficient funds` and `out of gas` in the message). Another RPC client or node could word them differently: the same score (any failure is `SIMULATION_FAILED`), but a different `simulation.error` in the evidence, so a different `responseHash`. Verified correct on Monad's public RPC.
   - Hardening from the reviews: `block()`/`finalized()` should reject a malformed answer (a null number or hash) the way `eth_call` does; a restart loses the pin floors (seed them from `latest` at the first poll); `verify` recognises the registry's `UnknownRequest` only as JSON-RPC code 3, so an archive RPC that reports reverts as `-32000` fails safe to exit 2; an inline `MONAD_TESTNET_RPC_URL=…` lands in shell history (`.env` is the alternative); the preimage cache is never pruned; a custom logger that throws can fail a cycle, and one that returns a rejected promise escapes the base's guard as an unhandled rejection, which stops the process (neither loses or doubles a response); `Admission.settle` doesn't validate the gas limit.
 - **Deferred minors** (when convenient):
-  - Tests: no passing case at exactly 16 targets or selectors, or for an empty selector list in the rules; `selectorOf`'s malformed-hex path; `MandateSetLogNotFoundError`, `REQUEST_NOT_FOUND` on an agent mismatch, and nested `UnknownRequest` shapes in `verify`; an http-transport reader test with mocked `fetch`; the settle-failure log line; a `headroomPercent` `RangeError`; two misnamed tests (`collect.test.ts` "(consumed, status)", `evidence.test.ts` "unreadable spend").
+  - Tests: no passing case for an empty selector list in the rules; `selectorOf`'s malformed-hex path; `MandateSetLogNotFoundError`, `REQUEST_NOT_FOUND` on an agent mismatch, and nested `UnknownRequest` shapes in `verify`; an http-transport reader test with mocked `fetch`; the settle-failure log line; a `headroomPercent` `RangeError`; two misnamed tests (`collect.test.ts` "(consumed, status)", `evidence.test.ts` "unreadable spend").
   - No committed test compares `mandateRegistryAbi` with forge's compiled ABI (CI's TypeScript job has no forge; checked by hand).
   - `canonicalJson` has no cycle guard; `resolveGasLimit` checks `headroomPercent` after its RPC round trips; the `tag` and `maxDeadlineAheadSeconds` options are silently ignored by `MandateValidator`; block-timestamp lookups aren't memoized within one check; leftover permission-window requests can queue ahead of the next cycle after an early failure; `nodeCliDeps.connect` resolves `deploymentsFor` twice; `main.ts` logs the RPC host (never the URL).
   - SIGINT isn't seen during a pin wait (up to 30 s; a second Ctrl-C kills the process).
-  - `verify --json` prints nothing on a thrown error (stderr only, exit 2); exit 1 is also Node's crash code, so treat the `--json` verdict as authoritative; the usage's exit-2 line doesn't mention another validator's tag.
+  - `verify --json` prints nothing on a thrown error (stderr only, exit 2).
+  - `toBase64` is exported from the SDK's public API (a test helper's convenience); deferred from the final review.
   - `validators/mandate` exports only under the `@attest8004/source` condition (fine for the workspace; publishing needs a build, a P11 decision).
   - viem with a custom EIP-1193 transport and `retryCount > 0` retries wrapped reverts (code -1) before they are classified.
   - `_authorize` runs before the mandate is validated, so a stranger sending an invalid mandate gets `NotAgentOwner`. Kept: authorisation first is the right order for P6.
 - **Before a demo re-run:**
-  - The e2e's exact check on B's reasons holds for 2 runs per 25 h. A third run adds `DAILY_CAP_EXCEEDED` to B and the script stops there; A itself fails from the 6th. The recorded run (18:05 UTC, 3 Oct) is the first, so one more fits until about 19:05 UTC on 4 Oct.
-  - Agent 1984's hot key has one run left: top it up with `setup-demo-agents -- --fund`.
+  - **Stop the `mandate-v1` service first:** the e2e signs with validator A's key too, and the two would race.
+  - Two recorded runs count toward agent 1984's daily cap until 19:05:37 and 20:16:04 UTC on 4 Oct. A run before then gives B `DAILY_CAP_EXCEEDED` as well, which the e2e now expects from B's evidence; A fits for three more runs in that window, and the preflight stops a run that wouldn't fit before sending anything.
+  - **Agent 1984's hot key has no run left** (0.0252 MON; a run needs 0.07686 MON at the 122 gwei maximum fee): top it up with `setup-demo-agents -- --fund`.
 - **Still deferred from P1–P3:** the deployer key in forge's argv; three test gaps; `timeout-minutes` on `contracts-fork`; a README note that each round trip registers a new agent; halving the `eth_getLogs` window when a window keeps failing; a second response if a send is still pending after viem's 180 s receipt timeout; `gated-execute` and `roundtrip` still send with only `gas`; `awaitVerdict` aborts on one `eth_getLogs` error and scans up to `latest`.
 
 ### Blockers or decisions needed
@@ -152,7 +168,9 @@ Running log, updated at the end of every session (CLAUDE.md, rule 10). Newest se
   - **The spend window is 25 h on approval time**, because the registry records approval, not execution, and the deadline horizon is 1 h. Cost if wrong: over-counting by up to an hour.
   - **The permission window is N = 6,000 blocks** (about 30 min, about 6 s of queries). 3,000 or 10,000 were the alternatives.
   - **Only `mandate-v1`-tagged approvals count**; the stub validator is deleted, so validator A's key signs only `mandate-v1`.
-  - **The pin** is the finalized head, floored at the request's block, this process's last response and the MandateRegistry's deploy block, and waits (250 ms polls, up to 30 s, then a retry) until this process's last approval is visible. One process per key. The base's deadline checks use the cycle's head; `mandate-v1` re-checks the deadline at the pin (`ACTION_EXPIRED`).
+  - **The pin** is 5 blocks below the finalized head (`PIN_LAG_BLOCKS`), floored at the request's block, this process's last response and the MandateRegistry's deploy block, and waits (250 ms polls, up to 30 s, then a retry) until this process's last approval is visible there and its time is within 3,600 s of the action's deadline. One process per key. The base's deadline checks use the cycle's head; `mandate-v1` re-checks the deadline at the pin (`ACTION_EXPIRED`). Cost of the lag: about 1.5 s per check; a node lagging more than 5 blocks can still truncate the last log window (P10).
+  - **The gate allowlist is (gate, agentId) pairs** (`MANDATE_V1_GATES=gate:agentId,…`), declined before any RPC otherwise. Cost if wrong: each new vault needs a config entry.
+  - **The e2e mandate keeps its values** (0.002 MON per tx, 0.005 MON per day); the e2e derives B's expected reasons from B's own evidence instead. To run more than five times in 25 h, raise the cap (set-mandate's constants and the e2e's `E2E_MANDATE`).
   - **`0x00000000` in an allowlist means empty calldata only**; 1–3 bytes of data, or non-empty data starting with `0x00000000`, never match; an empty allowlist allows nothing.
   - **A mandate is stale when its owner no longer owns the agent** (`MANDATE_OWNER_CHANGED`).
   - **`setAtBlock` replaces `setAt`**, and `MandateSet` indexes `owner` as its third topic.
@@ -173,7 +191,7 @@ Running log, updated at the end of every session (CLAUDE.md, rule 10). Newest se
   - **All work is on `main`**, as in P1–P3. Cost if wrong: move the commits to a branch before pushing.
   - **Review findings I graded up and fixed** (each above, under Done): fixed `SPEND_HISTORY_UNREADABLE` texts; one RPC limiter; the SDK logger; `accepts()` retrying on a lagging head; the pinned request-size limit; one guard for malformed `eth_call` answers; oversized evidence is "could not verify", not proof; no `npx` claim; `verify` redacts only error text, never the report (redacting could rewrite a hash); the bounded `set-mandate` check, with ARCHITECTURE §7 restructured and the validator funding read back. Each cost a few lines.
 - **Your side:**
-  - `git push` (the P4 commits: 31 on `main` as of this entry, none pushed), then check CI.
+  - `git push` (the P4 commits: 40 on `main` as of this entry, none pushed), then check CI.
   - Still open: the Envio token, Nansen credits, the Vercel deploy, the integration offer (GAMEPLAN §6) and the team DMs. Qwen is deferred to P5 (any OpenAI-compatible endpoint).
 
 ## Sat 3 Oct 2026 · P3 SDK, validator base, AgentRequestForwarder and demo agents

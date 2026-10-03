@@ -285,6 +285,48 @@ its sender and its explicit gas limit.
 - Check it yourself (read-only, public RPC by default):
   `pnpm attest8004 verify 0x85b92cb27c06a013bd63c9ee51e29b6329570ccd784a3e2941496f2c4a5965e9`
 
+### Second run, after the review fixes (2026-10-03, 19:15 UTC)
+
+The same script, re-run once after the final-review fixes changed live behaviour: `mandate-v1` now pins 5 blocks
+below the finalized head (`PIN_LAG_BLOCKS`), answers only (gate, agent) pairs (here the vault with agent 1984), and
+waits until its pin's time is within 3,600 s of the action's deadline; the e2e now derives B's expected reasons from
+B's own evidence and checks agent 1984's counted spend before sending anything. `e2e OK`.
+
+- Preflight: agent 1984's counted spend at block 67,910,164 was 0.001 MON (run 1's A), so A fit under the cap.
+- **A scored 100** with no reasons. Its spend lists run 1's A (0.001 MON, counted).
+- **B scored 0** with `[TARGET_NOT_ALLOWED, VALUE_OVER_TX_CAP]`: its spend counts both As (0.002 MON), and
+  0.002 + 0.003 MON is exactly the 0.005 MON cap, not over it. B's pin waited for A's approval (the floor was A's
+  response block, 67,910,223, so the pin was 67,910,224).
+- `execute(B)` was simulated and refused (`ScoreTooLow`); a fresh validator skipped both (`ALREADY_RESPONDED`);
+  exactly one `ValidationResponse` exists for each; the deployer executed A, and a replay reverts
+  `ActionAlreadyConsumed` (simulated).
+- `verifyRequest` in the script, and then `pnpm --loglevel silent attest8004 verify` from the repo root, re-ran both:
+  both **match** (exit 0). Run 1's two verdicts (`0xd0ca15ea…`, `0x85b92cb2…`) were re-verified with the same code
+  afterwards and still match (exit 0).
+
+| Date | Step | Tx | Block | Gas limit (estimate) |
+|---|---|---|---|---|
+| 2026-10-03 | forwarder.request, A (hot key) | [`0x0c2fe788…46f7dbe`](https://monad-testnet.socialscan.io/tx/0x0c2fe788391bd72f233b78c48414d174a0723f85ef9d470cf825238d546f7dbe) | 67,910,183 | 315,000 (SDK default) |
+| 2026-10-03 | forwarder.request, B (hot key) | [`0x84b56a7e…b8b8168`](https://monad-testnet.socialscan.io/tx/0x84b56a7e1b00106ce693509e24607c82c20d0e8954d17e67c0cc65f3ab8b8168) | 67,910,189 | 315,000 (SDK default) |
+| 2026-10-03 | validationResponse, A → 100 (validator A) | [`0xd48cde82…1db03dc3`](https://monad-testnet.socialscan.io/tx/0xd48cde8231d5eaf9cf426cddf7e81553ee6d60a12453d5360a80fad41db03dc3) | 67,910,223 | 163,460 (136,216) |
+| 2026-10-03 | validationResponse, B → 0 (validator A) | [`0xe0048865…a1bace53`](https://monad-testnet.socialscan.io/tx/0xe004886500c4b833b70d1d89d6f6a7ac0183ff129bb598768c02684ca1bace53) | 67,910,257 | 174,556 (145,463) |
+| 2026-10-03 | execute(A) (deployer) | [`0x533bdb52…05da690b`](https://monad-testnet.socialscan.io/tx/0x533bdb529cf9f88aaa2c906d2e00bc0369a67917ed3e662b9c19925905da690b) | 67,910,274 | 106,000 (87,626) |
+
+- **A:** `requestHash` `0x045967497d48f435b896716b1e00734175cb85e0be6ae5ac5e4d811934ad263f`. `actionHash`
+  `0x11592099551498b1c4a10513fa8c9c0a4836cf809fc0e093251bb42187dedbde` (consumed). Pinned block 67,910,189.
+  `responseHash` `0x532498873dd3fba9f2432e2c6988690d8d8a484df4200169e27f9c4b3503b6ef`.
+- **B:** `requestHash` `0xbe4e1c24ed0255fa8d958e887b3e65bd2e067883865682f911dc01b04778bce5`. `actionHash`
+  `0x33fc61a757c7d9c125f41882453ac99625aaa7f276cac90dc59563a854b12c54` (never executable). Pinned block 67,910,224.
+  `responseHash` `0xa1e33a5c261524dbd7dfab9e08293f06b99506c0aeef100e9aa20e9fbc27548d`.
+- **Gas.** A's evidence now carries one spend entry, so its response cost more than in run 1 (163,460 against
+  153,338). Each receipt's `gasUsed` equals its limit.
+- **Daily cap.** Two approved As (0.002 MON) now count, until 19:05:37 and 20:16:04 UTC on 4 Oct (25 h after each
+  approval). A third run while both count gives B `DAILY_CAP_EXCEEDED` too (the script expects it from B's
+  evidence); A fits for three more runs in that window.
+- **Balances after the run:** agent 1984's hot key 0.0252 MON (no run left at the 122 gwei maximum fee: top it up
+  with `setup-demo-agents -- --fund`), validator A 1.9317 MON, the vault 0.006 MON.
+- Check it yourself: `pnpm attest8004 verify 0xbe4e1c24ed0255fa8d958e887b3e65bd2e067883865682f911dc01b04778bce5`
+
 ## Canonical contracts used (not deployed by us)
 
 | Contract | Monad testnet (10143) | Monad mainnet (143) |
