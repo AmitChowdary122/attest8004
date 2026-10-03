@@ -4,6 +4,91 @@ Running log, updated at the end of every session (CLAUDE.md, rule 10). Newest se
 
 ---
 
+## Sat 3 Oct 2026 · P2 AttestGate + DemoAgentVault
+
+### Done
+- **The approved `requestHash` decision is implemented.**
+  - `requestHash = keccak256(abi.encode(chainid, gate, validatorAddress, agentId, target, value, keccak256(data), deadline, salt))`, one per validator. `actionHash` is the same without `validatorAddress`.
+  - `requestHash` stays an ABI-encoded action hash. spec-notes row 6 records that this encoding is the EIP's "request payload". Request JSON v1 gains `validator` (ARCHITECTURE §6, SPEC §4.4).
+- **One definition, two implementations, an independent oracle.**
+  - `contracts/src/ActionHash.sol` (struct `Action` and the library) and `@attest8004/sdk` (`computeRequestHash`, `computeActionHash`, viem).
+  - Both check the 8 vectors in `packages/sdk/test/vectors.json`, whose expected hashes come from `cast` (`vectors.sh`; `--check` verifies).
+  - The SDK rejects `data` that isn't whole bytes of hex, because viem would silently read `0x123` as `0x0123`. viem itself rejects bad checksums, out-of-range integers and a wrong-size salt.
+- **`AttestGate`** (`contracts/src/AttestGate.sol`):
+  - 1 to 4 immutable `(validator, minScore)` requirements, packed into immutables, and **all must pass**. The constructor rejects `minScore` 0 or above 100, zero validators and duplicates.
+  - For each requirement it recomputes that validator's `requestHash` and requires the stored validator, the stored `agentId` and `response >= minScore`. Any failure to read the registry fails closed (`ValidationNotFound`).
+  - It marks `actionHash` consumed before the external call, under OZ `ReentrancyGuardTransient`. TSTORE was checked live on Monad testnet.
+  - Views `actionHashOf` and `requestHashOf` let clients check their hashes against the chain.
+- **`DemoAgentVault`:** bound to one immutable `agentId`. `execute` is permissionless (the validated action is the authorisation), and a failed call rolls everything back, so the action can be retried until its deadline.
+- **Tests, written first and committed before the code:**
+  - 49 new unit and fuzz tests (gate 31, vault 9, deploy script 6, hash 3), with 10k fuzz runs in the `ci` profile, plus 3 new fork tests against the live registry. One fork test runs the exact testnet configuration end to end as agent 1982's real owner and validator A.
+  - All of the listed cases revert: unvalidated, pending, low score, untrusted validator (two ways), squatted hash, expired, replayed, a different action (each field), another gate and another chain.
+  - 14 hand-made mutants (each check removed, the check moved after the call, no guard) are each caught.
+  - 13 vitest tests.
+- **Deployed on Monad testnet:** `DemoAgentVault` at `0x7A5EC388CCbfD3B255CFa94fc2062c0807F2C4CD` (commit `f826eec`), tx `0xd960c130…72b6a64`. It is bound to agent 1982 and requires validator A at 100.
+- **One validated execute on testnet** (`pnpm --filter @attest8004/scripts gated-execute`), as agent 1982:
+  - The SDK hashes equal the vault's.
+  - request `0x526b86de…`, response `0x1330ecb6…`, execute `0x59d5987e…` (block 67,757,794).
+  - The unvalidated, pending, different-action and replay cases were simulated and refused.
+  - All tx hashes are in `docs/deployments.md`.
+- **Final review** by a fresh reviewer over the whole P2 range found no Critical issues. Fixed, with failing tests first where code changed:
+  - The SDK hashed malformed salts instead of throwing. viem accepts a 63-digit salt (padded) and hashes non-hex text as UTF-8. `action.salt` must now be exactly 32 bytes of hex, and a numeric `chainId` must be a safe integer.
+  - Docs:
+    - the ARCHITECTURE §4.1 diagram (`onlyValidated(action)` with immutable requirements);
+    - §4.4 and §9: a note for integrators that permissionless execution means a withdrawn pass can be front-run, and that a target which tolerates a failed sub-call can run degraded with a low gas limit;
+    - §12: a gate consumer is redeployed to move to the canonical registry;
+    - the README: the gated-execute script signs a smoke-test score, and no `mandate-v1` checks run.
+- **Explicit gas limits.** Every transaction sent this session used a literal limit.
+
+  | Transaction | Monad `eth_estimateGas` | Limit |
+  |---|---|---|
+  | Deploy `DemoAgentVault` (CREATE2 factory call) | 829,476 | 1,000,000 |
+  | Fund the vault (0.01 MON) | 21,212 | 26,000 (first run: provisional 30,000) |
+  | `validationRequest` (request JSON v1 as a data: URI) | 202,643 | 244,000 (first run: 400,000) |
+  | `validationResponse` | 84,514 | 102,000 (first run: 165,000) |
+  | `execute` (one requirement, native transfer) | 87,626 | 106,000 (first run: 250,000) |
+
+- **Tooling:**
+  - `deploy-testnet.sh` now takes the contract name and keeps the estimate guard.
+  - SDK sources import `.ts` files (rewritten to `.js` on build), and an `@attest8004/source` export condition lets `scripts/` run the SDK source directly, with no build step in CI.
+- **Docs:** SPEC §4.3, §4.4 and §6; ARCHITECTURE §1, §3, §4.1, §4.3, §4.4, §5.2 (the "known conflict" is resolved), §6, §7 and §9; spec-notes rows 5, 6, 7 and 12 plus a log row; README; `contracts/README.md` (also restores the `Toolchain.t.sol` row deferred from P1); `docs/README.md`; CLAUDE.md line 43 (as you approved).
+- **Resolved from P1's STATUS:**
+  - the `requestHash` blocker (decided and implemented);
+  - the CLAUDE.md wording;
+  - the `Toolchain.t.sol` row in `contracts/README.md`;
+  - RPC URLs in error output (the new script prints viem's `shortMessage`; `roundtrip` still prints the full message).
+- **Learned:** `vm.prank` applies to the next external call, and a call evaluated inside the next call's arguments counts. Compute hashes before pranking.
+
+### Next
+- **Your side:**
+  - `git push`, then check CI on GitHub.
+  - Optionally add `DEMO_AGENT_VAULT=0x7A5EC388CCbfD3B255CFa94fc2062c0807F2C4CD` to `.env`; until then the script falls back to `scripts/src/deployments.ts`.
+  - Still open from P0/P1: the Qwen model ID, Envio token, Nansen credits, PRF smoke test, Discord questions, the Vercel deploy, making the repo public, the integration offer.
+- **P3 (Sun 4 Oct): the SDK client and validator base.**
+  - Write the request JSON v1 zod schema, including `validator`.
+  - Validators must reject a request whose `validator` isn't themselves, or whose `agentId` differs from the `ValidationRequest` event's (ARCHITECTURE §6).
+  - Decide who sends `validationRequest` (see Blockers).
+- **P5:** redeploy `DemoAgentVault` requiring both validators. Mark the current vault as superseded in `docs/deployments.md`; its last 0.009 MON can leave only through a validated execute.
+- **Deferred minor from the final review:** run `packages/sdk/test/vectors.sh --check` in CI. The `contracts` job has `cast`, and `jq` is on the runner. Today the "independent oracle" check runs only by hand.
+- **Still deferred from P1** (P10 or whenever convenient):
+  - the deployer key in forge's argv;
+  - three test gaps;
+  - filtering `Registered` logs by emitter;
+  - `timeout-minutes` on `contracts-fork`;
+  - a README note that each round trip registers a new test agent.
+- The tightened gas limits in `gated-execute.ts` haven't been used in a run yet (you asked for one execute). The estimate guard stops the script before sending if any is too low.
+
+### Blockers or decisions needed
+- **Decisions I made (all reversible; flag any you disagree with):**
+  - At most 4 requirements, packed into immutables. Solidity has no immutable arrays, and on Monad a cold `SLOAD` costs 8,100 gas.
+  - `execute` is permissionless, and a failed call can be retried until the deadline.
+  - The vault's testnet configuration is constants in the deploy script, so it can be reviewed in git.
+  - The smoke-test verdict uses tag `attest8004-gate-smoke`, not `mandate-v1`, because no checks ran.
+- **P5: pick `risk-qwen-v1`'s `minScore`** for the redeploy (`mandate-v1` stays at 100).
+- **Request JSON v1 `deadline` is a JSON number.** Above 2^53 it would lose precision. A validator would then reject the request on hash mismatch, so it fails safe. Making it a decimal string like `agentId` and `value` would be a format change; decide in P3.
+- **Squatting is still a denial of service** (spec-notes row 12). A squatted hash can't pass the gate, but a determined squatter can keep an action from being validated. The agent can retry with a new `salt`. This belongs in the P10/P11 threat model.
+- Still open from P1: how agents submit requests (P3), and the Identity Registry upgradeability trust note.
+
 ## Fri 2 Oct 2026 · P1 ValidationRegistry
 
 ### Done
