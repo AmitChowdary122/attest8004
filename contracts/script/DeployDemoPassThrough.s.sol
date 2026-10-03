@@ -20,11 +20,9 @@ contract DeployDemoPassThrough is Script {
     /// "attest8004.demo.sink"))))`, the same value TypeScript gets as
     /// `getAddress(slice(keccak256(toBytes("attest8004.demo.sink")), 12))`.
     address payable public constant SINK = payable(address(uint160(uint256(keccak256("attest8004.demo.sink")))));
-    /// Literal gas limit for the deploy transaction. Provisional: `cast estimate` for exactly
-    /// this call (deployPlan's `to`/`data`) against a local anvil node was 140,967 gas on 4 Oct
-    /// 2026; this is that x 1.2, rounded up to 10k. Task 4 measures Monad testnet's
-    /// eth_estimateGas for the exact call and sets the final value before any deploy.
-    uint256 public constant DEPLOY_GAS = 170_000;
+    /// Literal gas limit for the deploy transaction. Monad testnet eth_estimateGas for this call
+    /// on 4 Oct 2026 was 141,975; the limit is that x 1.2, rounded up to 10k.
+    uint256 public constant DEPLOY_GAS = 180_000;
 
     error UnsupportedChain(uint256 chainId);
     error DeployFailed(address predicted);

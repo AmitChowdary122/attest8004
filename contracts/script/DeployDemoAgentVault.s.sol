@@ -18,8 +18,8 @@ contract DeployDemoAgentVault is Script {
     // CREATE2_FACTORY (0x4e59b448…956C) is inherited from forge-std's CommonBase.
     bytes32 public constant SALT = keccak256("attest8004.DemoAgentVault.v1");
     /// Literal gas limit for the deploy transaction. Monad testnet eth_estimateGas for this
-    /// call on 3 Oct 2026 was 829,476; the limit is that x 1.2, rounded up to 10k.
-    uint256 public constant DEPLOY_GAS = 1_000_000;
+    /// call on 4 Oct 2026 was 903,163; the limit is that x 1.2, rounded up to 10k.
+    uint256 public constant DEPLOY_GAS = 1_090_000;
 
     address public constant VALIDATION_REGISTRY_TESTNET = 0xc4A4D0cEB3971cbE7a2536494aC106f2Cd9F9a8f;
     uint256 public constant AGENT_ID_TESTNET = 1984;
