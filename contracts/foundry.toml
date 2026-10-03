@@ -11,6 +11,8 @@ solc_version = "0.8.37"
 evm_version = "osaka"
 optimizer = true
 optimizer_runs = 200
+# The shared requestHash vectors (SPEC §4.3) live with the SDK; test/ActionHash.t.sol reads them.
+fs_permissions = [{ access = "read", path = "../packages/sdk/test/vectors.json" }]
 remappings = [
     "@openzeppelin/contracts/=lib/openzeppelin-contracts/contracts/",
     "forge-std/=lib/forge-std/src/",

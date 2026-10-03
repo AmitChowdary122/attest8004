@@ -1,0 +1,136 @@
+{
+  "schema": "attest8004.hash-vectors.v1",
+  "description": "Shared test vectors for actionHash and requestHash (SPEC §4.3). Checked by packages/sdk/test/action.test.ts (viem) and contracts/test/ActionHash.t.sol (Solidity). The expected hashes come from cast (packages/sdk/test/vectors.sh), independent of both. Integers are decimal strings.",
+  "actionHash": "keccak256(abi.encode(uint256 chainId, address gate, uint256 agentId, address target, uint256 value, bytes32 keccak256(data), uint64 deadline, bytes32 salt))",
+  "requestHash": "keccak256(abi.encode(uint256 chainId, address gate, address validatorAddress, uint256 agentId, address target, uint256 value, bytes32 keccak256(data), uint64 deadline, bytes32 salt))",
+  "vectors": [
+    {
+      "name": "erc20-transfer-testnet",
+      "chainId": "10143",
+      "gate": "0x695D0822d7bfb1D2749f04d1B32AA765c39f2DA7",
+      "validator": "0xa62DaB21E0C0F57e94B3ed6e675F214199989e92",
+      "action": {
+        "agentId": "1982",
+        "target": "0x513d9815b1Fc9391e6dF16e8B6145d183eab815B",
+        "value": "0",
+        "data": "0xa9059cbb0000000000000000000000003efeb3cf2fb54a7d99abe90aab786ce5a831a8cf00000000000000000000000000000000000000000000000000000000000f4240",
+        "deadline": "1791000000",
+        "salt": "0xf774d437595cc9ab9a97e19a13cc795acb319f8b822d8830b8a942789f7d06a5"
+      },
+      "actionHash": "0x569ed3b82a3c6ba683f41c33d7bc64ac923e6a8d1233cd66e09fa4b3490260cf",
+      "requestHash": "0x66621ab87cfdb7860465c696a9479f7d74fff9b883ae1ae22158e699f61a4398"
+    },
+    {
+      "name": "native-transfer-empty-data",
+      "chainId": "10143",
+      "gate": "0x695D0822d7bfb1D2749f04d1B32AA765c39f2DA7",
+      "validator": "0xa62DaB21E0C0F57e94B3ed6e675F214199989e92",
+      "action": {
+        "agentId": "1982",
+        "target": "0xd7FdCeCA5F1EE58945DB27D7242b9E39FD5d5e07",
+        "value": "1000000000000000",
+        "data": "0x",
+        "deadline": "1791000000",
+        "salt": "0x8cefed0b2d05d440f4419937463c5fbbe02b73e2b2af0ff4e6af910186853235"
+      },
+      "actionHash": "0x112f00e58559992cde585ea10325f81e90b3f5648a080e1dac0e7cf3eb6faf9a",
+      "requestHash": "0x0c5e9f77d38760e2987b8d8591363a0b8fed1323dc39d362e11c58f2a54c6afa"
+    },
+    {
+      "name": "same-action-validator-b",
+      "chainId": "10143",
+      "gate": "0x695D0822d7bfb1D2749f04d1B32AA765c39f2DA7",
+      "validator": "0x72Fe0960c5F1F26009e9dB727B0cDafE7309ac76",
+      "action": {
+        "agentId": "1982",
+        "target": "0x513d9815b1Fc9391e6dF16e8B6145d183eab815B",
+        "value": "0",
+        "data": "0xa9059cbb0000000000000000000000003efeb3cf2fb54a7d99abe90aab786ce5a831a8cf00000000000000000000000000000000000000000000000000000000000f4240",
+        "deadline": "1791000000",
+        "salt": "0xf774d437595cc9ab9a97e19a13cc795acb319f8b822d8830b8a942789f7d06a5"
+      },
+      "actionHash": "0x569ed3b82a3c6ba683f41c33d7bc64ac923e6a8d1233cd66e09fa4b3490260cf",
+      "requestHash": "0xc16b975daeeced65541f1df3e740fbd072b2ebb959ca0e5625ec7e977660ba78"
+    },
+    {
+      "name": "mainnet-chain-143",
+      "chainId": "143",
+      "gate": "0x695D0822d7bfb1D2749f04d1B32AA765c39f2DA7",
+      "validator": "0xa62DaB21E0C0F57e94B3ed6e675F214199989e92",
+      "action": {
+        "agentId": "1982",
+        "target": "0x513d9815b1Fc9391e6dF16e8B6145d183eab815B",
+        "value": "0",
+        "data": "0xa9059cbb0000000000000000000000003efeb3cf2fb54a7d99abe90aab786ce5a831a8cf00000000000000000000000000000000000000000000000000000000000f4240",
+        "deadline": "1791000000",
+        "salt": "0xf774d437595cc9ab9a97e19a13cc795acb319f8b822d8830b8a942789f7d06a5"
+      },
+      "actionHash": "0x8c9e4e9c7f43f1e8eeafc703552b05d6a6b669da742ef098d5cc70dcbf72ea7e",
+      "requestHash": "0x1556c219b34acd6953199f7e5ccf61efcdacbb2e2301234eb60b3c8710dd6b2c"
+    },
+    {
+      "name": "other-gate",
+      "chainId": "10143",
+      "gate": "0x04E461621175bC9b692c3aC3840077D211F6b949",
+      "validator": "0xa62DaB21E0C0F57e94B3ed6e675F214199989e92",
+      "action": {
+        "agentId": "1982",
+        "target": "0x513d9815b1Fc9391e6dF16e8B6145d183eab815B",
+        "value": "0",
+        "data": "0xa9059cbb0000000000000000000000003efeb3cf2fb54a7d99abe90aab786ce5a831a8cf00000000000000000000000000000000000000000000000000000000000f4240",
+        "deadline": "1791000000",
+        "salt": "0xf774d437595cc9ab9a97e19a13cc795acb319f8b822d8830b8a942789f7d06a5"
+      },
+      "actionHash": "0xaaa6c2155dee85f46cb4b2daf42965297e6a2960f93e6717293aaf0946987147",
+      "requestHash": "0x2cfbc3199e6461d1ae50b328db0d257c16a2ac6f193d8f52d49516d308e54949"
+    },
+    {
+      "name": "max-values",
+      "chainId": "10143",
+      "gate": "0x695D0822d7bfb1D2749f04d1B32AA765c39f2DA7",
+      "validator": "0xa62DaB21E0C0F57e94B3ed6e675F214199989e92",
+      "action": {
+        "agentId": "115792089237316195423570985008687907853269984665640564039457584007913129639935",
+        "target": "0xFFfFfFffFFfffFFfFFfFFFFFffFFFffffFfFFFfF",
+        "value": "115792089237316195423570985008687907853269984665640564039457584007913129639935",
+        "data": "0xff",
+        "deadline": "18446744073709551615",
+        "salt": "0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
+      },
+      "actionHash": "0x10a85b5d90265b2fb1f9fa092d7a2843d97c84efed1fcbc0f87bf01e9daf3ab3",
+      "requestHash": "0x023b6a734e8f8172f94fd5b0e466ec222d5d352b4ad1cddae07505b1c2ae3fcc"
+    },
+    {
+      "name": "zero-values",
+      "chainId": "10143",
+      "gate": "0x695D0822d7bfb1D2749f04d1B32AA765c39f2DA7",
+      "validator": "0xa62DaB21E0C0F57e94B3ed6e675F214199989e92",
+      "action": {
+        "agentId": "0",
+        "target": "0x0000000000000000000000000000000000000000",
+        "value": "0",
+        "data": "0x",
+        "deadline": "0",
+        "salt": "0x0000000000000000000000000000000000000000000000000000000000000000"
+      },
+      "actionHash": "0x0dd2353636c73cb2ef82189d35a039b810a6003c0d1a54ced68779f400010150",
+      "requestHash": "0x834e03fe3ce20d142956c6d57676912ae1ccd19559f750914c5afd2cb12f706c"
+    },
+    {
+      "name": "long-data",
+      "chainId": "10143",
+      "gate": "0x695D0822d7bfb1D2749f04d1B32AA765c39f2DA7",
+      "validator": "0xa62DaB21E0C0F57e94B3ed6e675F214199989e92",
+      "action": {
+        "agentId": "42",
+        "target": "0xd7FdCeCA5F1EE58945DB27D7242b9E39FD5d5e07",
+        "value": "1000000000000000001",
+        "data": "0x000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f60616263",
+        "deadline": "1791000000",
+        "salt": "0x8cefed0b2d05d440f4419937463c5fbbe02b73e2b2af0ff4e6af910186853235"
+      },
+      "actionHash": "0x0542c3a783565841a431efeeda66eb31d3f914b758a3524d71896f7df37f0674",
+      "requestHash": "0xbeec6f18088be6da3d8f7a7b76db53ca9369c6bc59a2fe8f5d125c0b65d86eed"
+    }
+  ]
+}
