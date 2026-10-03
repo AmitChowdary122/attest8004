@@ -1,6 +1,7 @@
 // `attest8004 verify <requestHash> [--rpc-url URL] [--json]` (SPEC §4.5): re-runs a `mandate-v1`
 // verdict at the block its evidence pins, from chain data alone, and compares the score and
-// responseHash with the ones posted onchain. From the repo root: `pnpm attest8004 verify <requestHash>`.
+// responseHash with the ones posted onchain. From the repo root: `pnpm attest8004 verify <requestHash>`,
+// through bin/attest8004.mjs (which turns an old Node, a load failure or an uncaught error into exit 2).
 // Read-only: it never sends a transaction. Its own output never prints the RPC URL it was given,
 // which can carry an API key: errors show viem's short message only. pnpm, though, echoes the command
 // line it runs, so a keyed URL belongs in MONAD_TESTNET_RPC_URL (or `pnpm --loglevel silent` with
@@ -30,7 +31,10 @@ export const USAGE = [
   "  --json          print the report as one JSON object",
   "",
   "exit codes: 0 match; 1 mismatch (public proof that the validator misbehaved);",
-  "            2 could not verify (bad usage, an RPC error, or something not found)",
+  "            2 could not verify: bad usage, an RPC error, something not found",
+  "              (REQUEST_NOT_FOUND, RESPONSE_NOT_FOUND), another validator's tag (NOT_MANDATE_V1),",
+  "              evidence that isn't inline JSON verify decodes (EVIDENCE_NOT_DECODED), or a Node",
+  "              that can't run the CLI (it needs Node 22.18 or later)",
 ].join("\n");
 
 /** What `main` needs from the outside world, so tests can script it. */
@@ -250,9 +254,11 @@ function humanText(report: VerifyReport): string {
 }
 
 /**
- * Whether Node is running this file as its entry point (`pnpm attest8004 …`), so importing it (tests)
- * runs nothing. Compares paths rather than reading `import.meta.main`, which older Node 22 releases
- * lack: there it would be undefined, and the CLI would exit 0, which means "match".
+ * Whether Node is running this file directly (`node --conditions=@attest8004/source src/cli.ts …`), so
+ * importing it runs nothing: `pnpm attest8004` runs bin/attest8004.mjs, which imports this file and
+ * calls `main` itself, and so do the tests. Compares paths rather than reading `import.meta.main`,
+ * which older Node 22 releases lack: there it would be undefined, and the CLI would exit 0, which
+ * means "match".
  */
 function isEntryPoint(): boolean {
   const entry = process.argv[1];

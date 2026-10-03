@@ -61,7 +61,8 @@ The diagrams, flows, data formats, trust model and key custody are in **[ARCHITE
 
 > The 10-minute integration guide will be in `docs/quickstart.md` once the contracts are deployed. For now, this is the development setup.
 
-**Prerequisites:** Node 22, pnpm (version pinned in `package.json`), [Foundry](https://getfoundry.sh), and [gitleaks](https://github.com/gitleaks/gitleaks).
+**Prerequisites:** Node 22.18 or later in the 22.x line (the scripts and `verify` run TypeScript source through Node's
+type stripping, on by default from 22.18), pnpm (version pinned in `package.json`), [Foundry](https://getfoundry.sh), and [gitleaks](https://github.com/gitleaks/gitleaks).
 
 ```bash
 git clone --recurse-submodules https://github.com/AmitChowdary122/attest8004.git

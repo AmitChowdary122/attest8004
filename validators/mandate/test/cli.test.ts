@@ -230,6 +230,12 @@ describe("attest8004 CLI: exit codes and output", () => {
     expect(h.err.join("\n")).toContain("MONAD_TESTNET_RPC_URL=<url> pnpm attest8004 verify <requestHash>");
   });
 
+  it("the usage's exit-2 line names every unverifiable outcome, including another validator's tag and undecodable evidence", () => {
+    const exitCodes = USAGE.slice(USAGE.indexOf("exit codes:"));
+    expect(exitCodes).toMatch(/2 could not verify/);
+    for (const problem of ["NOT_MANDATE_V1", "EVIDENCE_NOT_DECODED", "REQUEST_NOT_FOUND", "RESPONSE_NOT_FOUND"]) expect(exitCodes).toContain(problem);
+  });
+
   it("the usage steers a URL with an API key away from --rpc-url, which pnpm echoes", () => {
     expect(USAGE).toContain("MONAD_TESTNET_RPC_URL=<url> pnpm attest8004 verify <requestHash>");
     // pnpm 12 has no `-s` for `pnpm run`; `--loglevel silent` is what hides the echoed command line.
