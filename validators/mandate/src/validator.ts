@@ -21,6 +21,13 @@ import type { PinnedBlock } from "./types.ts";
 export const DEFAULT_PIN_TIMEOUT_MS = 30_000;
 /** How often `check()` re-reads the finalized head while it waits. */
 export const DEFAULT_PIN_POLL_MS = 250;
+/**
+ * How far below the finalized head `P` is pinned. A load-balanced RPC can answer `finalized` from one
+ * node and `eth_getLogs` from another a few blocks behind it, and a log range that straddles the
+ * serving node's head comes back empty or truncated without an error. Pinning this far below the
+ * head keeps every log read at `P` under any node that lags less than this.
+ */
+export const PIN_LAG_BLOCKS = 5n;
 
 export type MandateValidatorOptions = Omit<ValidatorOptions, "tag" | "maxDeadlineAheadSeconds" | "maxRequestBytes"> & {
   /** Ignored: a `MandateValidator` always tags its responses `mandate-v1`. */
@@ -63,13 +70,16 @@ export type MandateValidatorOptions = Omit<ValidatorOptions, "tag" | "maxDeadlin
  *   that finalized head is still below the request's block (a lagging RPC node), it throws instead of
  *   declining, so the base retries the request later.
  * - **`check()`** pins `P`, runs {@link runMandateV1} at `P`, and caches the request's parts.
- * - **The pin.** `P` is the finalized head at check time, but never below the request's own block, the
- *   block this process's last response landed in, or the MandateRegistry's deployment block. And if this process's most recent approval
- *   is answered at `latest` but not yet at the finalized head (a send that landed but threw, so
- *   `onResponded` never ran), `P` waits until it is answered there. So two requests checked back to
- *   back always see each other's approval in their spend. It re-reads the head every `pinPollMs`, and
- *   after `pinTimeoutMs` throws: nothing is posted, and the base retries the request later. This
- *   assumes one validator process per key.
+ * - **The pin.** `P` is {@link PIN_LAG_BLOCKS} (5) blocks below the finalized head at check time, so
+ *   every log read at `P` stays under the head of an RPC node that lags the one that answered
+ *   `finalized` by fewer blocks than that (a log range past a node's head comes back short, silently).
+ *   `P` is never below the request's own block, the block this process's last response landed in, or
+ *   the MandateRegistry's deployment block: until the head is that far ahead, it waits. And if this
+ *   process's most recent approval is answered at `latest` but not yet at `P` (a send that landed but
+ *   threw, so `onResponded` never ran), `P` waits until it is answered there. So two requests checked
+ *   back to back always see each other's approval in their spend. It re-reads the head every
+ *   `pinPollMs`, and after `pinTimeoutMs` throws: nothing is posted, and the base retries the request
+ *   later. This assumes one validator process per key.
  * - **`onResponded()`** records the response's block for the pin and settles the admission reservation
  *   to the gas limit actually sent. It never throws.
  *
@@ -91,7 +101,7 @@ export class MandateValidator extends ValidatorBase {
   private readonly emit: (entry: Record<string, unknown>) => void;
   /** The highest block one of this process's responses landed in. */
   private lastResponseBlock: bigint | undefined;
-  /** This process's most recent approval (score 100), until it is seen answered at a finalized head. */
+  /** This process's most recent approval (score 100), until it is seen answered at a pinned block. */
   private pendingApproval: Hex | undefined;
   /** The latest `P`'s timestamp: the clock `admission.settle` runs on. */
   private lastPinTimestamp = 0n;
@@ -198,7 +208,10 @@ export class MandateValidator extends ValidatorBase {
     }
   }
 
-  /** `P` for one check (see the class doc): the finalized head, once it is high enough and complete. */
+  /**
+   * `P` for one check (see the class doc): {@link PIN_LAG_BLOCKS} below the finalized head, once that
+   * is high enough and complete.
+   */
   private async pin(requestHash: Hex, requestBlock: bigint): Promise<PinnedBlock> {
     let floor = requestBlock;
     if (this.lastResponseBlock !== undefined && this.lastResponseBlock > floor) floor = this.lastResponseBlock;
@@ -210,19 +223,21 @@ export class MandateValidator extends ValidatorBase {
     let waiting = false;
     for (;;) {
       const head = await this.reader.finalized();
-      if (head.number >= floor && (mustSee === undefined || answered(await this.reader.status(mustSee, head.number)))) {
+      const at = head.number - PIN_LAG_BLOCKS;
+      if (at >= floor && (mustSee === undefined || answered(await this.reader.status(mustSee, at)))) {
         if (mustSee !== undefined && this.pendingApproval === mustSee) this.pendingApproval = undefined;
-        return head;
+        return this.reader.block(at);
       }
       if (Date.now() >= giveUpAt) {
-        const missing = mustSee === undefined ? "" : ` with this validator's approval ${mustSee} answered`;
+        const missing = mustSee === undefined ? "" : ` with this validator's approval ${mustSee} answered there`;
         throw new Error(
-          `the finalized head (block ${head.number}) didn't reach block ${floor}${missing} within ${this.pinTimeoutMs} ms; retry later`,
+          `the finalized head (block ${head.number}) minus ${PIN_LAG_BLOCKS} blocks didn't reach block ${floor}${missing} ` +
+            `within ${this.pinTimeoutMs} ms; retry later`,
         );
       }
       if (!waiting) {
         waiting = true;
-        this.logLine("info", "waiting for the finalized head", { requestHash, head: head.number, floor, approval: mustSee });
+        this.logLine("info", "waiting for the finalized head", { requestHash, head: head.number, pin: at, floor, approval: mustSee });
       }
       await sleep(this.pinPollMs);
     }

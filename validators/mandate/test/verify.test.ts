@@ -37,7 +37,7 @@ import { MAX_EVIDENCE_URI_BYTES, SpendLogNotFoundError } from "../src/collect.ts
 import { MANDATE_V1 } from "../src/params.ts";
 import { mandateAddressesFor, viemMandateReader, type MandateAddresses, type ResponseLog, type VerifyReader } from "../src/reader.ts";
 import type { MandateRecord, PermissionEvent, PinnedBlock, Simulation } from "../src/types.ts";
-import { MandateValidator } from "../src/validator.ts";
+import { MandateValidator, PIN_LAG_BLOCKS } from "../src/validator.ts";
 import { verifyContextFor, verifyRequest, type VerifyReport } from "../src/verify.ts";
 
 const VALIDATOR = getAddress("0xa62dab21e0c0f57e94b3ed6e675f214199989e92");
@@ -87,14 +87,15 @@ type Landed = { block: bigint; logIndex: number; uri: string; status: Validation
 
 /**
  * A scripted chain: the request events, and the responses that landed (each in the block after the
- * finalized head, which then finalizes at once). Hashes are keyed lower-case.
+ * finalized head; the chain then moves on and finalizes `PIN_LAG_BLOCKS` past it, so the next pin can
+ * see it). Hashes are keyed lower-case.
  */
 class FakeChain implements ValidatorChain {
   readonly address = VALIDATOR;
   /** The base's cycle head: requests are polled up to it, deadlines checked against its time. */
   readonly headBlock = { number: 1_004n, timestamp: tsOf(1_004n) };
-  /** The finalized head every reader reports. */
-  finalized = 1_004n;
+  /** The finalized head every reader reports: the validator's first pin is block 1,004. */
+  finalized = 1_004n + PIN_LAG_BLOCKS;
   /**
    * The block the ValidationRegistry was deployed in. Before it the contract has no code, so a status
    * read returns no data (`"0x"`), which doesn't decode, rather than reverting `UnknownRequest`.
@@ -150,7 +151,7 @@ class FakeChain implements ValidatorChain {
         lastUpdate: tsOf(block),
       },
     });
-    this.finalized = block;
+    this.finalized = block + PIN_LAG_BLOCKS;
     return { txHash: keccak256(toHex(`response tx ${block}`)), blockNumber: block, gasLimit: 84_010n };
   }
 }
@@ -407,7 +408,7 @@ describe("verifyRequest: an honest verdict reproduces", () => {
     const report = await verify(second.requestHash, fresh);
 
     expect(fresh.responseLogCalls).toContain(first.requestHash);
-    expect(report).toMatchObject({ verdict: "match", match: true, problems: [], differingKeys: [], pinnedBlock: 1_005n });
+    expect(report).toMatchObject({ verdict: "match", match: true, problems: [], differingKeys: [], pinnedBlock: 1_010n });
     expect(report.recomputed).toEqual({
       score: 0,
       responseHash: landed(second.requestHash).status.responseHash,
@@ -417,7 +418,7 @@ describe("verifyRequest: an honest verdict reproduces", () => {
     expect(report.spendEntries).toEqual([
       {
         requestHash: first.requestHash,
-        approvedAt: tsOf(1_005n),
+        approvedAt: tsOf(1_010n),
         gate: GATE,
         value: 1_000n,
         deadline: tsOf(1_004n) + 600n,
@@ -443,7 +444,7 @@ describe("verifyRequest: an honest verdict reproduces", () => {
     await runValidator(ADDRESSES, [GATE, CODELESS_GATE]);
     const expected = {
       requestHash: first.requestHash,
-      approvedAt: tsOf(1_005n),
+      approvedAt: tsOf(1_010n),
       gate: CODELESS_GATE,
       value: 1_000n,
       deadline: tsOf(1_004n) + 600n,
@@ -594,19 +595,19 @@ describe("verifyRequest: a tampered or drifted verdict is a mismatch", () => {
 
     expect(report).toMatchObject({ verdict: "mismatch", problems: ["PIN_OUT_OF_RANGE"], pinnedBlock: 1_001n, recomputed: null });
     expect(reader.mandateReads).toEqual([]);
-    expect(reader.statusReads).toEqual([1_005n]);
+    expect(reader.statusReads).toEqual([1_015n]);
   });
 
   it("a pin after the response's block: PIN_OUT_OF_RANGE", async () => {
     const e = addRequest(requestJson());
     await runValidator();
-    expect(landed(e.requestHash).block).toBe(1_005n);
-    chain.finalized = 1_010n;
+    expect(landed(e.requestHash).block).toBe(1_010n);
+    chain.finalized = 1_020n;
     resign(e.requestHash, (doc) => {
-      doc.block.number = "1006";
+      doc.block.number = "1011";
     });
 
-    await expect(verify(e.requestHash)).resolves.toMatchObject({ verdict: "mismatch", problems: ["PIN_OUT_OF_RANGE"], pinnedBlock: 1_006n });
+    await expect(verify(e.requestHash)).resolves.toMatchObject({ verdict: "mismatch", problems: ["PIN_OUT_OF_RANGE"], pinnedBlock: 1_011n });
   });
 });
 
@@ -650,7 +651,7 @@ describe("verifyRequest: the request's block is a fact of state, so a wrong one 
 
     expect(report).toMatchObject({ verdict: "mismatch", problems: ["REQUEST_BLOCK_WRONG"], pinnedBlock: 1_004n, recomputed: null });
     expect(reader.requestUriCalls).toEqual([]);
-    expect(reader.statusReads).toEqual([1_005n]); // only the head: nothing before the deployment is read
+    expect(reader.statusReads).toEqual([1_015n]); // only the head: nothing before the deployment is read
   });
 
   it("a request made in the registry's deployment block, its log missing: REQUEST_NOT_FOUND, with no read before deployment", async () => {
@@ -661,7 +662,7 @@ describe("verifyRequest: the request's block is a fact of state, so a wrong one 
     reader.hiddenRequests.add(e.requestHash);
 
     await expect(verify(e.requestHash, reader)).resolves.toMatchObject({ verdict: "unverifiable", problems: ["REQUEST_NOT_FOUND"] });
-    expect(reader.statusReads).toEqual([1_005n, 1_000n]);
+    expect(reader.statusReads).toEqual([1_015n, 1_000n]);
   });
 
   it.each(UNKNOWN_REQUEST_SHAPES)("reads UnknownRequest as 'not made yet' in any shape ($shape)", async ({ wrap }) => {
@@ -748,7 +749,7 @@ describe("verifyRequest: what can't be found or re-run is never a mismatch", () 
       pinnedBlock: 1_004n,
       recomputed: null,
     });
-    expect(reader.statusReads).toEqual([1_005n, 1_000n, 999n]); // the head, then the request block and the one before
+    expect(reader.statusReads).toEqual([1_015n, 1_000n, 999n]); // the head, then the request block and the one before
   });
 
   it("a request JSON naming another validator than the registry records: REQUEST_INVALID (a validator must not answer it)", async () => {

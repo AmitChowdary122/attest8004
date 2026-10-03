@@ -22,7 +22,7 @@ import { MANDATE_V1 } from "../src/params.ts";
 import type { MandateAddresses, MandateReader } from "../src/reader.ts";
 import { runMandateV1 } from "../src/run.ts";
 import type { MandateInputs, MandateRecord, PermissionEvent, PinnedBlock, Simulation } from "../src/types.ts";
-import { MandateValidator, type MandateValidatorOptions } from "../src/validator.ts";
+import { MandateValidator, PIN_LAG_BLOCKS, type MandateValidatorOptions } from "../src/validator.ts";
 
 const VALIDATOR = getAddress("0xa62dab21e0c0f57e94b3ed6e675f214199989e92");
 const GATE = getAddress("0x23bfbd12545ccd1501dda1b65a54518fd6212a96");
@@ -35,6 +35,8 @@ const CHAIN_ID = 10_143;
 const BASE_TS = 1_790_000_000n;
 /** One second per block, so every block has its own timestamp. */
 const tsOf = (block: bigint): bigint => BASE_TS + block - 1_000n;
+/** The finalized head at which the validator pins block `p`: `PIN_LAG_BLOCKS` above it. */
+const headFor = (p: bigint): bigint => p + PIN_LAG_BLOCKS;
 
 const deployment = DEPLOYMENTS[10143];
 const ADDRESSES: MandateAddresses = {
@@ -111,8 +113,8 @@ class FakeChain implements ValidatorChain {
 /** A `MandateReader` over the same fake chain, reading state at the block it is given. */
 class FakeReader implements MandateReader {
   readonly chain: FakeChain;
-  /** The finalized heads to report, one per call; the last one repeats. */
-  heads: bigint[] = [1_004n];
+  /** The finalized heads to report, one per call; the last one repeats. By default the pin is block 1,004. */
+  heads: bigint[] = [headFor(1_004n)];
   mandateRecord: MandateRecord | null = mandate();
   owner: Address = OWNER;
   readonly consumedByAction = new Map<Hex, boolean | null>();
@@ -330,7 +332,7 @@ describe("MandateValidator: verdicts", () => {
   it("re-checks the deadline at P: ACTION_EXPIRED when P's time is past a deadline the cycle head still allowed", async () => {
     const deadline = tsOf(1_004n) + 2n; // >= the cycle head's time, so the base lets it through
     const e = addRequest(requestJson({ deadline }));
-    reader.heads = [1_010n]; // P's time is past the deadline
+    reader.heads = [headFor(1_010n)]; // P's time is past the deadline
 
     await validator().pollOnce();
 
@@ -500,14 +502,14 @@ describe("MandateValidator: accepts()", () => {
   });
 
   it("reads the mandate at the reader's finalized head, and admits with the cycle head's time", async () => {
-    reader.heads = [1_003n];
+    reader.heads = [headFor(1_003n)];
     const admit = vi.spyOn(admission, "admit");
     const settle = vi.spyOn(admission, "settle");
     const e = addRequest(requestJson());
 
     await validator().pollOnce();
 
-    expect(reader.calls.find((c) => c.method === "mandate")).toEqual({ method: "mandate", at: 1_003n });
+    expect(reader.calls.find((c) => c.method === "mandate")).toEqual({ method: "mandate", at: headFor(1_003n) });
     expect(admit).toHaveBeenCalledWith({ requestHash: e.requestHash, agentId: AGENT, now: tsOf(1_004n) });
     // settle's clock is the latest P (here 1,003), the gas limit the one actually sent.
     expect(settle).toHaveBeenCalledWith({ requestHash: e.requestHash, gasLimit: 84_010n, now: tsOf(1_003n) });
@@ -516,7 +518,7 @@ describe("MandateValidator: accepts()", () => {
   it("retries, never declines, while the finalized head is behind the request's block", async () => {
     // A lagging RPC node: at block 1,002 the mandate set just before the request isn't there yet.
     const e = addRequest(requestJson(), 1_003n);
-    reader.heads = [1_002n, 1_003n];
+    reader.heads = [1_002n, headFor(1_003n)];
     const record = mandate();
     reader.mandate = async (_agentId: bigint, at: bigint) => {
       reader.calls.push({ method: "mandate", at });
@@ -579,7 +581,7 @@ describe("MandateValidator: the pinned block", () => {
     const second = addRequest(requestJson({ value: 2_000n }));
     chain.onLand = (r) => {
       // The approval lands in 1,005 while the finalized head is still 1,004 for three more reads.
-      if (r.requestHash === first.requestHash) reader.heads = [1_004n, 1_004n, 1_004n, 1_005n];
+      if (r.requestHash === first.requestHash) reader.heads = [1_004n, 1_004n, 1_004n, 1_005n].map(headFor);
     };
 
     const { outcomes } = await validator().pollOnce();
@@ -603,7 +605,7 @@ describe("MandateValidator: the pinned block", () => {
         },
       ],
     });
-    expect(reader.heads).toEqual([1_005n]); // every lagging head was read and refused
+    expect(reader.heads).toEqual([headFor(1_005n)]); // every lagging head was read and refused
     expect(reader.evidenceCalls).toEqual([]); // the first request's parts came from the cache
   });
 
@@ -611,14 +613,14 @@ describe("MandateValidator: the pinned block", () => {
     const first = addRequest(requestJson({ target: UNLISTED }));
     const second = addRequest(requestJson());
     chain.onLand = (r) => {
-      if (r.requestHash === first.requestHash) reader.heads = [1_004n, 1_004n, 1_005n];
+      if (r.requestHash === first.requestHash) reader.heads = [1_004n, 1_004n, 1_005n].map(headFor);
     };
 
     await validator().pollOnce();
 
     expect(posted(first.requestHash).response.response).toBe(0);
     expect(posted(second.requestHash).doc.block.number).toBe("1005");
-    expect(reader.heads).toEqual([1_005n]);
+    expect(reader.heads).toEqual([headFor(1_005n)]);
   });
 
   it("waits for an approval whose send landed but threw (no onResponded) to be answered at P", async () => {
@@ -627,7 +629,7 @@ describe("MandateValidator: the pinned block", () => {
     chain.landThenFail = true;
     chain.failures.set(first.requestHash, 1);
     chain.onLand = (r) => {
-      if (r.requestHash === first.requestHash) reader.heads = [1_004n, 1_004n, 1_005n];
+      if (r.requestHash === first.requestHash) reader.heads = [1_004n, 1_004n, 1_005n].map(headFor);
     };
 
     const { outcomes } = await validator().pollOnce();
@@ -645,22 +647,63 @@ describe("MandateValidator: the pinned block", () => {
 
   it("never pins below the MandateRegistry's deployment block, where the mandate can't be read", async () => {
     const e = addRequest(requestJson());
-    reader.heads = [1_004n, 1_005n, 1_006n]; // accepts() reads 1,004; the pin waits through 1,005
+    reader.heads = [1_004n, 1_005n, 1_006n].map(headFor); // accepts() reads the first; the pin waits through 1,005
 
     await validator({ mandateRegistryDeployBlock: 1_006n }).pollOnce();
 
     expect(posted(e.requestHash).doc.block.number).toBe("1006");
-    expect(reader.heads).toEqual([1_006n]);
+    expect(reader.heads).toEqual([headFor(1_006n)]);
   });
 
   it("never pins below the request's own block", async () => {
     const e = addRequest(requestJson(), 1_003n);
-    // A load-balanced RPC: accepts() reads 1,003, then the pin's first read hits a node at 1,002.
-    reader.heads = [1_003n, 1_002n, 1_003n];
+    // A load-balanced RPC: accepts() reads one head, then the pin's first read hits a node a block behind it.
+    reader.heads = [1_003n, 1_002n, 1_003n].map(headFor);
 
     await validator().pollOnce();
 
     expect(posted(e.requestHash).doc.block.number).toBe("1003");
+  });
+
+  it(`pins ${PIN_LAG_BLOCKS} blocks below the finalized head, so a log node a block behind it can't hide an event at P`, async () => {
+    // The node that answered `finalized` is at 1,015; the one serving eth_getLogs is a block behind and, for a range
+    // that straddles its head, silently returns nothing above it (as measured on the public RPC).
+    const finalized = 1_015n;
+    const logNodeHead = finalized - 1n;
+    reader.heads = [finalized];
+    const keySet = (block: bigint, tx: string): Omit<PermissionEvent, "afterMandate"> => ({
+      block,
+      logIndex: 0,
+      txHash: keccak256(toHex(tx)),
+      emitter: "AgentRequestForwarder",
+      event: "AgentKeySet",
+    });
+    // Two permission changes after the mandate: one at the head a pin without the lag would take, one 3 blocks under it.
+    const complete = [...reader.permissionEvents, keySet(finalized - 3n, "key set 1"), keySet(finalized, "key set 2")];
+    reader.permissionLogs = async (fromBlock: bigint, toBlock: bigint) =>
+      complete.filter((x) => x.block >= fromBlock && x.block <= toBlock && x.block <= logNodeHead).map((x) => ({ ...x }));
+    const e = addRequest(requestJson());
+
+    await validator().pollOnce();
+
+    const { response, text, doc } = posted(e.requestHash);
+    const p = finalized - PIN_LAG_BLOCKS;
+    expect(doc.block.number).toBe(p.toString());
+    expect(doc.permissions.toBlock).toBe(p.toString());
+    // Both changes came after P, so neither is in the window, and the action passes.
+    expect(response.response).toBe(100);
+    // What `verify` does later, on a node that has every log: re-run at the posted P. Same bytes.
+    const full = new FakeReader(chain);
+    full.permissionEvents = complete;
+    const rerun = await runMandateV1({
+      reader: full,
+      addresses: ADDRESSES,
+      validator: VALIDATOR,
+      request: mandateRequest(jsons.get(e.requestHash) as RequestJsonV1, e.blockNumber),
+      pinned: await full.block(p),
+      cache: new Map(),
+    });
+    expect(text).toBe(canonicalJson(buildEvidence({ tag: "mandate-v1", requestHash: e.requestHash, result: rerun })));
   });
 
   it("gives up after pinTimeoutMs without posting, and the base retries the request later", async () => {
@@ -694,7 +737,7 @@ describe("MandateValidator: the pinned block", () => {
     const first = addRequest(requestJson({ target: UNLISTED }));
     const second = addRequest(requestJson());
     chain.onLand = (r) => {
-      if (r.requestHash === first.requestHash) reader.heads = [1_004n, 1_004n, 1_005n];
+      if (r.requestHash === first.requestHash) reader.heads = [1_004n, 1_004n, 1_005n].map(headFor);
     };
 
     await validator().pollOnce();
@@ -714,7 +757,7 @@ describe("MandateValidator: a missing spend log is a retry, never a verdict", ()
     // A restarted process (empty cache) gets request B; A's log isn't found on the first try.
     const b = addRequest(requestJson({ value: 1_000n }), 1_006n);
     chain.headBlock = { number: 1_006n, timestamp: tsOf(1_006n) };
-    reader.heads = [1_006n];
+    reader.heads = [headFor(1_006n)];
     reader.evidence.set(a.requestHash, [null, aUri]);
     const restarted = validator({ cursor: new MemoryCursorStore(1_005n) });
 

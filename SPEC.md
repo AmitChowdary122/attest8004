@@ -139,7 +139,7 @@ attest8004/
 ### 4.5 Validator A — `mandate-v1` (deterministic)
 **This validator carries the "is it trust?" argument: anyone can re-run a verdict from chain data alone and get the same score and the same `responseHash`.** Lead with it in the docs and the demo. As built in P4 (`validators/mandate/`):
 
-- **One pinned block.** Every input is read at one block `P`, and the verdict's clock is `P`'s timestamp. `P` is the finalized head when the check runs, never below the request's block, the block this process's last response landed in, or the MandateRegistry's deployment block (ARCHITECTURE §6). One validator process per key.
+- **One pinned block.** Every input is read at one block `P`, and the verdict's clock is `P`'s timestamp. `P` is 5 blocks below the finalized head when the check runs (so an RPC node a few blocks behind can't silently drop the last logs before `P`), never below the request's block, the block this process's last response landed in, or the MandateRegistry's deployment block (ARCHITECTURE §6). One validator process per key.
 - **Checks.** Every rule is evaluated. Any failure scores 0, and the reasons are reported in this order:
   1. `MANDATE_MISSING`: the agent has no mandate in `MandateRegistry` (never set, or revoked).
   2. `MANDATE_OWNER_CHANGED`: the mandate was set by someone who no longer owns the agent.
