@@ -62,6 +62,13 @@ export class FakeRpc {
   receiptStatus: "0x1" | "0x0" = "0x1";
   /** Logs to put in the receipt of a sent transaction. */
   receiptLogs: (tx: TransactionSerializable) => RpcLog[] = () => [];
+  /** A block's timestamp when it is fetched by number (default: `timestamp` for every block). */
+  blockTimestamp: ((number: bigint) => bigint) | undefined;
+  /**
+   * Runs before the scripted handling of every request: throw to fail it (an HTTP 429, a timeout,
+   * an RPC error), return a value to answer it, or return undefined to fall through.
+   */
+  intercept: ((method: string, params: unknown[]) => unknown) | undefined;
   private readonly handlers = new Map<string, { abi: Abi; fn: string; handler: CallHandler }>();
 
   /** Answers eth_call to `to` for `fn` (decoded with `abi`). Return a RevertError to revert. */
@@ -74,8 +81,12 @@ export class FakeRpc {
     return this.calls.map((c) => c.method);
   }
 
-  clients(account: Account): { publicClient: PublicClient; walletClient: WalletClient } {
-    const transport = custom({ request: ({ method, params }) => this.handle(method, (params ?? []) as unknown[]) });
+  /** `retryCount` is viem's transport retry count (its default is 3; 0 surfaces a failure at once). */
+  clients(account: Account, options: { retryCount?: number } = {}): { publicClient: PublicClient; walletClient: WalletClient } {
+    const transport = custom(
+      { request: ({ method, params }) => this.handle(method, (params ?? []) as unknown[]) },
+      { retryCount: options.retryCount },
+    );
     return {
       publicClient: createPublicClient({ chain: monadTestnet, transport, pollingInterval: 5 }) as PublicClient,
       walletClient: createWalletClient({ account, chain: monadTestnet, transport, pollingInterval: 5 }),
@@ -84,6 +95,8 @@ export class FakeRpc {
 
   private async handle(method: string, params: unknown[]): Promise<unknown> {
     this.calls.push({ method, params });
+    const intercepted = this.intercept?.(method, params);
+    if (intercepted !== undefined) return intercepted;
     switch (method) {
       case "eth_chainId":
         return toHex(monadTestnet.id);
@@ -91,12 +104,17 @@ export class FakeRpc {
         return toHex(this.blockNumber);
       case "eth_getBlockByNumber": {
         const tag = params[0];
-        const number = tag === "finalized" ? (this.finalizedNumber ?? this.blockNumber) : this.blockNumber;
+        const number =
+          tag === "finalized"
+            ? (this.finalizedNumber ?? this.blockNumber)
+            : typeof tag === "string" && tag.startsWith("0x")
+              ? BigInt(tag)
+              : this.blockNumber;
         return {
           number: toHex(number),
           hash: keccak256(toHex(number)),
           parentHash: keccak256(toHex(number - 1n)),
-          timestamp: toHex(this.timestamp),
+          timestamp: toHex(this.blockTimestamp?.(number) ?? this.timestamp),
           baseFeePerGas: toHex(100_000_000_000n),
           gasLimit: toHex(150_000_000n),
           gasUsed: "0x0",
@@ -112,7 +130,9 @@ export class FakeRpc {
       case "eth_call":
         return this.call(params[0] as { to: Address; data: Hex; from?: Address });
       case "eth_getLogs":
-        return this.getLogs(params[0] as { address?: Address; topics?: (Hex | null)[]; fromBlock: Hex; toBlock: Hex });
+        return this.getLogs(
+          params[0] as { address?: Address | Address[]; topics?: (Hex | Hex[] | null)[]; fromBlock: Hex; toBlock: Hex },
+        );
       case "eth_sendRawTransaction": {
         const raw = params[0] as Hex;
         const hash = keccak256(raw);
@@ -165,14 +185,21 @@ export class FakeRpc {
     throw new Error(`FakeRpc: no eth_call handler for ${to} ${data.slice(0, 10)}`);
   }
 
-  private getLogs(filter: { address?: Address; topics?: (Hex | null)[]; fromBlock: Hex; toBlock: Hex }) {
+  /** An address or topic given as a list matches any of its entries, as in eth_getLogs. */
+  private getLogs(filter: { address?: Address | Address[]; topics?: (Hex | Hex[] | null)[]; fromBlock: Hex; toBlock: Hex }) {
     const from = BigInt(filter.fromBlock);
     const to = BigInt(filter.toBlock);
+    const addresses = filter.address === undefined ? undefined : [filter.address].flat().map((a) => getAddress(a));
     return this.logs
-      .filter((log) => !filter.address || getAddress(filter.address) === getAddress(log.address))
+      .filter((log) => !addresses || addresses.includes(getAddress(log.address)))
       .filter((log) => log.blockNumber >= from && log.blockNumber <= to)
       .filter((log) =>
-        (filter.topics ?? []).every((t, i) => t === null || t === undefined || log.topics[i]?.toLowerCase() === t.toLowerCase()),
+        (filter.topics ?? []).every(
+          (t, i) =>
+            t === null ||
+            t === undefined ||
+            [t].flat().some((option) => log.topics[i]?.toLowerCase() === option.toLowerCase()),
+        ),
       )
       .map((log, i) => this.formatLog(log, i));
   }
