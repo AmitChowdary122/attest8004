@@ -2,7 +2,14 @@
 // Reads its settings from the repo's .env (see .env.example), checks the chain and the contracts it
 // reads, then polls until SIGINT or SIGTERM. Run one process per validator key: the pin relies on
 // knowing this key's last response. Logs are JSON lines; the key and the RPC URL are never logged.
-import { Admission, deploymentsFor, mandateRegistryAbi, validationRegistryAbi, viemValidatorChain } from "@attest8004/sdk";
+import {
+  Admission,
+  deploymentsFor,
+  jsonLineLog,
+  mandateRegistryAbi,
+  validationRegistryAbi,
+  viemValidatorChain,
+} from "@attest8004/sdk";
 import { FileCursorStore } from "@attest8004/sdk/node";
 import { mkdir } from "node:fs/promises";
 import { dirname } from "node:path";
@@ -14,7 +21,7 @@ import { parseServiceConfig } from "./config.ts";
 import { MANDATE_V1 } from "./params.ts";
 import type { MandateAddresses } from "./reader.ts";
 import { viemMandateReader } from "./reader.ts";
-import { jsonLineLog, MandateValidator } from "./validator.ts";
+import { MandateValidator } from "./validator.ts";
 
 const REPO_ROOT = fileURLToPath(new URL("../../../", import.meta.url));
 /** The rate limit's window: the "per hour" in MANDATE_V1_MAX_REQUESTS_PER_AGENT_PER_HOUR. */

@@ -1,4 +1,5 @@
 import {
+  jsonLineLog,
   ValidatorBase,
   type Admission,
   type CheckResult,
@@ -47,7 +48,9 @@ export type MandateValidatorOptions = Omit<ValidatorOptions, "tag" | "maxDeadlin
  * - **`accepts()`**, in order, declining with one `warn` line that names the agent: a gate it doesn't
  *   serve (`GATE_NOT_SERVED`); at the reader's finalized head, no mandate (`NO_MANDATE`), an expired one
  *   (`MANDATE_EXPIRED`) or one set by someone who no longer owns the agent (`MANDATE_STALE`); then the
- *   admission policy (`RATE_LIMITED`, `GAS_BUDGET_EXHAUSTED`), admitted at the cycle head's time.
+ *   admission policy (`RATE_LIMITED`, `GAS_BUDGET_EXHAUSTED`), admitted at the cycle head's time. If
+ *   that finalized head is still below the request's block (a lagging RPC node), it throws instead of
+ *   declining, so the base retries the request later.
  * - **`check()`** pins `P`, runs {@link runMandateV1} at `P`, and caches the request's parts.
  * - **The pin.** `P` is the finalized head at check time, but never below the request's own block nor
  *   below the block this process's last response landed in. And if this process's most recent approval
@@ -60,7 +63,7 @@ export type MandateValidatorOptions = Omit<ValidatorOptions, "tag" | "maxDeadlin
  *   to the gas limit actually sent. It never throws.
  *
  * The tag is always `mandate-v1` and the deadline horizon always 3,600 s, whatever the options say.
- * Logs are JSON lines on stdout by default, with bigints as decimal strings.
+ * Logs are JSON lines on stdout by default (the SDK's `jsonLineLog`, bigints as decimal strings).
  */
 export class MandateValidator extends ValidatorBase {
   private readonly chain: ValidatorChain;
@@ -116,6 +119,11 @@ export class MandateValidator extends ValidatorBase {
     }
     // Whether to answer at all, not the verdict: read at the finalized head, not at P.
     const head = await this.reader.finalized();
+    // A lagging RPC node may not have the request's block yet, nor a mandate set just before it. Those
+    // declines are permanent, so throw instead: the base retries the request in a later cycle.
+    if (head.number < request.event.blockNumber) {
+      throw new Error(`the finalized head (block ${head.number}) is behind the request's block ${request.event.blockNumber}; retry later`);
+    }
     const mandate = await this.reader.mandate(agentId, head.number);
     if (mandate === null) return { decline: `NO_MANDATE: agent ${agentId} has no mandate at block ${head.number}` };
     if (mandate.validUntil < head.timestamp) {
@@ -203,11 +211,6 @@ export class MandateValidator extends ValidatorBase {
     for (const [key, value] of Object.entries(fields)) if (value !== undefined) entry[key] = value;
     this.emit(entry);
   }
-}
-
-/** One JSON object per line on stdout, with bigints as decimal strings (`JSON.stringify` throws on them). */
-export function jsonLineLog(entry: Record<string, unknown>): void {
-  console.log(JSON.stringify(entry, (_key, value: unknown) => (typeof value === "bigint" ? value.toString() : value)));
 }
 
 /** The base's test: its responses always carry a non-zero responseHash and a tag; pending ones neither. */

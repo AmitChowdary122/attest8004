@@ -487,6 +487,32 @@ describe("MandateValidator: accepts()", () => {
     expect(settle).toHaveBeenCalledWith({ requestHash: e.requestHash, gasLimit: 84_010n, now: tsOf(1_003n) });
   });
 
+  it("retries, never declines, while the finalized head is behind the request's block", async () => {
+    // A lagging RPC node: at block 1,002 the mandate set just before the request isn't there yet.
+    const e = addRequest(requestJson(), 1_003n);
+    reader.heads = [1_002n, 1_003n];
+    const record = mandate();
+    reader.mandate = async (_agentId: bigint, at: bigint) => {
+      reader.calls.push({ method: "mandate", at });
+      return at >= 1_003n ? record : null;
+    };
+    const v = validator();
+
+    const cycle1 = await v.pollOnce();
+    expect(cycle1.outcomes).toEqual([]);
+    expect(cycle1.caughtUp).toBe(false);
+    expect(cycle1.retryAfterMs).toBeDefined();
+    expect(warnLines()).toEqual([]);
+    expect(reader.calls.filter((c) => c.method === "mandate")).toEqual([]);
+    expect(logs).toContainEqual(
+      expect.objectContaining({ level: "error", requestHash: e.requestHash, error: expect.stringMatching(/behind the request's block 1003/) }),
+    );
+
+    const cycle2 = await v.pollOnce();
+    expect(cycle2.outcomes).toEqual([expect.objectContaining({ kind: "responded", requestHash: e.requestHash, score: 100 })]);
+    expect(posted(e.requestHash).doc.block.number).toBe("1003");
+  });
+
   it("RATE_LIMITED: one warn line with the agent, the reason and the counters; nothing sent", async () => {
     admission = new Admission({ maxRequestsPerAgent: 1, agentWindowSeconds: 3_600n, dailyGasBudget: 10_000_000n, maxGasPerResponse: 400_000n });
     const first = addRequest(requestJson());
@@ -593,7 +619,8 @@ describe("MandateValidator: the pinned block", () => {
 
   it("never pins below the request's own block", async () => {
     const e = addRequest(requestJson(), 1_003n);
-    reader.heads = [1_002n, 1_002n, 1_003n];
+    // A load-balanced RPC: accepts() reads 1,003, then the pin's first read hits a node at 1,002.
+    reader.heads = [1_003n, 1_002n, 1_003n];
 
     await validator().pollOnce();
 
