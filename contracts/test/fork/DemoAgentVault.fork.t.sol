@@ -59,7 +59,7 @@ contract DemoAgentVaultForkTest is Test {
     }
 
     /// The exact testnet configuration, deployed through the script (or found, once it is live),
-    /// runs a validated action for agent 1982 as its real owner and validator A.
+    /// runs a validated action for its agent (demo agent 1984) as the agent's real owner and validator A.
     function testFork_TestnetConfig_EndToEnd() public {
         DeployDemoAgentVault script = new DeployDemoAgentVault();
         (address registry, uint256 agentId, AttestGate.Requirement[] memory reqs) = script.configFor(10143);

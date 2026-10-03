@@ -10,8 +10,10 @@ import {DemoAgentVault} from "../src/DemoAgentVault.sol";
 /// contract exists. Run it with `script/deploy-testnet.sh DemoAgentVault`, which first checks
 /// Monad's eth_estimateGas for this call against DEPLOY_GAS (see deployPlan).
 /// The configuration is constants, so the deployed vault's settings are reviewable in git:
-/// test agent 1982 (registered in P1), and validator A (mandate-v1) with a minimum score of 100.
-/// P5 redeploys it requiring both validators; different constructor arguments give a new address.
+/// demo agent 1984 (registered in P3; its hot key requests through the AgentRequestForwarder), and
+/// validator A (mandate-v1) with a minimum score of 100. The P2 vault for test agent 1982 is
+/// superseded. P5 redeploys it requiring both validators; different constructor arguments give a
+/// new address.
 contract DeployDemoAgentVault is Script {
     // CREATE2_FACTORY (0x4e59b448…956C) is inherited from forge-std's CommonBase.
     bytes32 public constant SALT = keccak256("attest8004.DemoAgentVault.v1");
@@ -20,7 +22,7 @@ contract DeployDemoAgentVault is Script {
     uint256 public constant DEPLOY_GAS = 1_000_000;
 
     address public constant VALIDATION_REGISTRY_TESTNET = 0xc4A4D0cEB3971cbE7a2536494aC106f2Cd9F9a8f;
-    uint256 public constant AGENT_ID_TESTNET = 1982;
+    uint256 public constant AGENT_ID_TESTNET = 1984;
     address public constant VALIDATOR_A = 0xa62DaB21E0C0F57e94B3ed6e675F214199989e92;
     uint8 public constant MIN_SCORE_A = 100;
 

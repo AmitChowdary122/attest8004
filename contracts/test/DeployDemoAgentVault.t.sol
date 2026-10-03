@@ -68,18 +68,19 @@ contract DeployDemoAgentVaultTest is Test {
         assertEq(
             data,
             abi.encodePacked(
-                script.SALT(), type(DemoAgentVault).creationCode, abi.encode(REGISTRY_TESTNET, uint256(1982), _reqs())
+                script.SALT(), type(DemoAgentVault).creationCode, abi.encode(REGISTRY_TESTNET, uint256(1984), _reqs())
             )
         );
         assertEq(gasLimit, script.DEPLOY_GAS());
-        assertEq(predicted, script.predictedAddress(REGISTRY_TESTNET, 1982, _reqs()));
+        assertEq(predicted, script.predictedAddress(REGISTRY_TESTNET, 1984, _reqs()));
     }
 
-    /// The P2 testnet vault: agent 1982, validator A (mandate-v1) at 100 only, until P5.
+    /// The P3 testnet vault: demo agent 1984, validator A (mandate-v1) at 100 only, until P5.
+    /// (The P2 vault for test agent 1982 is superseded; docs/deployments.md.)
     function test_ConfigFor_Testnet() public view {
         (address reg, uint256 agentId, AttestGate.Requirement[] memory reqs) = script.configFor(10143);
         assertEq(reg, REGISTRY_TESTNET);
-        assertEq(agentId, 1982);
+        assertEq(agentId, 1984);
         assertEq(reqs.length, 1);
         assertEq(reqs[0].validator, VALIDATOR_A);
         assertEq(reqs[0].minScore, 100);
