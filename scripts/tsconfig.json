@@ -4,7 +4,9 @@
     "noEmit": true,
     // Scripts run directly with Node's built-in type stripping (Node >= 22.18).
     "allowImportingTsExtensions": true,
-    "erasableSyntaxOnly": true
+    "erasableSyntaxOnly": true,
+    // Resolve @attest8004/sdk to its TypeScript source (run with node --conditions=@attest8004/source).
+    "customConditions": ["@attest8004/source"]
   },
   "include": ["src"]
 }

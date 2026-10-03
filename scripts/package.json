@@ -2,14 +2,16 @@
   "name": "@attest8004/scripts",
   "version": "0.0.0",
   "private": true,
-  "description": "Operational scripts for Attest8004 deployments on Monad (testnet round trip)",
+  "description": "Operational scripts for Attest8004 deployments on Monad (testnet round trip, gated execute)",
   "license": "MIT",
   "type": "module",
   "scripts": {
     "typecheck": "tsc --noEmit",
-    "roundtrip": "node --env-file=../.env src/validation-roundtrip.ts"
+    "roundtrip": "node --env-file=../.env src/validation-roundtrip.ts",
+    "gated-execute": "node --conditions=@attest8004/source --env-file=../.env src/gated-execute.ts"
   },
   "dependencies": {
+    "@attest8004/sdk": "workspace:*",
     "viem": "catalog:"
   },
   "devDependencies": {

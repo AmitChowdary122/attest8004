@@ -205,6 +205,9 @@ importers:
 
   scripts:
     dependencies:
+      '@attest8004/sdk':
+        specifier: workspace:*
+        version: link:../packages/sdk
       viem:
         specifier: 'catalog:'
         version: 2.57.2(typescript@7.0.2)(zod@4.6.5)
