@@ -25,9 +25,9 @@ contract MandateRegistry {
     }
 
     /// @dev The stored record for one agent: its mandate, the mandate's hash (so callers don't have
-    /// to recompute it), the owner who set it (stale once the agent is transferred — Decision 7),
-    /// and the block it was set at (Decision 8: a block number, so permission-change ordering can
-    /// be compared with `(block, logIndex)`).
+    /// to recompute it), the owner who set it (stale once the agent is transferred), and the block
+    /// it was set at (a block number, so permission-change ordering can be compared with
+    /// `(block, logIndex)`).
     struct Record {
         Mandate mandate;
         bytes32 mandateHash;
@@ -143,8 +143,8 @@ contract MandateRegistry {
 
     /// @notice Authorizes a change to `agentId`'s mandate and returns the owner of record. P4:
     /// `msg.sender` must be `identityRegistry.ownerOf(agentId)` (an operator or approved address is
-    /// not enough — Decision 7, the forwarder's `AgentKey.owner` pattern). P6 overrides this to
-    /// verify a WebAuthn assertion over `changeHash` instead.
+    /// not enough, matching the forwarder's `AgentKey.owner` pattern). P6 overrides this to verify a
+    /// WebAuthn assertion over `changeHash` instead.
     /// @dev Called before any state write in `setMandate`/`revokeMandate`, so an override — P6's or
     /// a reverting test hook — can veto the change entirely.
     function _authorize(uint256 agentId, bytes32 changeHash) internal virtual returns (address owner) {
@@ -153,9 +153,9 @@ contract MandateRegistry {
         if (msg.sender != owner) revert NotAgentOwner(agentId, msg.sender);
     }
 
-    /// @dev Decision 7: a zero target, more than 16 targets/selectors, an already-expired
-    /// `validUntil`, or a per-tx cap above the per-day cap, all revert. Equal caps and
-    /// `validUntil == block.timestamp + 1` are valid.
+    /// @dev A zero target, more than 16 targets/selectors, an already-expired `validUntil`, or a
+    /// per-tx cap above the per-day cap, all revert. Equal caps and `validUntil == block.timestamp +
+    /// 1` are valid.
     function _validate(Mandate calldata mandate) private view {
         // forge-lint: disable-next-line(block-timestamp) -- validUntil is in seconds; a few seconds of validator skew is harmless
         if (mandate.validUntil <= block.timestamp) {
