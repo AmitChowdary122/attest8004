@@ -268,23 +268,23 @@ async function main(): Promise<void> {
 
   // 6. Top up validator A so it can afford its gas budget.
   if (fundValidator) {
-    const balance = await publicClient.getBalance({ address: validatorA });
-    if (balance >= VALIDATOR_FUND_TARGET) {
-      console.log(`  validator A ${validatorA} holds ${mon(balance)} (target ${mon(VALIDATOR_FUND_TARGET)})`);
-    } else {
+    const before = await publicClient.getBalance({ address: validatorA });
+    if (before < VALIDATOR_FUND_TARGET) {
       const sent = await sendWithGasGuard({
         publicClient,
         walletClient: ownerWallet,
         to: validatorA,
-        value: VALIDATOR_FUND_TARGET - balance,
+        value: VALIDATOR_FUND_TARGET - before,
         gasLimit: GAS.fund,
         label: "fund validator A",
       });
       printTx("fund validator A", sent);
-      console.log(
-        `  validator A funded with ${mon(VALIDATOR_FUND_TARGET - balance)} (now ${mon(VALIDATOR_FUND_TARGET)})`,
-      );
+      console.log(`  sent ${mon(VALIDATOR_FUND_TARGET - before)} to validator A`);
     }
+    // Read the balance back rather than assuming the send landed as computed: the explicit check
+    // matches every other step above (approve, the revoke, setAgentKey).
+    const after = await publicClient.getBalance({ address: validatorA });
+    check(`validator A (${validatorA}) holds at least ${mon(VALIDATOR_FUND_TARGET)}`, after >= VALIDATOR_FUND_TARGET, mon(after));
   } else {
     console.log("validator A not funded (re-run with --fund-validator)");
   }
