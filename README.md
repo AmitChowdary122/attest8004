@@ -108,7 +108,11 @@ pnpm --filter @attest8004/scripts e2e                          # hot key -> forw
 pnpm --filter @attest8004/scripts gated-execute                # P2: the superseded agent-1982 vault, owner requests directly
 ```
 
-The e2e runs the validator in-process. To run validator A as a long-lived `mandate-v1` service instead (it needs
+The e2e runs validator A in-process, so **stop the `mandate-v1` service (below) before running it**: both sign with
+validator A's key, and two processes answering the same requests would race (the pinned block also assumes one process
+per key).
+
+To run validator A as a long-lived `mandate-v1` service (it needs
 `VALIDATOR_A_PRIVATE_KEY` and `MONAD_TESTNET_RPC_URL`; the optional `MANDATE_V1_*` settings are in `.env.example`):
 
 ```bash

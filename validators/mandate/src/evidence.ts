@@ -15,7 +15,10 @@ import type { MandateInputs } from "./types.ts";
  *   collector reads past approvals back through `parseApprovalParts`, so this object must round-trip
  *   through it: `block`, `agentId`, `value` and `deadline` as decimal strings, `chainId` a JSON
  *   number, `selector` 4 bytes or `null`.
- * - `params`: `mandate-v1`'s constants and the contracts it read.
+ * - `params`: four of `mandate-v1`'s constants (`permissionWindowBlocks`, `spendWindowSeconds`,
+ *   `maxDeadlineAheadSeconds`, `simulationGas`) and three of the contracts it read (the Identity
+ *   Registry, the forwarder, the MandateRegistry). Not everything is recorded: `consumedCallGas` and
+ *   the ValidationRegistry's address are fixed by the tag and the SDK's `DEPLOYMENTS` instead.
  * - `mandate`: the record at `P` and the agent's `currentOwner` there, or `null` when there is none.
  * - `spend`: `{ since, total, entries }`, `{ unreadable }`, or `null` when there is no mandate.
  * - `permissions`: the permission window `[fromBlock, toBlock]` and its events.
@@ -25,6 +28,9 @@ import type { MandateInputs } from "./types.ts";
  * `0x00000000` for empty data, and `null` when the data holds no selector an allowlist can match
  * (1-3 bytes, or non-empty data starting with `0x00000000`). Never the raw first bytes, which for 1-3
  * bytes of data wouldn't be a 4-byte value.
+ *
+ * **This format is frozen.** Recorded verdicts must keep verifying, so no key may be added, removed
+ * or renamed, and no value's encoding may change, without a new tag.
  *
  * Built field by field, so the document's shape never depends on what else a reader returned.
  * Addresses are EIP-55 and hashes lower-case, so the bytes don't depend on the input's letter case.

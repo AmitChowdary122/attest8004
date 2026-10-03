@@ -1,6 +1,10 @@
 /**
- * `mandate-v1`'s own constants (SPEC §4.5). Recorded in the evidence, so a later change to any of
- * these is a new validator tag, not a silent change in meaning for past verdicts.
+ * `mandate-v1`'s own constants (SPEC §4.5). The tag is the evidence's `validator`, and four of them
+ * are recorded in its `params` (`permissionWindowBlocks`, `spendWindowSeconds`,
+ * `maxDeadlineAheadSeconds`, `simulationGas`); `consumedCallGas` and `plainTransferSelector` are not
+ * recorded, the tag alone fixes them. Recorded or not, `verify` re-runs a verdict with these values, so
+ * a change to any of them is a new validator tag, never a silent change in meaning for past verdicts:
+ * the `mandate-v1` evidence format is frozen.
  */
 export const MANDATE_V1 = {
   tag: "mandate-v1",
