@@ -43,13 +43,13 @@ import { DEPLOYMENTS } from "./deployments.ts";
 
 /**
  * Explicit gas limits: Monad testnet eth_estimateGas on 3 Oct 2026 x 1.2, rounded up to 1k.
- * Estimates: register 411,546; setApprovalForAll 71,523; setAgentKey 107,670 (a first key);
- * a MON transfer to an EOA 21,000.
+ * Estimates: register 411,546; setApprovalForAll 71,523; setAgentKey 107,670 before the first run
+ * and 118,742 / 107,899 in it (the first run sent with 130,000); a MON transfer to an EOA 21,000.
  */
 const GAS = {
   register: 494_000n,
   setApprovalForAll: 86_000n,
-  setAgentKey: 130_000n,
+  setAgentKey: 143_000n,
   fund: 26_000n,
 } as const;
 

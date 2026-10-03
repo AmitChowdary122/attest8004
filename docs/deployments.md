@@ -53,6 +53,32 @@ Every Attest8004 deployment is recorded here: chain, contract, address, the comm
 - **Not upgradeable, no owner.** Funds leave the vault only through `execute` with an action that validator A passed.
   `execute` is permissionless: the validated action is the authorisation.
 
+## Demo agents (testnet)
+
+Two ERC-8004 agents in the canonical testnet Identity Registry, owned by the deployer
+(`0x3EFEB3Cf2FB54A7D99abE90AaB786cE5A831a8CF`), registered on 2026-10-03 by
+`pnpm --filter @attest8004/scripts setup-demo-agents`. Each has its own hot key, made by
+`pnpm --filter @attest8004/scripts hot-keys` (which writes the keys into `.env` and prints only the addresses), and
+registered with `AgentRequestForwarder.setAgentKey`. A hot key can request validations for its own agent through the
+forwarder and nothing else; it can't move the agent.
+
+| Agent | Registration file name | Hot key | register tx | setAgentKey tx | Hot key funded |
+|---|---|---|---|---|---|
+| **1984** | `attest8004-demo-agent-1` | `0xa43427fF51eEE66cc67C94Cb55f04C9432a96787` | [`0xa86940e7…46be517`](https://monad-testnet.socialscan.io/tx/0xa86940e7360007713ca0091180443bc430afdf1ea25bb3e94796b938946be517) | [`0x9b6e701e…5f2aab1`](https://monad-testnet.socialscan.io/tx/0x9b6e701e9ce49f9959ca74681cf68f207e714dce5df670b6d945bb6fe5f2aab1) | 0.152256 MON, [`0x34577b38…80cc382`](https://monad-testnet.socialscan.io/tx/0x34577b383c9391f87ac191a40bd9f4e5abfdef04ff29be7cd7717012d80cc382) |
+| **1985** | `attest8004-demo-agent-2` | `0xa72774719C6C7c8E83B3eCb98F64e38F26C327D8` | [`0xd6b458cf…04ab597`](https://monad-testnet.socialscan.io/tx/0xd6b458cf9e5fb1fc973222dc9666408b5e1dccd1c54bf4e8d1ff32c1904ab597) | [`0x44a346e9…306b1f4`](https://monad-testnet.socialscan.io/tx/0x44a346e959718cdc5506cb9a1818f6735aaee0e9431cbb791a26bf9ff306b1f4) | 0.152256 MON, [`0x56eed479…e4f8ab2`](https://monad-testnet.socialscan.io/tx/0x56eed479bcdff4f784e90d32bd8a14668498efa51030b99b5f798ee67e4f8ab2) |
+
+- **One approval covers both:** the deployer called `setApprovalForAll(forwarder, true)` once,
+  [`0x49085ec3…6fd396a`](https://monad-testnet.socialscan.io/tx/0x49085ec3a53f793a4dbc4ea72d75b3d121560b08014c6e1c06b9b78006fd396a). It makes the forwarder an operator for all
+  of the deployer's agents (including 1982); the forwarder only exposes `validationRequest` (ARCHITECTURE §7).
+- **Registered with `register(string)` directly**, not the agent0 SDK: agent0-sdk 1.7.1 (the latest, 16 Mar 2026) has
+  no defaults for Monad (its `DEFAULT_REGISTRIES` cover chains 1, 137, 8453, 11155111 and 84532). The registration
+  files are `data:` URIs that say these are demo agents (`services: []`, `active: false`).
+- **Funding:** each hot key holds enough MON for 4 forwarded requests at the max fee then (4 × 312,000 gas ×
+  122 gwei), and nothing more. Top up with `setup-demo-agents -- --fund`.
+- **Gas limits (all explicit):** register 494,000 (estimate 411,546); setApprovalForAll 86,000 (71,523); setAgentKey
+  130,000 (118,742 and 107,899; the script now uses 143,000); fund 26,000 (21,000). A forwarded request from a hot
+  key estimated 251,331 to 262,217; the SDK's limit is 315,000.
+
 ## Verified round trips
 
 `scripts/src/validation-roundtrip.ts` (`pnpm --filter @attest8004/scripts roundtrip`) registers a test agent, requests

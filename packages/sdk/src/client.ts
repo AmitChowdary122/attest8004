@@ -15,13 +15,14 @@ import { blockWindows } from "./logs.ts";
 import { buildRequestJson, encodeJsonDataUri, requestHashOfJson, type RequestJsonV1 } from "./request.ts";
 
 /**
- * Explicit gas limits for request transactions (Monad charges for the limit). `validationRequest`:
- * Monad testnet estimate 202,643 for a request JSON v1 data: URI (P2, 3 Oct 2026) x 1.2.
- * `forwarderRequest`: provisional until measured on testnet. Every send re-checks the node's
- * estimate against the limit first, and refuses to send if it is above.
+ * Explicit gas limits for request transactions (Monad charges for the limit), from Monad testnet
+ * eth_estimateGas x 1.2, rounded up to 1k. `validationRequest`: 202,643 for a request JSON v1
+ * data: URI (P2, 3 Oct 2026). `forwarderRequest`: 251,331 to 262,217 for the first request of demo
+ * agents 1984 and 1985 (3 Oct 2026); an agent's first request is its most expensive. Every send
+ * re-checks the node's estimate against the limit first, and refuses to send if it is above.
  */
 export const DEFAULT_GAS = {
-  forwarderRequest: 400_000n,
+  forwarderRequest: 315_000n,
   validationRequest: 244_000n,
 } as const;
 
