@@ -4,6 +4,130 @@ Running log, updated at the end of every session (CLAUDE.md, rule 10). Newest se
 
 ---
 
+## Sat 3 Oct 2026 · P3 SDK, validator base, AgentRequestForwarder and demo agents
+
+### Done
+- **Who sends `validationRequest`: decided and built.** The agent's hot key sends it through **`AgentRequestForwarder`** (`contracts/src/AgentRequestForwarder.sol`), which you approved as an addition to SPEC §4.4.
+  - The owner calls `setApprovalForAll(forwarder, true)` once, then `setAgentKey(agentId, key)` per agent. Only the current `ownerOf` may set or revoke (`address(0)`) a key, and the record stores that owner.
+  - `request(validator, agentId, requestURI, requestHash)` works only from that key, and only while the recorded owner still owns the agent. It makes exactly one call: `validationRequest` on the fixed ValidationRegistry.
+  - It is immutable, has no admin and holds no funds. It reads the Identity Registry from the ValidationRegistry, so the two can't disagree.
+  - **Tests first** (committed before the contract):
+    - 26 unit and fuzz tests, 6 deploy-script tests and 3 fork tests.
+    - Cases: wrong key; a key set by a previous owner after a transfer, even when the new owner also approved the forwarder (`StaleAgentKey`); a revoked key; A→B→A (the key works again; pinned and documented); and a per-token `approve` instead of `setApprovalForAll` (works for that agent only).
+    - **That it can do nothing else:** a state-diff recording of every call it makes (one `CALL`, to the registry, with exactly `validationRequest(...)`; the rest are `ownerOf` reads), the compiled ABI pinned to five functions, ERC-721 calls sent to it refused, no funds, fuzzed calldata.
+    - 6 hand mutants are each caught.
+  - **ARCHITECTURE §7 records the trade-off:** `setApprovalForAll` covers all of the owner's agents, but the forwarder only exposes `validationRequest`. It also covers the residual risks (a forwarder bug, a stolen hot key, ownership changes) and the narrower alternative, a per-token `approve(forwarder, agentId)`, which works unchanged.
+  - **Deployed:** `0x1451F3C36545b191d3642f759D59f21DcFD657B2` (commit `5f2f4a4`), through CREATE2 with the estimate guard; gas limit 490,000 (estimate 407,868).
+- **Request JSON v1** is now a strict zod schema with `validator` (`packages/sdk/src/request.ts`).
+  - **`deadline` is a decimal string** like `agentId` and `value`. SPEC §4.4, ARCHITECTURE §6 and `gated-execute.ts` changed in the same commit.
+  - `parseRequestUri` accepts only `data:application/json` URIs (base64 or percent-encoded) of at most 16 KB, and never fetches. Every rejection has a reason code.
+- **SDK client** (`Attest8004Client`):
+  - `buildAction`.
+  - `requestValidation`, through the forwarder or straight to the registry.
+  - `awaitVerdict`, scanning `ValidationResponse` logs in windows of at most 100 blocks.
+  - `isValidated`, which mirrors the gate: deadline, consumed, and each requirement's validator, agent and score.
+  - Every transaction goes through `writeWithGasGuard` / `sendWithGasGuard`.
+- **Found and fixed: viem could replace our explicit gas limit.**
+  - viem 2.57 calls `eth_fillTransaction` when fees or the nonce aren't set, and takes the node's `gas` from the result. Monad supports that method; P1/P2's transactions kept their limits only because Monad echoes a `gas` that is already given.
+  - The guard now sets chainId, fees and nonce itself, so the node is never asked to fill, and a test pins that.
+  - The e2e reads each sent transaction back, and every one carried exactly its explicit limit.
+- **Validator base** (`ValidatorBase`, `packages/sdk/src/validator.ts`):
+  - It polls `eth_getLogs` from a saved block cursor, at most 100 blocks per query, up to the `finalized` head. Monad testnet refuses `toBlock − fromBlock > 100`, measured.
+  - It doesn't respond at all (it logs the reason) on a bad URI or JSON, a hash mismatch, another validator, agent or chain, or a deadline that has passed or is more than 1 hour (configurable) ahead.
+  - It checks `getValidationStatus` before working and before every send, so a restart never posts twice. It retries a failed send, retries a failing request in later cycles with a doubling wait, and gives up on it after 5 failed cycles without skipping anything before it.
+  - A subclass can decline a valid request without responding (`accepts()`).
+  - `FileCursorStore` is in the subpath `@attest8004/sdk/node`.
+  - 8 hand mutants are each caught.
+- **Two demo agents, 1984 and 1985,** are in the canonical testnet Identity Registry, owned by the deployer.
+  - They were registered by calling `register(string)` directly: agent0-sdk 1.7.1 (the latest) has no defaults for chain 10143 (its `DEFAULT_REGISTRIES` cover chains 1, 137, 8453, 11155111 and 84532).
+  - Each has its own hot key, made by `pnpm --filter @attest8004/scripts hot-keys`, which writes the keys into `.env`, never overwrites one, and prints only addresses:
+    - 1984 → `0xa43427fF…96787`
+    - 1985 → `0xa7277471…327D8`
+  - One `setApprovalForAll` for the forwarder, then `setAgentKey` for each agent.
+  - Each hot key was funded with 0.152 MON, enough for 4 requests.
+- **New `DemoAgentVault`** for agent 1984, still requiring only validator A at 100: `0x23BfBD12545CCd1501ddA1B65a54518FD6212a96` (commit `319006a`). The agent-1982 vault is marked **superseded** in `docs/deployments.md`, and `gated-execute` is pinned to it.
+- **End to end on testnet** (`pnpm --filter @attest8004/scripts e2e`):
+  - Agent 1984's hot key requested through the forwarder (`0xe2b7df42…`).
+  - A stub validator built on `ValidatorBase` (which now answers only the run's own request) responded once (`0x8dada3c3…`). A freshly started second one re-read the same blocks and skipped the request (`ALREADY_RESPONDED`), and exactly one response exists onchain.
+  - `awaitVerdict` and `isValidated` agreed, and the gated `execute` went through (`0x6f694020…`).
+  - The refusals were simulated only: the owner and agent 1985's key calling for agent 1984, and a replay.
+  - An earlier attempt stopped after its request (a script check compared the sender's letter case). It is recorded, and its request has expired.
+- **CI:** `packages/sdk/test/vectors.sh --check` now runs in the contracts job. CI on the P2 head (`b9a36b0`) passed all four jobs (read through the public GitHub API).
+- **Explicit gas limits.** Every transaction sent this session used a literal limit, checked against a fresh estimate.
+
+  | Transaction | Monad `eth_estimateGas` | Limit |
+  |---|---|---|
+  | Deploy `AgentRequestForwarder` | 407,868 | 490,000 |
+  | Deploy `DemoAgentVault` (agent 1984) | 829,476 | 1,000,000 |
+  | `register` (demo agent) | 411,546 | 494,000 |
+  | `setApprovalForAll(forwarder)` | 71,523 | 86,000 |
+  | `setAgentKey` | 118,742 / 107,899 | 130,000 (now 143,000) |
+  | Fund a hot key / the vault | 21,000 / 21,212 | 26,000 |
+  | `forwarder.request` (hot key) | 251,331 – 262,217 | 315,000 (SDK `DEFAULT_GAS`) |
+  | `validationResponse` (stub evidence) | 86,765 | 140,000 provisional (now 105,000) |
+  | `execute` | 87,626 | 106,000 |
+
+- **Tests:**
+  - 130 forge unit and fuzz tests (10k fuzz runs in `ci`) and 12 fork tests;
+  - 113 SDK vitest tests (a fake JSON-RPC transport checks the exact transactions, gas and log ranges);
+  - 8 script tests.
+- **Final review:** a fresh reviewer went over the whole P3 range and found no Critical issues and two Important ones. I fixed those and four findings I re-graded upward, each test-first:
+  - `parseRequestUri` threw on `agentId: "abc"` (zod runs the BigInt refinement after the regex fails), so the validator retried a junk request instead of skipping it once.
+  - `run()` didn't wait after a failed request.
+  - An option passed as `undefined` erased its default (`sendAttempts: undefined` looped forever).
+  - Validator logs could include the RPC URL (and any API key in it).
+  - **The e2e stub, which signs with validator A's real key, would have scored 100 for anyone's request naming validator A.** It now declines everything but its own request. In the recorded run it answered only ours.
+  - ARCHITECTURE §7 now covers the per-token approval.
+
+  The e2e wasn't re-run after these fixes, to save the hot keys' MON. Only the stub's request-hash plumbing changed, and a unit test covers it.
+- **Your side, done (as you reported):**
+  - the PRF smoke test passed, with the same address on laptop Chrome and on Android;
+  - the Discord questions are posted;
+  - the repo is public.
+
+### Next
+- **Your side:**
+  - `git push` (the P3 commits, review fixes included), then check CI. The repo is public, so I can now read CI through the GitHub API: the P2 head passed all four jobs.
+  - **Qwen is deferred:** P5 will target any OpenAI-compatible endpoint, using the model set in `.env` (today `QWEN_BASE_URL` / `QWEN_MODEL`; P5 may rename them to something provider-neutral).
+  - Still open: the Envio token, Nansen credits, the Vercel deploy, the integration offer (GAMEPLAN §6) and the team DMs.
+  - Scripts read addresses from `scripts/src/deployments.ts`; `DEMO_AGENT_VAULT` in `.env` is no longer read.
+- **P4 (`mandate-v1`):**
+  - Build it on `ValidatorBase` (`check()`, and `accepts()` to turn away agents with no mandate).
+  - Treat the forwarder's `AgentKeySet` and the Identity Registry's `Approval`/`ApprovalForAll` as permission events for "a permission change in the last N blocks".
+  - The `verify` CLI.
+- **P5:**
+  - Redeploy the vault requiring both validators, and mark the agent-1984 vault superseded.
+  - Build `risk-qwen-v1` on `ValidatorBase`; its paid checks make the cost and rate-limit question below concrete.
+- **P7:** override `publishEvidence` for encrypted findings.
+- **P8:** index `AgentKeySet`, and add `getAgentTrust`.
+- **Deferred minors from the final review** (P10 or when convenient):
+  - If eth_getLogs keeps refusing a window (for example one stuffed with huge hostile request logs), the validator stalls on it. Halve the window on error.
+  - A second response is possible if a send is still pending after viem's 180 s receipt timeout. Keep waiting on the same hash, or reuse the nonce.
+  - `gated-execute` and `roundtrip` still send with only `gas`, so viem may call `eth_fillTransaction`. Move them to `writeWithGasGuard`.
+  - `awaitVerdict` aborts on a single eth_getLogs error, and scans up to `latest`, so a lagging log index could miss a response (it then times out).
+- **Still deferred from P1 and P2:**
+  - the deployer key in forge's argv;
+  - three test gaps;
+  - `timeout-minutes` on `contracts-fork`;
+  - a README note that each round trip registers a new agent.
+
+### Blockers or decisions needed
+- **Decisions I made (all reversible; flag any you disagree with):**
+  - The forwarder reads the Identity Registry from the ValidationRegistry.
+  - Revoking a key is `setAgentKey(agentId, address(0))`.
+  - A→B→A revives the key.
+  - `AgentKeySet` is the only event.
+  - The request JSON is strict: unknown keys and non-canonical decimals are rejected.
+  - The validator's head is the `finalized` block, and its clock is that block's timestamp.
+  - `FileCursorStore` is in `@attest8004/sdk/node`.
+  - In the e2e, the deployer submits `execute` (permissionless), so hot keys only pay for requests.
+  - The demo agents' registration files say `active: false`.
+  - **The gas guard sets chainId, fees and nonce** so viem never asks the node to fill the transaction.
+  - Each hot key is funded for 4 requests. After the e2e, agent 1984's key holds about 2 requests' worth; top up with `setup-demo-agents -- --fund`.
+- **The demo uses the blanket `setApprovalForAll`**, which also covers the deployer's test agent 1982. Switch to per-token `approve` if you prefer; it works with the forwarder unchanged.
+- **For P4/P5: anyone who owns an agent can make our validators work and spend gas,** because ERC-8004 lets any agent owner name any validator. `accepts()` lets a validator decline requests it doesn't serve (for example, agents without a mandate), but there is no budget or rate limit yet. Decide the policy before `risk-qwen-v1` makes paid calls.
+- Still open from P2: squatting is a denial of service (spec-notes row 12), for the P10/P11 threat model.
+
 ## Sat 3 Oct 2026 · P2 AttestGate + DemoAgentVault
 
 ### Done
