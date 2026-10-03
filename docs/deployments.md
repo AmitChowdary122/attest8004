@@ -6,6 +6,7 @@ Every Attest8004 deployment is recorded here: chain, contract, address, the comm
 |---|---|---|---|---|---|
 | Monad testnet (10143) | `ValidationRegistry` | [`0xc4A4D0cEB3971cbE7a2536494aC106f2Cd9F9a8f`](https://monad-testnet.socialscan.io/address/0xc4a4d0ceb3971cbe7a2536494ac106f2cd9f9a8f) | `8dc8859` | 2026-10-02 | [`0x724f31e0…cf64d03`](https://monad-testnet.socialscan.io/tx/0x724f31e0efd09993f2d73581cb742e71d4bef52c0f4f2a30cccd43d79cf64d03) (block 67,604,893) |
 | Monad testnet (10143) | `AgentRequestForwarder` | [`0x1451F3C36545b191d3642f759D59f21DcFD657B2`](https://monad-testnet.socialscan.io/address/0x1451f3c36545b191d3642f759d59f21dcfd657b2) | `5f2f4a4` | 2026-10-03 | [`0x82883206…72a3cd7`](https://monad-testnet.socialscan.io/tx/0x828832065b96235728c1782e9be9b4b712e3f408f8755e20f554a210472a3cd7) (block 67,779,694) |
+| Monad testnet (10143) | `MandateRegistry` | [`0x2523197373ef813E19b5b14Ef2984130868cD17c`](https://monad-testnet.socialscan.io/address/0x2523197373ef813e19b5b14ef2984130868cd17c) | `6e08223` | 2026-10-03 | [`0x1222b700…3ca0b84`](https://monad-testnet.socialscan.io/tx/0x1222b700027bc1e03676ed0f986a31ee2d5ac06ea5c5b1847672ca05b3ca0b84) (block 67,842,487) |
 | Monad testnet (10143) | `DemoAgentVault` (AttestGate), agent 1984 | [`0x23BfBD12545CCd1501ddA1B65a54518FD6212a96`](https://monad-testnet.socialscan.io/address/0x23bfbd12545ccd1501dda1b65a54518fd6212a96) | `319006a` | 2026-10-03 | [`0x2fed0cee…a14bf80`](https://monad-testnet.socialscan.io/tx/0x2fed0ceeec43384305a6cf095dc22be83a28c0d5b54e0b9055c467227a14bf80) (block 67,784,294) |
 | Monad testnet (10143) | `DemoAgentVault` (AttestGate), agent 1982 — **superseded** | [`0x7A5EC388CCbfD3B255CFa94fc2062c0807F2C4CD`](https://monad-testnet.socialscan.io/address/0x7a5ec388ccbfd3b255cfa94fc2062c0807f2c4cd) | `f826eec` | 2026-10-03 | [`0xd960c130…72b6a64`](https://monad-testnet.socialscan.io/tx/0xd960c1304d88b0352d2bdf054eac174c704fd356ae465eeb8df570a6572b6a64) (block 67,757,166) |
 
@@ -39,6 +40,24 @@ Every Attest8004 deployment is recorded here: chain, contract, address, the comm
   `contracts/broadcast/DeployAgentRequestForwarder.s.sol/10143/run-latest.json`.
 - **Gas:** explicit limit 490,000 (Monad `eth_estimateGas` was 407,868; limit = ×1.2, rounded up to 10k).
 - **Not upgradeable, no owner, holds no funds.**
+
+### MandateRegistry (testnet) details
+
+- **Constructor argument:** the canonical testnet Identity Registry `0x8004A818BFB912233c491871b3d84c89A494BD9e`.
+- **What it does:** holds a per-agent spending mandate (SPEC §4.2) — allowed targets, allowed selectors, a per-tx and
+  per-day MON cap, and an expiry. Only the agent's current owner can call `setMandate`/`revokeMandate`
+  (`identityRegistry.ownerOf(agentId) == msg.sender`); `mandate-v1` reads it to score an action. See
+  `contracts/src/MandateRegistry.sol`.
+- **How it was deployed:** `contracts/script/DeployMandateRegistry.s.sol` via
+  `script/deploy-testnet.sh MandateRegistry`, through the CREATE2 factory with salt
+  `keccak256("attest8004.MandateRegistry.v1")`. The broadcast record is
+  `contracts/broadcast/DeployMandateRegistry.s.sol/10143/run-latest.json`.
+- **Gas:** explicit limit 1,010,000 (Monad `eth_estimateGas` was 834,877; limit = ×1.2, rounded up to 10k).
+- **The address depends on the Identity Registry.** The init code includes the Identity Registry argument, so a
+  mainnet deployment (another Identity Registry) will have a different address. Check it with
+  `predictedAddress(<identity registry>)` on the deploy script.
+- **Not upgradeable, no owner, holds no funds. Immutable `_authorize` hook is overridden in P4** (owner-only wallet
+  signature); P6 redeploys with a WebAuthn-verifying override, so the mandate hook itself never upgrades in place.
 
 ### DemoAgentVault (testnet, P3, agent 1984) details
 
