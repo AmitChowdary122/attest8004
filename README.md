@@ -82,15 +82,18 @@ pnpm --filter @attest8004/scripts roundtrip   # register agent -> validationRequ
 ```
 
 The end-to-end path is scripted too. These scripts act as our demo agents, so they only run with our deployer's,
-validator A's and the demo agents' keys; they show how the recorded testnet runs were made. The validator in them is
-a stub built on the SDK's validator base: it runs every check of the base class but passes every request, and its
-evidence says so (`mandate-v1` comes in P4).
+validator A's and the demo agents' keys; they show how the recorded testnet runs were made. The e2e runs validator A
+as `mandate-v1`. Agent 1984's hot key requests two actions: one inside the agent's mandate, which scores 100 and
+executes, and one outside it (an unlisted target, over the per-tx cap), which scores 0 and the gate refuses. The
+script then re-runs both verdicts with `verify` and checks that each matches. Anyone can do the same for a recorded
+verdict with `pnpm attest8004 verify <requestHash>` (above).
 
 ```bash
 pnpm --filter @attest8004/scripts hot-keys                     # one hot key per demo agent into .env; prints addresses only
 pnpm --filter @attest8004/scripts setup-demo-agents            # register agents, approve the forwarder, set each agent's key
 pnpm --filter @attest8004/scripts setup-demo-agents -- --fund  # top each hot key up to four requests
-pnpm --filter @attest8004/scripts e2e                          # hot key -> forwarder -> stub validator -> gated execute
+pnpm --filter @attest8004/scripts set-mandate                  # agent 1984's e2e mandate (owner-set until P6's passkeys)
+pnpm --filter @attest8004/scripts e2e                          # hot key -> forwarder -> mandate-v1 -> gated execute; verify both
 pnpm --filter @attest8004/scripts gated-execute                # P2: the superseded agent-1982 vault, owner requests directly
 ```
 

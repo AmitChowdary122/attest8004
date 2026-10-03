@@ -5,6 +5,11 @@
   "description": "mandate-v1: deterministic, re-executable Attest8004 validator",
   "license": "MIT",
   "type": "module",
+  "exports": {
+    ".": {
+      "@attest8004/source": "./src/index.ts"
+    }
+  },
   "scripts": {
     "start": "node --conditions=@attest8004/source --env-file=../../.env src/main.ts",
     "typecheck": "tsc --noEmit",

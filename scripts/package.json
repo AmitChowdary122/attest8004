@@ -17,6 +17,7 @@
   },
   "dependencies": {
     "@attest8004/sdk": "workspace:*",
+    "@attest8004/validator-mandate": "workspace:*",
     "viem": "catalog:"
   },
   "devDependencies": {
