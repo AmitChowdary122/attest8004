@@ -8,6 +8,7 @@ Foundry project for the Attest8004 contracts (SPEC §4.1–4.4):
 | `AttestGate` + `DemoAgentVault` | **live on Monad testnet**: `DemoAgentVault` at `0x23BfBD12545CCd1501ddA1B65a54518FD6212a96`, for demo agent 1984, requiring validator A (P3; the P2 vault for agent 1982 is superseded; see [docs/deployments.md](../docs/deployments.md)) |
 | `AgentRequestForwarder` | **live on Monad testnet** at `0x1451F3C36545b191d3642f759D59f21DcFD657B2` (P3; see [docs/deployments.md](../docs/deployments.md)) |
 | `MandateRegistry` | **live on Monad testnet** at `0x2523197373ef813E19b5b14Ef2984130868cD17c`, owner-set mandates (P4; passkey approval is a new deployment in P6; see [docs/deployments.md](../docs/deployments.md)) |
+| `DemoPassThrough` | demo-only, **not yet deployed**: the P5 risky-but-mandated target (SPEC §4.6) that forwards every payment to a fixed sink nobody controls (`script/DeployDemoPassThrough.s.sol`) |
 
 ```bash
 forge build
@@ -98,6 +99,23 @@ deployed**; the live testnet deployment (status table above) still requires vali
 | `test/DeployDemoAgentVault.t.sol` | The CREATE2 deploy script: predicted address, idempotence, wiring, the testnet configuration (both validators and tags) |
 | `test/Toolchain.t.sol` | P0 toolchain smoke test: P256VERIFY at `0x0100` in Foundry's Monad profile (32 bytes `…01` for a valid signature, empty for an invalid one), and the OpenZeppelin remapping (`P256.verify`) |
 
+## DemoPassThrough (demo-only, not yet deployed)
+
+`src/DemoPassThrough.sol` is the P5 risky-but-mandated demo target (SPEC §4.6, decision 34): a fresh "payment
+router" that actually sweeps every payment it receives straight to a fixed `sink` nobody controls
+(`address(uint160(uint256(keccak256("attest8004.demo.sink"))))`). It has no `fallback`, so a call that carries data
+has no matching function and reverts before `receive` ever runs. The story: the operator allowlists it next to the
+deployer in demo agent 1984's mandate (`set-mandate`); mandate-v1 then approves a plain transfer to it like any
+other allowlisted target (within caps, simulation succeeds), while risk-v1's `simulate_action` trace sees the value
+keep moving on to `sink`, which isn't on the mandate, has no code and nonce 0 — the rubric scores that **high**, so
+the gate refuses. `script/DeployDemoPassThrough.s.sol` deploys it through the same CREATE2 factory; it is **not yet
+deployed anywhere**.
+
+| Test file | What it covers |
+|---|---|
+| `test/DemoPassThrough.t.sol` | `receive` forwards all value to `sink` (plus fuzz), reverts `ForwardFailed` when the sink can't accept the forward, the zero-sink constructor check, a call with data reverts (no fallback), and a vault action to the pass-through executes under the gate's per-verdict tag check |
+| `test/DeployDemoPassThrough.t.sol` | The CREATE2 deploy script: predicted address, idempotence, the exact broadcast transaction, and `SINK`'s value pinned independently with `cast` |
+
 Fork tests fork the latest testnet block (Monad RPC nodes don't reliably serve old state) and skip unless
 `MONAD_TESTNET_RPC_URL` is set:
 
@@ -109,11 +127,12 @@ CI runs them in a separate `contracts-fork` job that may fail without turning th
 
 ## Deploying
 
-`script/DeployValidationRegistry.s.sol`, `script/DeployAgentRequestForwarder.s.sol`, `script/DeployMandateRegistry.s.sol` and `script/DeployDemoAgentVault.s.sol` deploy through the CREATE2
+`script/DeployValidationRegistry.s.sol`, `script/DeployAgentRequestForwarder.s.sol`, `script/DeployMandateRegistry.s.sol`, `script/DeployDemoAgentVault.s.sol` and `script/DeployDemoPassThrough.s.sol` deploy through the CREATE2
 factory `0x4e59…956C` with a **literal gas limit** (`DEPLOY_GAS`), because Monad charges for the gas limit, not
 the gas used. The address depends on the init code, which includes the constructor arguments: the
 ValidationRegistry's and the MandateRegistry's addresses depend on the Identity Registry (so testnet and mainnet
-differ), the forwarder's on its ValidationRegistry, and the vault's on its registry, agent and validator requirements. Re-running is a no-op once the contract exists.
+differ), the forwarder's on its ValidationRegistry, the vault's on its registry, agent and validator requirements,
+and the pass-through's on its `sink`. Re-running is a no-op once the contract exists.
 
 ```bash
 ./script/deploy-testnet.sh ValidationRegistry               # dry run against Monad testnet; nothing is sent
@@ -121,6 +140,7 @@ BROADCAST=1 ./script/deploy-testnet.sh ValidationRegistry   # deploy
 ./script/deploy-testnet.sh AgentRequestForwarder            # same, for the forwarder
 ./script/deploy-testnet.sh MandateRegistry                  # same, for the mandate registry
 ./script/deploy-testnet.sh DemoAgentVault                   # same, for the demo vault
+./script/deploy-testnet.sh DemoPassThrough                  # same, for the risky-but-mandated demo target
 ```
 
 The wrapper loads `../.env` into the environment and never prints it. The deployer key reaches forge through

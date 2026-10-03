@@ -44,7 +44,10 @@ contract DemoPassThroughTest is AttestGateFixture {
     }
 
     /// `ReentrantTarget` has neither `receive` nor `fallback`, so forwarding to it as the sink
-    /// fails outright (no function to dispatch to), with no return data.
+    /// fails outright (no function to dispatch to), with no return data. `vm.expectRevert`
+    /// matches the revert of this low-level call itself (Foundry checks the next call frame,
+    /// not whether the caller's own `.call` happens to rethrow), so `ok`'s value afterwards
+    /// isn't meaningful and isn't asserted.
     function test_Receive_RevertWhen_SinkReverts() public {
         ReentrantTarget revertingSink = new ReentrantTarget();
         DemoPassThrough target = new DemoPassThrough(payable(address(revertingSink)));
@@ -52,7 +55,7 @@ contract DemoPassThroughTest is AttestGateFixture {
         vm.prank(stranger);
         vm.expectRevert(abi.encodeWithSelector(DemoPassThrough.ForwardFailed.selector, bytes("")));
         (bool ok,) = address(target).call{value: 1 ether}("");
-        assertFalse(ok);
+        ok;
     }
 
     /// There is no `fallback`: a call that carries data has no matching function, so the EVM's
