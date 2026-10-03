@@ -211,6 +211,28 @@ contract MandateRegistryTest is Test {
         registry.setMandate(agent1, equalCaps);
     }
 
+    /// The passing side of the 16-entry caps: exactly MAX_TARGETS targets and MAX_SELECTORS selectors
+    /// are accepted, and stored in full.
+    function test_SetMandate_ExactlyMaxTargetsAndSelectors_Passes() public {
+        assertEq(registry.MAX_TARGETS(), 16, "MAX_TARGETS");
+        assertEq(registry.MAX_SELECTORS(), 16, "MAX_SELECTORS");
+        MandateRegistry.Mandate memory full = _validMandate();
+        full.allowedTargets = _addresses(16);
+        full.allowedSelectors = _selectors(16);
+
+        vm.prank(owner);
+        registry.setMandate(agent1, full);
+
+        (MandateRegistry.Mandate memory stored, bytes32 storedHash,,) = registry.getMandate(agent1);
+        assertEq(storedHash, registry.mandateHashOf(full), "mandateHash");
+        assertEq(stored.allowedTargets.length, 16, "targets length");
+        assertEq(stored.allowedSelectors.length, 16, "selectors length");
+        for (uint256 i; i < 16; ++i) {
+            assertEq(stored.allowedTargets[i], full.allowedTargets[i], "target");
+            assertEq(stored.allowedSelectors[i], full.allowedSelectors[i], "selector");
+        }
+    }
+
     function test_SetMandate_Overwrite_ReplacesArraysCompletely() public {
         MandateRegistry.Mandate memory first = _validMandate();
         first.allowedTargets = _addresses(3);
