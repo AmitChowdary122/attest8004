@@ -13,7 +13,7 @@
 It has five parts:
 - a spec-conformant **ValidationRegistry**
 - **passkey-approved agent mandates**, verified with Monad's P256 precompile
-- a **validator SDK** with two reference validators: one deterministic and re-executable, one agentic using Qwen 3.8 Max and Nansen
+- a **validator SDK** with two reference validators: one deterministic and re-executable, one agentic using an OpenAI-compatible LLM (Groq today) and Nansen
 - a **Mera passkey-derived findings inbox**
 - an **Envio-indexed trust API**
 
@@ -35,7 +35,6 @@ Why it exists: Monad's ERC-8004 docs list the Validation Registry as "coming soo
 
 | Bounty | Hard requirement |
 |---|---|
-| Qwen 3.8 Max ($5k credits) | **Agentic** use: planning, tool use and multi-step execution. A working product deployed on Monad. A **published article** on how Qwen was used. |
 | Nansen ($5k pool) | Nansen API, MCP or CLI powers a **core feature**. The README must **name the exact endpoints and data categories** used. Public repo plus a short demo. |
 | Mera "One Passkey, Many Keys" ($2.5k) | At least one PRF namespace does **non-account work**, demonstrated live. **Nothing sensitive persisted** to disk or server. A **cross-device test**: the same passkey on a second device decrypts the same state, live. |
 | Envio ($1k) | HyperIndex in the repo (`config.yaml`, `schema.graphql`, handlers). **Live** data. Something useful consumes it. |
@@ -55,7 +54,7 @@ attest8004/
   contracts/            Foundry: ValidationRegistry, AgentRequestForwarder, MandateRegistry, AttestGate, DemoAgentVault, script/, test/
   packages/sdk/         @attest8004/sdk — client + validator base + shared types + hash test vectors
   validators/mandate/   deterministic validator service
-  validators/qwen/      agentic Qwen validator service
+  validators/risk/      agentic risk-v1 validator service
   indexer/              Envio HyperIndex project
   web/                  one web app: /approve (passkey mandates), /inbox (Mera), /dashboard
   cre/                  (stretch) Chainlink CRE workflow
@@ -101,14 +100,16 @@ attest8004/
   - `requestHash = keccak256(abi.encode(block.chainid, gate, validatorAddress, agentId, target, value, keccak256(data), deadline, salt))`, **one per validator**, because the registry records exactly one validator per `requestHash`.
   - `actionHash` is the same encoding without `validatorAddress`. The gate marks it consumed.
   - `requestHash` stays an ABI-encoded action hash: that encoding is the "request payload" the EIP's `requestHash` commits to (`docs/spec-notes.md`, row 6).
-- The gate has an **immutable list of `(validator, minScore)` requirements** (1 to 4, fixed at deployment, no owner), and **every one must pass**. The constructor rejects `minScore` 0 (a pending request reads as response 0), `minScore` above 100, a zero validator and duplicate validators.
-- `onlyValidated(Action)`:
+- The gate has an **immutable list of `(validator, minScore, tagHash)` requirements** (1 to 4, fixed at deployment, no owner), and **every one must pass**. The constructor rejects `minScore` 0 (a pending request reads as response 0), `minScore` above 100, a zero validator, duplicate validators and a zero `tagHash` (`ZeroTagHash`) — there is no wildcard tag.
+- `onlyValidated(Action)`, checked in this order — **validator → agent → score → tag**:
   1. Require `block.timestamp <= deadline`, and that `actionHash` hasn't been consumed.
   2. For each requirement, **recompute** that validator's `requestHash` from the call, so a verdict can't be reused for a different action, gate, chain or validator.
-  3. Look it up in the ValidationRegistry. Require that the stored `validatorAddress` is that validator, that the stored `agentId` is the action's (anyone who owns an agent can claim a hash first), and that `response >= minScore`.
-  4. **Mark `actionHash` consumed** (single use) **before the external call**. The gated function is also `nonReentrant`.
+  3. Look it up in the ValidationRegistry. Require that the stored `validatorAddress` is that validator, that the stored `agentId` is the action's (anyone who owns an agent can claim a hash first), and that `response >= minScore` (a pending request still reverts `ScoreTooLow`).
+  4. Require the stored tag hashes to `tagHash`; a sufficient score with the wrong tag reverts `TagMismatch(validator, requestHash, expected, actual)`.
+  5. **Mark `actionHash` consumed** (single use) **before the external call**. The gated function is also `nonReentrant`.
+- The SDK's `isValidated()` and `attestGateAbi` mirror this same order, including the tag check.
 - `DemoAgentVault`: holds test MON or ERC-20 for **one immutable `agentId`**, and rejects actions for any other agent. `execute(Action)` is gated by `onlyValidated`. It is permissionless, because the validated action is the authorisation. The P2 testnet deployment requires validator A only; P5 redeploys it requiring both validators.
-- **Done when:** a validated action executes, and these revert: unvalidated, pending, low score, untrusted validator, wrong `agentId` (squatted hash), expired, replayed, a different action, and a verdict for another gate. Each case has a test.
+- **Done when:** a validated action executes, and these revert: unvalidated, pending, low score, wrong tag, untrusted validator, wrong `agentId` (squatted hash), expired, replayed, a different action, and a verdict for another gate. Each case has a test.
 
 ### 4.4 `packages/sdk` (TypeScript, viem)
 - **Client:**
@@ -168,18 +169,26 @@ attest8004/
   - Each response's gas limit is the estimate plus 20 %, capped at 400,000.
 - **Reproducibility:** `pnpm attest8004 verify <requestHash>`, from the repo root, re-runs the verdict at the evidence's `P` and must give the same score and the same `responseHash` (ARCHITECTURE §5.5). It is read-only and defaults to the public testnet RPC, so it needs no `.env`; another RPC (an archive one for verdicts older than about 51 days) goes in `MONAD_TESTNET_RPC_URL`. It exits 0 on a match, 1 on a mismatch (public proof that the validator misbehaved) and 2 when it couldn't verify. There is no `npx attest8004` command: the package is private and declares no `bin` in its `package.json`, and shipping a CLI package is a later decision.
 
-### 4.6 Validator B — `risk-qwen-v1` (agentic, Qwen 3.8 Max)
-- Calls Qwen 3.8 Max through Alibaba Model Studio's international OpenAI-compatible endpoint. **Confirm the exact model ID in the console.**
-- **Tools** (function calling):
-  - `get_request`
-  - `get_mandate`
-  - `simulate_tx`
-  - `nansen_counterparty_profile` and `nansen_flows`. Use Nansen API or x402 pay-per-call, and list every endpoint used in the README. EVM addresses are the same across chains, so the counterparty's real history is available even when the demo runs on testnet.
-  - `erc8004_reputation` (for counterparty agents)
-  - `recent_permission_events`
-- The model **plans, calls tools over several steps, and returns structured JSON**: `{score 0-100, risk_level, reasons[], evidence[]}`.
-- Hard caps on tool calls and tokens, and low temperature. Save the full trace (plan, tool calls and results) into the evidence. It feeds the article and the demo.
-- Tag `risk-qwen-v1`. **Detailed findings are encrypted to the operator's inbox key** (§4.7). Only the score and evidence hash are public.
+### 4.6 Validator B — `risk-v1` (agentic)
+**Runs only after `mandate-v1` has answered the same action, and is never meant to be the only check.** `risk-v1` is provider-neutral: it calls an OpenAI-compatible chat endpoint, configured by `LLM_BASE_URL`/`LLM_API_KEY`/`LLM_MODEL` (today Groq's `openai/gpt-oss-120b`). The evidence records the model requested, the model the provider says it served, and `system_fingerprint`.
+
+- **The pin and prerequisite.** Shares `mandate-v1`'s pin rule (§4.5): block `P`, 5 blocks below the finalized head, never below the request's block or this process's last response. Before `P` is accepted, validator A's `mandate-v1` verdict for the same action at the same `P` must already be answered — `check()` waits up to 120 s, polling every 500 ms, then throws for the base to retry; no model or guard call happens before this. If A's answer at `P` is from another validator or isn't tagged `mandate-v1`, B declines (`MANDATE_V1_VERDICT_INVALID`) with no model call. **A score of 0 from A still runs B** (the SPEC §5 demo needs B's explanation). B reads A's reasons from A's own evidence, checked against its `responseHash`, keeping only the known reason codes.
+- **Admission.** `accepts()` declines before any RPC for a gate it isn't listed to serve (`GATE_NOT_SERVED`, via `RISK_V1_GATES` in the same `gate:agentId,…` form as `MANDATE_V1_GATES`) or a listed gate named for another agent (`GATE_NOT_FOR_AGENT`), then applies `mandate-v1`'s admission limits (20 requests per agent per hour, 10,000,000 gas a day).
+- **The check, in order:** screen every untrusted text field with Prompt Guard; run a tool loop against the endpoint with `tool_choice: "auto"` (every tool read-only, pinned at `P`); make one final, tool-free call with a strict `json_schema` response format to get the findings (the endpoint doesn't support tools and structured output together); score the findings in code. Parameters: `reasoning_effort: "low"`, `include_reasoning: false`, `temperature: 0.2`, `seed: 8004`; `parallel_tool_calls` and `service_tier` are never sent.
+- **Caps and pacing.** `max_completion_tokens` is 1,024 per tool turn and 1,536 for the final call; the loop stops calling tools once the next final call would pass 7,000 tokens, and a whole check is capped at 36,000 tokens. A client-side pacer holds a configurable RPM/TPM budget per model, honouring the provider's rate-limit headers and `retry-after`.
+- **Failure handling.** A provider failure (rate limit, timeout, 5xx and the like, or an unparseable guard answer) is always transient, never a verdict: it retries in place, then `check()` throws for the base to retry from scratch, giving up after about 8 minutes with no response. Invalid model output (a failed tool call, a failed structured-output call, or an answer that fails schema validation) shares one budget of 2 retries per check; on the third failure `check()` **declines** (`MODEL_OUTPUT_INVALID`) with no retry.
+- **Findings.** The model's output is `{findings: [{code, severity, explanation, sources}]}`: `code` from a fixed list (`FUNDS_FORWARDED`, `UNMANDATED_RECIPIENT`, `NEW_CONTRACT`, `FRESH_COUNTERPARTY`, `MANDATE_VIOLATION`, `PERMISSION_CHANGE`, `SIMULATION_FAILED`, `LOW_REPUTATION`, `RISKY_LABEL`, `SUSPICIOUS_CALLDATA`, `OTHER`); `severity` is `low`, `medium` or `high`; `explanation` is at most 400 characters; `sources` is 1–4 names, each `request`, `mandate_v1_verdict`, or a tool actually called in the run; at most 8 findings. The model never emits `PROMPT_INJECTION_SUSPECTED`; only code adds it.
+- **Score.** Code only, never the model: 100 with no findings, 80 if every finding is low, 40 if any is medium, 0 if any is high. `reasons` lists the finding codes, the model's findings first, then code's. **The vault's B minimum is 80.**
+- **The system prompt's severity rubric:** value leaving the target for an address outside the mandate is **high**; a `mandate-v1` failure is **high**; only the action's target, or an address value flows to, can be the subject of `NEW_CONTRACT` or `FRESH_COUNTERPARTY` — never the gate, the validators or the agent's own contracts; `NEW_CONTRACT` (medium) means a contract younger than about 7 days; `FRESH_COUNTERPARTY` is medium **only** when the subject has nonce 0 and no code at `P` — an EOA that has sent transactions is never above low for its age alone; a tool that is unavailable, or data that is missing, is never a finding.
+- **`promptVersion`** is the string constant `"risk-v1/1"`, recorded next to `promptHash` (keccak256 of the canonical JSON of the initial messages, tool definitions and model parameters). `verify` doesn't re-derive the prompt; it can be tuned later under the same tag by bumping `promptVersion`.
+- **Prompt-injection defence.** Untrusted text — printable-ASCII runs in calldata (capped), the simulation's decoded revert reason, and Nansen label/first-funder/counterparty strings — is screened by Prompt Guard before the model ever sees it, chunked with overlap and scored by its highest-scoring chunk. A field scoring **at or above 0.5** is flagged; any flagged field makes code add one `PROMPT_INJECTION_SUSPECTED` finding (medium, so the score is capped at 40), naming the flagged fields in `sources`. Flagged text is never redacted from the model. Every piece of untrusted data reaches the model delimited as canonical JSON inside `<untrusted_data source="…">…</untrusted_data>`, with `<`, `>` and `&` escaped so the block can't be closed from inside; the system prompt states that data is never instructions. A guard failure is a transient provider failure (never an unscreened verdict).
+- **Seven read-only tools, all pinned at `P`:** `get_mandate`, `simulate_action` (a flattened `debug_traceCall`), `recent_permission_events`, `counterparty_onchain(address)`, `erc8004_reputation(agentId)`, `nansen_counterparty_profile(address)` and `nansen_flows(address)`; `get_request` is the first user message rather than a tool, because the model always needs it. Use Nansen API or x402 pay-per-call, and list every endpoint used in the README. Account age comes from 5 probes (code or nonce at `P` minus roughly {1k, 10k, 100k, 1M, 2M} blocks), reporting the smallest window the account is younger than. An address argument must be the target, the gate, the owner at `P`, a mandate-allowed target, or an address seen earlier in the run; anything else is `{error: "ADDRESS_OUT_OF_SCOPE"}` (still a counted call). Tool outputs are capped at 1,536 bytes of canonical JSON, truncated deterministically and marked `truncated`. Without `NANSEN_API_KEY`, both Nansen tools return `{available: false, reason: "NANSEN_API_KEY is not set"}` without fetching; with a key, a Nansen error becomes tool output, never a check failure. Tool calls are capped at 8; a call beyond that gets `{error: "TOOL_CALL_LIMIT"}` without running.
+- **Response gas** is the estimate × 1.2, capped at 1,000,000. Evidence over 24,576 bytes of canonical JSON declines (`EVIDENCE_TOO_LARGE`) before sending, so the cap can never fail a send after the model has run.
+- **Evidence is public plaintext**, a `data:application/json;base64` canonical-JSON URI, just like `mandate-v1`'s (P7's encrypted findings are a separate feature). Beyond the base fields it carries `block`, `request`, `params`, `prerequisite`, `llm` (host only, never the URL or key, plus `promptHash`), `classifier`, `tools`, `toolCalls`, `modelOutputs`, `finalOutput` and `findings` (each with `origin: "model" | "code"`). **The format freezes once the first live verdict exists** — the tag `risk-v1`, the keys, the encodings and every constant `verify` uses — the same way `mandate-v1`'s did; the prompt can still change under `promptVersion`.
+- **`verify` for `risk-v1`** stops at the first problem, checking in order: status, the response log, the keccak check and a strict parse; the pin range, the request log and JSON, and the block hash and time at `P`; that the evidence's `request` matches the request; that `params` match the constants; the prerequisite at `P` (A's status and reasons, read the same way B read them); the classifier → code-findings rule; a re-parse of `finalOutput.raw` into model findings; that `scoreOf(findings)` matches the posted score and `reasons` match the codes; and a re-run of every onchain tool call, in order, with its recorded arguments, at `P`. Nansen calls are reported `unchecked`, never a problem.
+  - **What this proves:** the score follows from the recorded findings; every onchain fact shown to the model was true at `P`; the injection rule was applied.
+  - **What it does not prove: that the recorded output came from the model.** Trusting `risk-v1` means trusting validator B's operator — which is why the gate also requires `mandate-v1`, fully reproducible by anyone. The CLI prints `model output: recorded, not re-run` on every `risk-v1` report. Exit 0 is a match; exit 1 is a mismatch (`EVIDENCE_HASH_MISMATCH`, `EVIDENCE_INVALID`, `PIN_OUT_OF_RANGE`, `PIN_MISMATCH`, `REQUEST_BLOCK_WRONG`, `REQUEST_INVALID`, `REQUEST_FIELDS_MISMATCH`, `PARAMS_MISMATCH`, `PREREQUISITE_MISMATCH`, `FINDINGS_MISMATCH`, `SCORE_MISMATCH` or `TOOL_OUTPUT_MISMATCH`); exit 2 means it couldn't verify.
+- Tag `risk-v1`.
 
 ### 4.7 Mera findings inbox (web `/inbox`) — the Mera bounty
 - **Salt:** `sha256("attest8004.inbox.v1")`. Get the 32-byte PRF output with `getPasskeyPrfOutput`, run **HKDF-SHA256**, and get an **X25519** private key. It lives **in memory only**; zero the buffers after use.
@@ -229,7 +238,7 @@ attest8004/
 2. The agent proposes a benign action. Both validators pass it, and `DemoAgentVault` executes it.
 3. **Replay of the Grok/Bankr pattern** (scripted, testnet only, against our own demo contracts): the agent's permissions change outside the mandate, then a transfer to an unknown address is attempted.
    - `mandate-v1` scores it 0 (mandate violation plus an unapproved permission change).
-   - `risk-qwen-v1` explains why, citing Nansen data on the counterparty.
+   - `risk-v1` explains why, from its tools: simulation, the counterparty, permission history, and Nansen data when a key is set.
    - `onlyValidated` reverts.
 4. The dashboard shows the record.
 5. The phone, using the same passkey, decrypts the private findings live.

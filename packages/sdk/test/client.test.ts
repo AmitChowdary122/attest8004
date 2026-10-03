@@ -176,7 +176,7 @@ describe("Attest8004Client.isValidated (mirrors AttestGate)", () => {
     consumed = false;
     statuses = new Map<Hex, Status>([
       [rhA, [VALIDATOR_A, 7n, 100, keccak256(toHex("a")), "mandate-v1", 1n]],
-      [rhB, [VALIDATOR_B, 7n, 70, keccak256(toHex("b")), "risk-qwen-v1", 1n]],
+      [rhB, [VALIDATOR_B, 7n, 70, keccak256(toHex("b")), "risk-v1", 1n]],
     ]);
     rpc
       .onCall(GATE, attestGateAbi, "validationRegistry", () => REGISTRY)
@@ -209,7 +209,7 @@ describe("Attest8004Client.isValidated (mirrors AttestGate)", () => {
   });
 
   it("is false below a minimum score", async () => {
-    statuses.set(rhB, [VALIDATOR_B, 7n, 69, keccak256(toHex("b")), "risk-qwen-v1", 1n]);
+    statuses.set(rhB, [VALIDATOR_B, 7n, 69, keccak256(toHex("b")), "risk-v1", 1n]);
     expect(await isValidated()).toBe(false);
   });
 

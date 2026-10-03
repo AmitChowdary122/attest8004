@@ -401,7 +401,7 @@ describe("collectInputs: preimage cache and evidence authentication", () => {
 
   it("evidence that hashes correctly but isn't mandate-v1 evidence is unreadable", async () => {
     const a = approval({ value: 400n, deadline: P.timestamp });
-    const notMandate = rawUri(canonicalJson({ schema: "attest8004.evidence.v1", validator: "risk-qwen-v1", requestHash: a.requestHash, score: 100, reasons: [] }));
+    const notMandate = rawUri(canonicalJson({ schema: "attest8004.evidence.v1", validator: "risk-v1", requestHash: a.requestHash, score: 100, reasons: [] }));
     a.uri = notMandate.uri;
     a.status = { ...a.status, responseHash: notMandate.hash };
     add(reader, a);
@@ -522,7 +522,7 @@ describe("parseApprovalParts", () => {
     ["a JSON array", () => "[1,2]", "not a JSON object"],
     ["JSON null", () => "null", "not a JSON object"],
     ["another schema", (doc) => ({ ...doc, schema: "attest8004.evidence.v2" }), "invalid at schema"],
-    ["another validator tag", (doc) => ({ ...doc, validator: "risk-qwen-v1" }), "invalid at validator"],
+    ["another validator tag", (doc) => ({ ...doc, validator: "risk-v1" }), "invalid at validator"],
     ["no request", (doc) => ({ ...doc, request: undefined }), "invalid at request"],
     ["request as an array", (doc) => ({ ...doc, request: [] }), "invalid at request"],
     ["no score", (doc) => ({ ...doc, score: undefined }), "invalid at score"],

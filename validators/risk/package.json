@@ -1,8 +1,8 @@
 {
-  "name": "@attest8004/validator-qwen",
+  "name": "@attest8004/validator-risk",
   "version": "0.0.0",
   "private": true,
-  "description": "risk-qwen-v1: agentic Attest8004 validator (Qwen 3.8 Max + Nansen)",
+  "description": "risk-v1: agentic Attest8004 validator (OpenAI-compatible LLM + onchain tools + Nansen)",
   "license": "MIT",
   "type": "module",
   "scripts": {

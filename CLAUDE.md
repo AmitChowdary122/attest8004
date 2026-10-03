@@ -1,7 +1,7 @@
 # CLAUDE.md — Attest8004 (Monad Metropolis, Track 04)
 
 ## What this is
-Attest8004 is the ERC-8004 **Validation** layer for Monad: a spec-conformant ValidationRegistry, passkey-approved agent mandates (P256 precompile `0x0100`), a validator SDK, two reference validators (deterministic `mandate-v1`, and agentic `risk-qwen-v1` built on Qwen 3.8 Max + Nansen), a Mera passkey-derived findings inbox, and an Envio-indexed trust API.
+Attest8004 is the ERC-8004 **Validation** layer for Monad: a spec-conformant ValidationRegistry, passkey-approved agent mandates (P256 precompile `0x0100`), a validator SDK, two reference validators (deterministic `mandate-v1`, and agentic `risk-v1` built on an OpenAI-compatible LLM (Groq today) + Nansen), a Mera passkey-derived findings inbox, and an Envio-indexed trust API.
 
 - **Read `SPEC.md` and `ARCHITECTURE.md` before any work.** SPEC is the source of truth for scope and acceptance criteria. ARCHITECTURE is the source of truth for how the system works: flows, data formats, `requestHash`, trust model and key custody.
 - The hackathon rules are in `../Metropolis_Hackathon_Reference.md`.
@@ -27,7 +27,7 @@ Attest8004 is the ERC-8004 **Validation** layer for Monad: a spec-conformant Val
 - **Indexer:** Envio HyperIndex (`indexer/`: `config.yaml`, `schema.graphql`, handlers).
 - **Web:** a single app for `/approve`, `/inbox` and `/dashboard`, deployed to a fixed domain early (passkeys are bound to the rpId).
 - **Passkeys:** `@category-labs/mera` (PRF, one salt per ceremony), plus raw WebAuthn assertions for the onchain checks.
-- **LLM:** Qwen 3.8 Max via Alibaba Model Studio's international, OpenAI-compatible endpoint. Confirm the model ID. Config comes from env.
+- **LLM:** any OpenAI-compatible endpoint, from `LLM_BASE_URL`/`LLM_API_KEY`/`LLM_MODEL`; today Groq `openai/gpt-oss-120b`. Check Groq's docs before changing models.
 - **Data:** Nansen API or x402 pay-per-call. List every endpoint used in `docs/nansen.md`.
 
 ## Monad facts that bite
@@ -48,4 +48,4 @@ Attest8004 is the ERC-8004 **Validation** layer for Monad: a spec-conformant Val
 - `requestHash` is defined once (SPEC §4.3) and implemented identically in Solidity and TypeScript, with shared test vectors in `packages/sdk/test/vectors.json`.
 - Record every deployment in `docs/deployments.md`: chain, address, commit hash and date.
 - Docs are part of the product. Update the quickstart whenever an interface changes.
-- When unsure about an external API (Qwen, Nansen, Envio, Mera, CRE), **fetch the current docs first** rather than guessing.
+- When unsure about an external API (Groq, Nansen, Envio, Mera, CRE), **fetch the current docs first** rather than guessing.

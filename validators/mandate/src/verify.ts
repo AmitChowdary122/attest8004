@@ -21,7 +21,7 @@ import type { PermissionEvent, PinnedBlock, SpendEntry } from "./types.ts";
  * means the verdict couldn't be re-run (unverifiable); see {@link MISMATCH_PROBLEMS}.
  *
  * - `NOT_MANDATE_V1`: the response is tagged something else, so there is no `mandate-v1` run to
- *   repeat. Unverifiable: another validator's verdict (an agentic `risk-qwen-v1` one, say) is not
+ *   repeat. Unverifiable: another validator's verdict (an agentic `risk-v1` one, say) is not
  *   re-executable by design, and its tag proves nothing against it.
  * - `RESPONSE_NOT_FOUND`: the request has no response yet, or its `ValidationResponse` log wasn't
  *   found at the status's `lastUpdate`. Unverifiable.

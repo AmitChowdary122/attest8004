@@ -1,6 +1,6 @@
 # Attest8004 — Architecture
 
-> **Status:** design reference v0.1 (2 Oct 2026), kept in sync with the code as it is built (P4, 3 Oct 2026: the owner-set MandateRegistry, the `mandate-v1` validator and `verify`, and per-agent forwarder approvals in the demo). Passkey (WebAuthn) approval of mandates, `risk-qwen-v1`, the inbox and the indexer are still design.
+> **Status:** design reference v0.1 (2 Oct 2026), kept in sync with the code as it is built (P4, 3 Oct 2026: the owner-set MandateRegistry, the `mandate-v1` validator and `verify`, and per-agent forwarder approvals in the demo). Passkey (WebAuthn) approval of mandates, `risk-v1`, the inbox and the indexer are still design.
 > **Rule:** any change to an interface, flow, data format or trust assumption updates this file **in the same commit**.
 > Build scope and acceptance criteria live in [`SPEC.md`](./SPEC.md). This file explains *how the system works and why*.
 
@@ -16,7 +16,7 @@ Attest8004 provides that layer:
 2. **Passkey-approved mandates**: the agent's operator states what the agent may do (targets, functions, spend caps, expiry) and approves it with a passkey, verified onchain by Monad's P256 precompile (`0x0100`).
 3. **Validators**:
    - `mandate-v1`: deterministic; anyone can re-run it and get the same verdict.
-   - `risk-qwen-v1`: agentic; Qwen 3.8 Max plans tool calls over simulation, Nansen data and ERC-8004 reputation.
+   - `risk-v1`: agentic; an OpenAI-compatible LLM (Groq today) plans tool calls over simulation, Nansen data and ERC-8004 reputation.
 4. **AttestGate**: a modifier that lets any contract refuse an action unless every validator it requires has given a sufficient verdict for *exactly that action*, which then runs once.
 5. **Private findings inbox**: detailed findings are encrypted to a key derived from the operator's passkey (Mera PRF). It's never stored, and can be re-derived on any device.
 6. **Trust API**: Envio indexes everything into per-agent and per-validator summaries for the SDK and dashboard.
@@ -34,8 +34,8 @@ flowchart LR
   FW["AgentRequestForwarder<br/>(operator for requests only)"]
   MR["MandateRegistry<br/>(P256 @ 0x0100)"]
   VA["Validator A<br/>mandate-v1"]
-  VB["Validator B<br/>risk-qwen-v1"]
-  QW["Qwen 3.8 Max"]
+  VB["Validator B<br/>risk-v1"]
+  LLM["LLM (OpenAI-compatible; Groq today)"]
   NS["Nansen API"]
   GATE["Consumer contract<br/>with AttestGate<br/>(e.g. DemoAgentVault)"]
   IDX["Envio HyperIndex"]
@@ -50,7 +50,7 @@ flowchart LR
   VR -->|ValidationRequest event| VA
   VR -->|ValidationRequest event| VB
   VA -->|reads mandate| MR
-  VB --> QW
+  VB --> LLM
   VB --> NS
   VA -->|validationResponse| VR
   VB -->|validationResponse| VR
@@ -78,7 +78,7 @@ flowchart LR
 | Offchain | `@attest8004/sdk` client | `packages/sdk/` | Builds actions, computes `requestHash`, submits requests, waits for verdicts, reads trust summaries. |
 | Offchain | `@attest8004/sdk` validator base | `packages/sdk/` | Polls `ValidationRequest` logs from a saved block cursor, verifies each request (data: URI only, hash, validator, agent, chain, deadline), runs `check()`, and posts a response with evidence, once, with an explicit gas limit. |
 | Offchain | `mandate-v1` | `validators/mandate/` | Deterministic mandate and permission checks plus simulation at a pinned block. Ships a `verify` CLI for re-execution. |
-| Offchain | `risk-qwen-v1` | `validators/qwen/` | Agentic risk assessment: Qwen 3.8 Max with tools (simulation, Nansen, ERC-8004 reputation, permission history). Outputs JSON validated against a schema. |
+| Offchain | `risk-v1` | `validators/risk/` | Agentic risk assessment: an OpenAI-compatible LLM (Groq today) with read-only onchain tools (simulation, ERC-8004 reputation, permission history) and Nansen. Outputs JSON validated against a schema and scored by code. |
 | Data | Envio indexer | `indexer/` | Indexes requests, responses, mandates, inbox keys and Identity Registry permission events. Derives agent and validator summaries. Serves GraphQL. |
 | Client | Web app | `web/` | `/approve` (passkey and mandate), `/inbox` (Mera decrypt), `/dashboard` (trust data). |
 | Stretch | CRE workflow | `cre/` | Chainlink CRE orchestration of a validator: log trigger, HTTP call, EVM write. |
@@ -214,7 +214,7 @@ sequenceDiagram
   participant F as AgentRequestForwarder
   participant VR as ValidationRegistry
   participant VA as mandate-v1
-  participant VB as risk-qwen-v1
+  participant VB as risk-v1
   participant G as DemoAgentVault (AttestGate)
   A->>A: build Action; rhA = requestHash(VA), rhB = requestHash(VB)
   A->>F: request(VA, agentId, requestURI_A, rhA)
@@ -225,8 +225,8 @@ sequenceDiagram
   VR-->>VB: ValidationRequest event (rhB)
   VA->>VA: load request JSON, recompute rhA, check mandate + permissions, simulate at block N
   VA->>VR: validationResponse(rhA, 100, evidenceURI, evidenceHash, "mandate-v1")
-  VB->>VB: Qwen plans → tools (simulate, Nansen, reputation) → JSON verdict
-  VB->>VR: validationResponse(rhB, 92, evidenceURI, evidenceHash, "risk-qwen-v1")
+  VB->>VB: LLM plans → tools (simulate, Nansen, reputation) → JSON findings → code scores
+  VB->>VR: validationResponse(rhB, 92, evidenceURI, evidenceHash, "risk-v1")
   A->>G: execute(action)
   G->>VR: getValidationStatus(rhA), getValidationStatus(rhB)
   G->>G: check validator, agentId and score for each; consume actionHash
@@ -243,9 +243,9 @@ sequenceDiagram
 1. A permission change happens outside the mandate: a new operator approval on the agent in the Identity Registry.
 2. The agent is induced to transfer funds to an unknown address.
 3. `mandate-v1` sees (a) a target not on the allowlist or above the cap, and (b) a permission change after the last passkey-approved mandate. It scores 0, with machine-readable reasons.
-4. `risk-qwen-v1` explains the risk using Nansen data on the counterparty, and scores it low.
+4. `risk-v1` explains the risk from its tools (simulation, permission history, ERC-8004 reputation and Nansen data on the counterparty), and scores it low.
 5. `execute(action)` reverts at the gate.
-6. The full detail goes to the operator's encrypted inbox. Only the score and evidence hash are public.
+6. `risk-v1`'s evidence, including this explanation, is posted in public plaintext, the same as `mandate-v1`'s. P7 adds a separate encrypted findings inbox on top.
 
 ### 5.4 Private findings, any device
 
@@ -291,7 +291,7 @@ It stops at the first problem:
 |---|---|---|
 | 0 | `match` | The same score and the same `responseHash`. |
 | 1 | `mismatch` | `SCORE_MISMATCH`, `RESPONSE_HASH_MISMATCH`, `EVIDENCE_HASH_MISMATCH`, `PIN_OUT_OF_RANGE`, `REQUEST_BLOCK_WRONG` or `REQUEST_INVALID`. This is public proof that the validator misbehaved, because it signed both the score and the evidence's hash, and the facts compared against are onchain. |
-| 2 | could not verify | A usage or RPC error, a Node older than 22.18, a CLI that fails to load or an uncaught error (an `eth_call` answered with no hex result counts as one, never as chain state), `REQUEST_NOT_FOUND`, `RESPONSE_NOT_FOUND`, or an input log the re-run can't find. A missing log is lag, not evidence. `EVIDENCE_NOT_DECODED` lands here too: evidence that isn't an inline `data:` URI, is over 128 KiB or is malformed was never compared. So does `NOT_MANDATE_V1`: another validator's verdict, such as an agentic `risk-qwen-v1` one, isn't re-executable by design, and its tag proves nothing against it. |
+| 2 | could not verify | A usage or RPC error, a Node older than 22.18, a CLI that fails to load or an uncaught error (an `eth_call` answered with no hex result counts as one, never as chain state), `REQUEST_NOT_FOUND`, `RESPONSE_NOT_FOUND`, or an input log the re-run can't find. A missing log is lag, not evidence. `EVIDENCE_NOT_DECODED` lands here too: evidence that isn't an inline `data:` URI, is over 128 KiB or is malformed was never compared. So does `NOT_MANDATE_V1`: another validator's verdict, such as an agentic `risk-v1` one, isn't re-executable by design, and its tag proves nothing against it. |
 
 The output starts with the verdict (`match`, `MISMATCH` or `could not verify`), then shows the validator, the pinned block (number, hash and time), the posted and recomputed score and `responseHash`, the reasons, the spend entries, the number of permission events, the problems and the differing keys. `--json` prints the same report as one line, with bigints as decimal strings. Errors show viem's short message only.
 
@@ -372,7 +372,7 @@ Because spend accounting and `verify` read it, `mandate-v1`'s evidence stays pub
 { "schema": "attest8004.findings.v1", "epk": "<x25519 ephemeral pub>", "nonce": "…", "ct": "…" }
 ```
 
-**Tags:** `mandate-v1` and `risk-qwen-v1`. The tag goes in `validationResponse(..., tag)` and is used by `getSummary` and the indexer.
+**Tags:** `mandate-v1` and `risk-v1`. The tag goes in `validationResponse(..., tag)` and is used by `getSummary` and the indexer.
 
 ---
 
@@ -385,7 +385,7 @@ Because spend accounting and `verify` read it, `mandate-v1`'s evidence stays pub
 | Canonical Identity Registry | Who owns or operates an `agentId` | — | Canonical ERC-8004 deployment. **It is an upgradeable (UUPS) proxy with an owner**, so its owner can change ownership and approval logic. Our ValidationRegistry pins its address as an `immutable` and inherits that trust. |
 | P256 precompile `0x0100` | Raw ECDSA P-256 verification | WebAuthn semantics, low-s | Our contract checks the challenge, flags, rpIdHash and low-s, and checks the return length |
 | `mandate-v1` | A deterministic verdict | — | **Anyone can re-execute it** (§5.5) |
-| `risk-qwen-v1` | Advisory risk score and explanation | Being "correct". LLMs can be wrong or manipulated | Evidence hash committed onchain, full trace in the evidence, never the only gate |
+| `risk-v1` | Advisory risk score and explanation | Being "correct". LLMs can be wrong or manipulated | Evidence hash committed onchain, full trace in the evidence, never the only gate |
 | Validator storage (HTTP) | Availability | Integrity | `responseHash` onchain |
 | Consumer (gate deployer) | Choosing which validators to require and each one's minimum score | — | Fixed at deployment in immutables, readable with `requirements()` |
 
@@ -400,9 +400,9 @@ Because spend accounting and `verify` read it, `mandate-v1`'s evidence stays pub
 
 **Two trust modes:**
 - **Verifiable** (`mandate-v1`): anyone can reproduce the verdict.
-- **Advisory** (`risk-qwen-v1`): adds context but must never be the only check.
+- **Advisory** (`risk-v1`): adds context but must never be the only check.
 
-The recommended gate policy is *require `mandate-v1` = 100 **and** `risk-qwen-v1` ≥ threshold*.
+The recommended gate policy is *require `mandate-v1` = 100 **and** `risk-v1` ≥ threshold*.
 
 ---
 
@@ -416,7 +416,7 @@ The recommended gate policy is *require `mandate-v1` = 100 **and** `risk-qwen-v1
 | Agent hot key | secp256k1 | Agent runtime (demo: `.env`, made by `scripts/src/hot-keys.ts`, funded for a few requests) | Agent | Registered with `AgentRequestForwarder.setAgentKey`. Calls `forwarder.request` for its own agent only. It is not an ERC-721 operator, so it can't transfer the agent NFT. `execute` is permissionless, so it may also submit validated actions. |
 | Validator A / B keys | secp256k1 | Validator service env (`.env`, never committed) | Validator operator | `validatorAddress` in requests and responses |
 | Deployer | secp256k1 | `.env` | Builder | Deploys only. No admin rights afterwards. |
-| API keys (Qwen, Nansen, Envio) | Bearer tokens | Validator or indexer env | Builder | None |
+| API keys (LLM, Nansen, Envio) | Bearer tokens | Validator or indexer env | Builder | None |
 
 The LLM never sees or holds any private key. Validators sign; the model only proposes a structured verdict, which is checked against a schema.
 
@@ -438,7 +438,7 @@ The LLM never sees or holds any private key. Validators sign; the model only pro
   - **Caps cover native MON only.** `maxValuePerTx` and `maxValuePerDay` bound the action's `value`. A mandate that allowlists a token-moving selector (`transfer`, `approve`, `transferFrom`, …) doesn't cap the token amount: the agent can move any amount of that token to the allowed targets. Allowlist such selectors only with targets you'd trust with the whole balance; this is on the P10 threat-model list.
 - **A validator key signs only its own validator's verdicts.** Spend counts only `mandate-v1`-tagged approvals, and today's gate accepts a sufficient score under any tag from the named validator. So validator A's key signs nothing but `mandate-v1` (the P3 stub validator, which signed with it, is deleted). Making this a contract rule, a required tag per gate requirement, is planned for the P5 vault redeploy.
 - **Validator gas is a public resource:** anyone who owns an agent can name our validator. A gate allowlist alone wouldn't protect the budget: anyone can register an agent, set their own mandate and request through our allowlisted vault, which would refuse the action (`NotVaultAgent`), but each answer would still cost validator A about 150,000 gas, and a few such agents could use up the validator-wide daily budget and lock agent 1984 out for 24 h. So `mandate-v1` answers only allowlisted **(gate, agent) pairs** (`MANDATE_V1_GATES=<gate>:<agentId>,…`, by default the demo vault with agent 1984, the one agent it is bound to) and declines anything else before any RPC: an unlisted gate (`GATE_NOT_SERVED`) or a listed gate named for another agent (`GATE_NOT_FOR_AGENT`). Then it answers only agents with an unexpired mandate set by their current owner, under a per-agent rate limit and a validator-wide daily gas budget (in memory, so a restart resets them). A declined request gets no response and one log line.
-- **LLM output** is untrusted data: schema-validated, capped tool calls and tokens, temperature 0–0.2, full trace kept.
+- **LLM output** is untrusted data: screened for prompt injection before the model sees it, schema-validated, and scored by code, never by the model itself. Capped tool calls and tokens, temperature 0–0.2, full trace kept.
 - **Secrets:** gitleaks runs as a pre-commit hook and over the full history before the repo goes public. Only `.env.example` is committed.
 - **No upgradeability or admin** in our registries, so nothing can be swapped out after deployment. The canonical Identity Registry they read *is* upgradeable by its owner (§7).
 
@@ -487,7 +487,7 @@ attest8004/
   STATUS.md         progress log
   contracts/        Foundry: src/, test/, script/
   packages/sdk/     @attest8004/sdk (client, validator base, admission, canonical JSON, deployments)
-  validators/       mandate/ (mandate-v1: the service and the verify CLI, `pnpm attest8004 verify`), qwen/ (risk-qwen-v1, P5)
+  validators/       mandate/ (mandate-v1: the service and the verify CLI, `pnpm attest8004 verify`), risk/ (risk-v1, P5)
   indexer/          Envio HyperIndex
   web/              /approve, /inbox, /dashboard
   cre/              (stretch) Chainlink CRE workflow

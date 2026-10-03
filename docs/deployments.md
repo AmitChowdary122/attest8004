@@ -83,13 +83,24 @@ against it.
   the deployer), and one requirement: validator A `0xa62DaB21E0C0F57e94B3ed6e675F214199989e92` (`mandate-v1`) with
   `minScore` 100. Read them back with `validationRegistry()`, `agentId()` and `requirements()`.
 - **Requires validator A only, for now.** P5 redeploys the vault requiring both validators (`mandate-v1` and
-  `risk-qwen-v1`). Different constructor arguments give a different address, and this one stays as it is.
+  `risk-v1`). Different constructor arguments give a different address, and this one stays as it is.
 - **How it was deployed:** `contracts/script/DeployDemoAgentVault.s.sol` via `script/deploy-testnet.sh DemoAgentVault`,
   through the CREATE2 factory with salt `keccak256("attest8004.DemoAgentVault.v1")`. The broadcast record is
   `contracts/broadcast/DeployDemoAgentVault.s.sol/10143/run-latest.json`.
 - **Gas:** explicit limit 1,000,000 (Monad `eth_estimateGas` was 829,476; limit = ×1.2, rounded up to 10k).
 - **Not upgradeable, no owner.** Funds leave the vault only through `execute` with an action that validator A passed.
   `execute` is permissionless: the validated action is the authorisation.
+
+## Web app
+
+| What | Value |
+|---|---|
+| Production domain | [`attest8004.vercel.app`](https://attest8004.vercel.app) |
+| Host | Vercel |
+
+This is the **WebAuthn rpId for P6**: passkeys are bound to the domain they were created on, so demo passkeys are
+created on this production domain, never on a preview deployment or localhost. **Never use a Vercel preview URL for
+passkeys** — a preview gets its own subdomain, which would mint passkeys bound to a different rpId than production.
 
 ## Demo agents (testnet)
 

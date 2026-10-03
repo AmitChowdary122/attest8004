@@ -2,7 +2,7 @@
 
 > **The missing ERC-8004 Validation layer for Monad.**
 > Built for Monad Metropolis, Track 04 (Trust, Identity & AI Infrastructure).
-> **Status: work in progress.** On Monad testnet, the ValidationRegistry, the AgentRequestForwarder, the MandateRegistry and a demo AttestGate consumer (`DemoAgentVault`) are live. The deterministic validator **`mandate-v1`** runs end to end against them: it approved an action inside demo agent 1984's mandate, which executed, and scored 0 an action outside it, which the gate refuses (checked by simulation). Anyone can re-run those verdicts with `pnpm attest8004 verify <requestHash>` (see [Deployments](#deployments)). Mandates are set by the agent owner's wallet for now; passkey approval, the agentic validator `risk-qwen-v1`, the findings inbox and the indexer are being built. Progress is in [STATUS.md](./STATUS.md).
+> **Status: work in progress.** On Monad testnet, the ValidationRegistry, the AgentRequestForwarder, the MandateRegistry and a demo AttestGate consumer (`DemoAgentVault`) are live. The deterministic validator **`mandate-v1`** runs end to end against them: it approved an action inside demo agent 1984's mandate, which executed, and scored 0 an action outside it, which the gate refuses (checked by simulation). Anyone can re-run those verdicts with `pnpm attest8004 verify <requestHash>` (see [Deployments](#deployments)). Mandates are set by the agent owner's wallet for now; passkey approval, the agentic validator `risk-v1`, the findings inbox and the indexer are being built. Progress is in [STATUS.md](./STATUS.md).
 
 ## What
 
@@ -14,7 +14,7 @@ Attest8004 provides that answer onchain. It has five parts:
 - **Passkey-approved mandates**: an agent's operator approves what the agent may do (targets, functions, spend caps, expiry) with a passkey, verified onchain by Monad's P256 precompile at `0x0100`. Today the MandateRegistry takes the mandate from the owner's wallet; passkey approval replaces that in P6.
 - **Validator SDK** with two reference validators:
   - `mandate-v1`: deterministic, so anyone can re-run it and get the same verdict
-  - `risk-qwen-v1`: agentic, using Qwen 3.8 Max with Nansen data
+  - `risk-v1`: agentic, an LLM with read-only onchain tools and Nansen
 - **Private findings inbox**: detailed findings are encrypted to a key derived from the operator's passkey (Mera PRF). The key is never stored.
 - **Trust API**: an Envio HyperIndex indexer behind the SDK and the dashboard.
 
@@ -34,13 +34,13 @@ agent's mandate and owner, its approved spend in the last 25 h, recent permissio
 action) is read at one pinned block, and the verdict's clock is that block's time. Its evidence is public canonical
 JSON, posted inline, and records that block. `pnpm attest8004 verify <requestHash>` re-runs the verdict from chain data
 alone and must reproduce the same score and the same `responseHash`. The validator signed both, so a mismatch is public
-proof that it misbehaved ([ARCHITECTURE §5.5](./ARCHITECTURE.md)). The agentic `risk-qwen-v1` (P5) will add advisory
+proof that it misbehaved ([ARCHITECTURE §5.5](./ARCHITECTURE.md)). The agentic `risk-v1` (P5) will add advisory
 context on top, and is never meant to be the only check.
 
 The flow, in short:
 
 1. An agent builds an `Action` and requests validation on the **ValidationRegistry**, once per validator. Each `requestHash` is bound to one chain, one gate, one validator, one exact action and a deadline. The agent's own hot key sends the request through the **AgentRequestForwarder**, which the agent's owner approved once: the key can request validations for its agent and do nothing else with it.
-2. Validators pick up the `ValidationRequest` event (the SDK's validator base polls for it and verifies the request JSON against `requestHash`), check the action against the agent's **mandate** in the MandateRegistry (owner-set today, passkey-approved from P6) and recent permission changes (and, for `risk-qwen-v1`, against simulation, Nansen data and ERC-8004 reputation), then post `validationResponse` with a score and an evidence hash.
+2. Validators pick up the `ValidationRequest` event (the SDK's validator base polls for it and verifies the request JSON against `requestHash`), check the action against the agent's **mandate** in the MandateRegistry (owner-set today, passkey-approved from P6) and recent permission changes (and, for `risk-v1`, against simulation, Nansen data and ERC-8004 reputation), then post `validationResponse` with a score and an evidence hash.
 3. A consumer contract using **AttestGate** recomputes each required validator's `requestHash` from the call. It executes only if every one of those verdicts names the right agent and meets its minimum score, and each action runs once.
 4. Detailed findings go to the operator's encrypted inbox. Envio indexes everything for the trust API.
 
@@ -51,7 +51,7 @@ The diagrams, flows, data formats, trust model and key custody are in **[ARCHITE
 | [`contracts/`](./contracts) | Foundry: ValidationRegistry, AgentRequestForwarder, MandateRegistry, AttestGate, DemoAgentVault |
 | [`packages/sdk/`](./packages/sdk) | `@attest8004/sdk`: client, validator base, shared types, hash test vectors |
 | [`validators/mandate/`](./validators/mandate) | `mandate-v1` deterministic validator: the service and the `verify` CLI |
-| [`validators/qwen/`](./validators/qwen) | `risk-qwen-v1` agentic validator (P5) |
+| [`validators/risk/`](./validators/risk) | `risk-v1` agentic validator (P5) |
 | [`indexer/`](./indexer) | Envio HyperIndex project |
 | [`web/`](./web) | `/approve`, `/inbox`, `/dashboard` |
 | [`scripts/`](./scripts) | `@attest8004/scripts`: operational scripts (testnet round trip, demo agents, end to end) |
@@ -133,6 +133,7 @@ budget; a restart resets both.
 | Monad testnet (10143) | `MandateRegistry` (per-agent spending mandates; owner-set until P6) | [`0x2523197373ef813E19b5b14Ef2984130868cD17c`](https://monad-testnet.socialscan.io/address/0x2523197373ef813e19b5b14ef2984130868cd17c) |
 | Monad testnet (10143) | `DemoAgentVault` (AttestGate demo, demo agent 1984, requires validator A) | [`0x23BfBD12545CCd1501ddA1B65a54518FD6212a96`](https://monad-testnet.socialscan.io/address/0x23bfbd12545ccd1501dda1b65a54518fd6212a96) |
 | Monad testnet (10143) | `DemoAgentVault`, P2, agent 1982 (**superseded**) | [`0x7A5EC388CCbfD3B255CFa94fc2062c0807F2C4CD`](https://monad-testnet.socialscan.io/address/0x7a5ec388ccbfd3b255cfa94fc2062c0807f2c4cd) |
+| Vercel | Web app, production (the WebAuthn rpId for P6; never a preview URL) | [`attest8004.vercel.app`](https://attest8004.vercel.app) |
 
 Registry deploy tx [`0x724f31e0…cf64d03`](https://monad-testnet.socialscan.io/tx/0x724f31e0efd09993f2d73581cb742e71d4bef52c0f4f2a30cccd43d79cf64d03). A scripted register → request → response round trip on this registry (agentId 1982), a validated execute through the P2 vault ([`0x59d5987e…71e3f85`](https://monad-testnet.socialscan.io/tx/0x59d5987e1d2583def79af6af40efd60daf0fa88cc7553d6f3b31a0eab71e3f85)), the demo agents 1984 and 1985 with their hot keys, the switch to per-agent forwarder approvals with agent 1984's mandate, the P3 end-to-end run (hot key → forwarder → validator → execute, [`0x6f694020…bb1336a8`](https://monad-testnet.socialscan.io/tx/0x6f6940203907d8d759e1887953d1170015be7f0c6d27b39c4e22090bbb1336a8)), and the P4 run with `mandate-v1` (one action inside agent 1984's mandate executed, [`0xb666247e…60c84f9`](https://monad-testnet.socialscan.io/tx/0xb666247e2ac448a233c1bac336c19d65373aa908a2656b2f6e999408f60c84f9); one outside it scored 0 and refused; both re-checked with `verify`) are recorded with their transaction hashes in [docs/deployments.md](./docs/deployments.md). That file records every deployment with its chain, address, commit and date. Differences from the EIP-8004 Draft are in [docs/spec-notes.md](./docs/spec-notes.md).
 
@@ -146,7 +147,7 @@ Canonical contracts this project builds on:
 
 ## Nansen endpoints
 
-The `risk-qwen-v1` validator will use Nansen for counterparty profiles and fund flows. Each endpoint and data category will be listed here and in [docs/nansen.md](./docs/nansen.md) once integrated.
+The `risk-v1` validator will use Nansen for counterparty profiles and fund flows. Each endpoint and data category will be listed here and in [docs/nansen.md](./docs/nansen.md) once integrated.
 
 | Endpoint | Data category | Used for |
 |---|---|---|
@@ -156,7 +157,7 @@ The `risk-qwen-v1` validator will use Nansen for counterparty profiles and fund 
 
 This project is built with **Claude Code** (Anthropic; model Claude Opus 5.5) as a coding assistant. The developer writes the specification and architecture, reviews each change, and runs the tests. Claude Code writes much of the code, tests and docs under the rules in [CLAUDE.md](./CLAUDE.md). Commits it co-authored carry a `Co-Authored-By: Claude` trailer.
 
-At runtime, `risk-qwen-v1` uses **Qwen 3.8 Max** (Alibaba Cloud Model Studio) for agentic risk assessment. Its output is treated as untrusted data and validated against a schema, and the model never holds or sees private keys.
+At runtime, `risk-v1` calls a **Groq-hosted** model through an OpenAI-compatible endpoint set in `.env`. Today that is `openai/gpt-oss-120b`, with `meta-llama/llama-prompt-guard-2-86m` screening untrusted text. The output is untrusted data: schema-validated and scored by code, and the model never sees keys.
 
 ## Credits and pre-existing code
 
