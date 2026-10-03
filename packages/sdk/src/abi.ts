@@ -16,6 +16,8 @@ export const validationRegistryAbi = parseAbi([
   "function validationResponse(bytes32 requestHash, uint8 response, string responseURI, bytes32 responseHash, string tag)",
   "function getValidationStatus(bytes32 requestHash) view returns (address validatorAddress, uint256 agentId, uint8 response, bytes32 responseHash, string tag, uint256 lastUpdate)",
   "function getSummary(uint256 agentId, address[] validatorAddresses, string tag) view returns (uint64 count, uint8 averageResponse)",
+  "function getAgentValidations(uint256 agentId) view returns (bytes32[] requestHashes)",
+  "function getValidatorRequests(address validatorAddress) view returns (bytes32[] requestHashes)",
   "function getIdentityRegistry() view returns (address)",
   "event ValidationRequest(address indexed validatorAddress, uint256 indexed agentId, string requestURI, bytes32 indexed requestHash)",
   "event ValidationResponse(address indexed validatorAddress, uint256 indexed agentId, bytes32 indexed requestHash, uint8 response, string responseURI, bytes32 responseHash, string tag)",

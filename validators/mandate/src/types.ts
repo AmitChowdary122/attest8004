@@ -92,6 +92,7 @@ export interface MandateInputs {
   };
   mandate: MandateRecord | null;
   spend: { since: bigint; entries: SpendEntry[]; total: bigint } | { unreadable: string } | null;
+  /** The window `(P - N, P]` as the inclusive range read: `fromBlock = P - N + 1` (at least 0), `toBlock = P`. */
   permissions: { fromBlock: bigint; toBlock: bigint; events: PermissionEvent[] };
   simulation: Simulation;
 }

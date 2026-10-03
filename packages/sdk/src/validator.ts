@@ -93,7 +93,8 @@ export interface ValidatorOptions {
   log?: (entry: Record<string, unknown>) => void;
 }
 
-const EVIDENCE_SCHEMA_V1 = "attest8004.evidence.v1";
+/** The `schema` of every evidence document `buildEvidence` builds (ARCHITECTURE §6). */
+export const EVIDENCE_SCHEMA_V1 = "attest8004.evidence.v1";
 const RESERVED_EVIDENCE_KEYS = ["schema", "validator", "requestHash", "score", "reasons"];
 
 /**
