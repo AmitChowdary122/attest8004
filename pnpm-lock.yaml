@@ -252,6 +252,15 @@ importers:
       '@attest8004/sdk':
         specifier: workspace:*
         version: link:../../packages/sdk
+      '@attest8004/validator-mandate':
+        specifier: workspace:*
+        version: link:../mandate
+      viem:
+        specifier: 'catalog:'
+        version: 2.57.2(typescript@7.0.2)(zod@4.6.5)
+      zod:
+        specifier: 'catalog:'
+        version: 4.6.5
     devDependencies:
       '@types/node':
         specifier: 'catalog:'

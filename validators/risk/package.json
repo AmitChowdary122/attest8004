@@ -5,12 +5,20 @@
   "description": "risk-v1: agentic Attest8004 validator (OpenAI-compatible LLM + onchain tools + Nansen)",
   "license": "MIT",
   "type": "module",
+  "exports": {
+    ".": {
+      "@attest8004/source": "./src/index.ts"
+    }
+  },
   "scripts": {
     "typecheck": "tsc --noEmit",
     "test": "vitest run --passWithNoTests"
   },
   "dependencies": {
-    "@attest8004/sdk": "workspace:*"
+    "@attest8004/sdk": "workspace:*",
+    "@attest8004/validator-mandate": "workspace:*",
+    "viem": "catalog:",
+    "zod": "catalog:"
   },
   "devDependencies": {
     "@types/node": "catalog:",
