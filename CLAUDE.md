@@ -40,7 +40,7 @@ Attest8004 is the ERC-8004 **Validation** layer for Monad: a spec-conformant Val
 - Reputation Registry:
   - testnet `0x8004B663056A597Dffe9eCcC1965A193B7388713`
   - mainnet `0x8004BAa17C55a88189AE136b182e5fdA19dE9b63`
-- **No Validation Registry is deployed anywhere.** That is our gap.
+- **No canonical Validation Registry is deployed anywhere.**
 - x402 facilitator: `https://x402-facilitator.molandak.org`. Use `@x402/evm >= 2.22.0`; testnet needs a custom USDC money parser.
 - **Mera PRF on desktop Chrome works only with passkeys stored in Google Password Manager.** Firefox on Linux won't work. The demo uses Chrome plus an Android phone with the same Google account.
 
