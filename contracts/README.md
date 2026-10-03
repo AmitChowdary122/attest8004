@@ -44,7 +44,7 @@ Immutable, no admin, no funds. The trade-off of the blanket approval is in ARCHI
 
 | Test file | What it covers |
 |---|---|
-| `test/AgentRequestForwarder.t.sol` | Key management (owner only, not an operator or the key; rotate; revoke); requests: wrong key, another agent's key, the owner, no key, a revoked key, a key set by a previous owner after a transfer (even if the new owner approved the forwarder), the A→B→A case, a revoked approval, a reused hash; that the forwarder can only call `validationRequest` (state-diff recording of every call it makes, the compiled ABI pinned, ERC-721 calls refused, no funds, fuzzed calldata) |
+| `test/AgentRequestForwarder.t.sol` | Key management (owner only, not an operator or the key; rotate; revoke); requests: wrong key, another agent's key, the owner, no key, a revoked key, a key set by a previous owner after a transfer (even if the new owner approved the forwarder), the A→B→A case, a revoked approval, a reused hash, a per-token `approve` instead of `setApprovalForAll` (works for that agent only, cleared by a transfer); that the forwarder can only call `validationRequest` (state-diff recording of every call it makes, the compiled ABI pinned, ERC-721 calls refused, no funds, fuzzed calldata) |
 | `test/fork/AgentRequestForwarder.fork.t.sol` | The testnet configuration against the live registry and canonical Identity Registry: a key requests; a stale key after a transfer is refused |
 | `test/DeployAgentRequestForwarder.t.sol` | The CREATE2 deploy script: predicted address, idempotence, wiring, the testnet configuration |
 

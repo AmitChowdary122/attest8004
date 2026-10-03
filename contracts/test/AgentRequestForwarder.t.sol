@@ -228,6 +228,44 @@ contract AgentRequestForwarderTest is Test {
         assertEq(id, agent1);
     }
 
+    /// The narrower alternative to setApprovalForAll (ARCHITECTURE §7): a per-token approve of the
+    /// forwarder works unchanged, covers only that agent, and is cleared by a transfer.
+    function test_Request_WorksWithPerTokenApproval_OnlyForThatAgent() public {
+        address solo = makeAddr("solo");
+        address soloKey = makeAddr("soloKey");
+        vm.startPrank(solo);
+        uint256 approvedAgent = identity.register();
+        uint256 otherAgent = identity.register();
+        identity.approve(address(forwarder), approvedAgent);
+        forwarder.setAgentKey(approvedAgent, soloKey);
+        forwarder.setAgentKey(otherAgent, soloKey);
+        vm.stopPrank();
+
+        vm.prank(soloKey);
+        forwarder.request(validator, approvedAgent, URI, HASH);
+        (, uint256 id,,,,) = registry.getValidationStatus(HASH);
+        assertEq(id, approvedAgent);
+
+        vm.expectRevert(
+            abi.encodeWithSelector(ValidationRegistry.NotAgentOwnerOrOperator.selector, otherAgent, address(forwarder))
+        );
+        vm.prank(soloKey);
+        forwarder.request(validator, otherAgent, URI, keccak256("other"));
+
+        // A transfer clears the per-token approval; back with the same owner, it is still gone.
+        vm.prank(solo);
+        identity.transferFrom(solo, newOwner, approvedAgent);
+        vm.prank(newOwner);
+        identity.transferFrom(newOwner, solo, approvedAgent);
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                ValidationRegistry.NotAgentOwnerOrOperator.selector, approvedAgent, address(forwarder)
+            )
+        );
+        vm.prank(soloKey);
+        forwarder.request(validator, approvedAgent, URI, keccak256("after transfer"));
+    }
+
     function test_Request_RevertWhen_OwnerRevokedForwarderApproval() public {
         vm.prank(owner);
         identity.setApprovalForAll(address(forwarder), false);
