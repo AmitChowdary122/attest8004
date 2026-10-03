@@ -3,7 +3,8 @@
 // responseHash with the ones posted onchain. From the repo root: `pnpm attest8004 verify <requestHash>`.
 // Read-only: it never sends a transaction. Its own output never prints the RPC URL it was given,
 // which can carry an API key: errors show viem's short message only. pnpm, though, echoes the command
-// line it runs, so a keyed URL belongs in MONAD_TESTNET_RPC_URL (or `pnpm -s` with --rpc-url).
+// line it runs, so a keyed URL belongs in MONAD_TESTNET_RPC_URL (or `pnpm --loglevel silent` with
+// --rpc-url; pnpm 12 has no `-s` for `pnpm run`).
 import { realpathSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { BaseError, createPublicClient, formatEther, http } from "viem";
@@ -23,8 +24,9 @@ export const USAGE = [
   "  --rpc-url URL   a Monad testnet RPC (default: $MONAD_TESTNET_RPC_URL, else the public RPC).",
   "                  pnpm echoes its arguments, so give a URL with an API key as",
   "                  MONAD_TESTNET_RPC_URL=<url> pnpm attest8004 verify <requestHash>, or in .env,",
-  "                  or run pnpm -s. The public RPC serves about 51 days of history; older",
-  "                  verdicts need an archive RPC.",
+  "                  or run pnpm --loglevel silent attest8004 verify <requestHash> --rpc-url <url>.",
+  "                  The public RPC serves about 51 days of history; older verdicts need an",
+  "                  archive RPC.",
   "  --json          print the report as one JSON object",
   "",
   "exit codes: 0 match; 1 mismatch (public proof that the validator misbehaved);",

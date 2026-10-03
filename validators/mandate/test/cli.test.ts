@@ -232,7 +232,9 @@ describe("attest8004 CLI: exit codes and output", () => {
 
   it("the usage steers a URL with an API key away from --rpc-url, which pnpm echoes", () => {
     expect(USAGE).toContain("MONAD_TESTNET_RPC_URL=<url> pnpm attest8004 verify <requestHash>");
-    expect(USAGE).toContain("pnpm -s");
+    // pnpm 12 has no `-s` for `pnpm run`; `--loglevel silent` is what hides the echoed command line.
+    expect(USAGE).toContain("pnpm --loglevel silent attest8004 verify");
+    expect(USAGE).not.toContain("pnpm -s");
     expect(USAGE).toMatch(/pnpm echoes its arguments/);
   });
 });
