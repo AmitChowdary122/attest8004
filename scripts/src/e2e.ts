@@ -139,7 +139,8 @@ async function expectRevert(
 /** Confirms a sent transaction carried exactly the explicit limit, and came from `from`. */
 async function checkSent(label: string, hash: Hash, from: Address, gasLimit: bigint): Promise<void> {
   const tx = await publicClient.getTransaction({ hash });
-  check(`${label} was sent by ${from} with gas limit ${gasLimit}`, tx.from === from && tx.gas === gasLimit, `${tx.from}, ${tx.gas}`);
+  const sender = getAddress(tx.from); // the RPC returns it lower-case
+  check(`${label} was sent by ${from} with gas limit ${gasLimit}`, sender === from && tx.gas === gasLimit, `${sender}, ${tx.gas}`);
 }
 
 /** Polls `validator` until an outcome for `requestHash` matches, or times out. */
