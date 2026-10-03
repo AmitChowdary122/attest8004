@@ -9,7 +9,8 @@ Every Attest8004 deployment is recorded here: chain, contract, address, the comm
 ### ValidationRegistry (testnet) details
 
 - **Constructor argument:** the canonical testnet Identity Registry `0x8004A818BFB912233c491871b3d84c89A494BD9e`.
-- **How it was deployed:** `contracts/script/DeployValidationRegistry.s.sol` via `script/deploy-testnet.sh`, through the
+- **How it was deployed:** `contracts/script/DeployValidationRegistry.s.sol` via `script/deploy-testnet.sh` (now
+  `script/deploy-testnet.sh ValidationRegistry`), through the
   CREATE2 factory `0x4e59b44847b379578588920cA78FbF26c0B4956C` with salt `keccak256("attest8004.ValidationRegistry.v1")`.
   The broadcast record is `contracts/broadcast/DeployValidationRegistry.s.sol/10143/run-latest.json`.
 - **Gas:** explicit limit 1,140,000 (Monad `eth_estimateGas` was 949,673; limit = ×1.2, rounded up to 10k).

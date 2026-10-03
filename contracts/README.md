@@ -43,14 +43,16 @@ CI runs them in a separate `contracts-fork` job that may fail without turning th
 
 ## Deploying
 
-`script/DeployValidationRegistry.s.sol` deploys through the CREATE2 factory `0x4e59…956C` with a **literal gas
-limit** (`DEPLOY_GAS`), because Monad charges for the gas limit, not the gas used. The address depends on the
-init code, which includes the Identity Registry argument, so testnet and mainnet addresses differ. Re-running is
-a no-op once the contract exists.
+`script/DeployValidationRegistry.s.sol` and `script/DeployDemoAgentVault.s.sol` deploy through the CREATE2
+factory `0x4e59…956C` with a **literal gas limit** (`DEPLOY_GAS`), because Monad charges for the gas limit, not
+the gas used. The address depends on the init code, which includes the constructor arguments: the
+ValidationRegistry's address depends on the Identity Registry (so testnet and mainnet differ), and the vault's on
+its registry, agent and validator requirements. Re-running is a no-op once the contract exists.
 
 ```bash
-./script/deploy-testnet.sh               # dry run against Monad testnet; nothing is sent
-BROADCAST=1 ./script/deploy-testnet.sh   # deploy
+./script/deploy-testnet.sh ValidationRegistry               # dry run against Monad testnet; nothing is sent
+BROADCAST=1 ./script/deploy-testnet.sh ValidationRegistry   # deploy
+./script/deploy-testnet.sh DemoAgentVault                   # same, for the demo vault
 ```
 
 The wrapper loads `../.env` into the environment and never prints it. The deployer key reaches forge through

@@ -10,8 +10,9 @@ import {ValidationRegistry} from "../src/ValidationRegistry.sol";
 /// used. Re-running is a no-op once the contract exists.
 /// The address depends on the init code, which includes the Identity Registry argument: testnet
 /// and mainnet use different Identity Registries, so their addresses differ. (A chain that shares
-/// an Identity Registry address would get the same address.) Run it with script/deploy-testnet.sh,
-/// which first checks Monad's eth_estimateGas for this call against DEPLOY_GAS (see deployPlan).
+/// an Identity Registry address would get the same address.) Run it with `script/deploy-testnet.sh
+/// ValidationRegistry`, which first checks Monad's eth_estimateGas for this call against DEPLOY_GAS
+/// (see deployPlan).
 contract DeployValidationRegistry is Script {
     // CREATE2_FACTORY (0x4e59b448…956C) is inherited from forge-std's CommonBase.
     bytes32 public constant SALT = keccak256("attest8004.ValidationRegistry.v1");
