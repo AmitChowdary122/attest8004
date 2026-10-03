@@ -11,5 +11,5 @@
     // (run with node --conditions=@attest8004/source).
     "customConditions": ["@attest8004/source"]
   },
-  "include": ["src", "test"]
+  "include": ["src", "test", "scripts"]
 }

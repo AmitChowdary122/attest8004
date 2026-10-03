@@ -12,7 +12,8 @@
   },
   "scripts": {
     "typecheck": "tsc --noEmit",
-    "test": "vitest run --passWithNoTests"
+    "test": "vitest run --passWithNoTests",
+    "record-fixtures": "node --conditions=@attest8004/source --env-file=../../.env scripts/record-fixtures.ts"
   },
   "dependencies": {
     "@attest8004/sdk": "workspace:*",
