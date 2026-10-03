@@ -17,7 +17,7 @@ Attest8004 provides that layer:
 3. **Validators**:
    - `mandate-v1`: deterministic; anyone can re-run it and get the same verdict.
    - `risk-qwen-v1`: agentic; Qwen 3.8 Max plans tool calls over simulation, Nansen data and ERC-8004 reputation.
-4. **AttestGate**: a modifier that lets any contract refuse an action unless it carries a fresh, sufficient verdict for *exactly that action*.
+4. **AttestGate**: a modifier that lets any contract refuse an action unless every validator it requires has given a sufficient verdict for *exactly that action*, which then runs once.
 5. **Private findings inbox**: detailed findings are encrypted to a key derived from the operator's passkey (Mera PRF). It's never stored, and can be re-derived on any device.
 6. **Trust API**: Envio indexes everything into per-agent and per-validator summaries for the SDK and dashboard.
 
@@ -69,8 +69,8 @@ flowchart LR
 |---|---|---|---|
 | Onchain | `ValidationRegistry` | `contracts/src/` | Stores validation requests and responses. EIP-8004 interface. Authorises requesters via the canonical Identity Registry. No admin, not upgradeable. |
 | Onchain | `MandateRegistry` | `contracts/src/` | Per-agent operator passkey public key, the current mandate, and the inbox public key. Changes require a WebAuthn assertion verified via `0x0100`. |
-| Onchain | `AttestGate` (abstract or modifier) | `contracts/src/` | Recomputes `requestHash` from the call and checks for a fresh verdict from a trusted validator with at least the minimum score. Each verdict is single-use. |
-| Onchain | `DemoAgentVault` | `contracts/src/` | Example consumer: holds the agent's test funds; `execute(Action)` is gated. |
+| Onchain | `AttestGate` (abstract contract with the `onlyValidated` modifier) | `contracts/src/` | For each required validator, recomputes that validator's `requestHash` from the call and checks its verdict: the named validator, the agentId and the minimum score. Every requirement must pass, and each action runs once. |
+| Onchain | `DemoAgentVault` | `contracts/src/` | Example consumer, bound to one agentId: holds that agent's test funds; `execute(Action)` is gated. |
 | Offchain | `@attest8004/sdk` client | `packages/sdk/` | Builds actions, computes `requestHash`, submits requests, waits for verdicts, reads trust summaries. |
 | Offchain | `@attest8004/sdk` validator base | `packages/sdk/` | Subscribes to requests, checks the request against its hash, runs `check()`, posts signed responses with evidence. |
 | Offchain | `mandate-v1` | `validators/mandate/` | Deterministic mandate and permission checks plus simulation at a pinned block. Ships a `verify` CLI for re-execution. |
@@ -100,7 +100,7 @@ flowchart TB
 
 - **ValidationRegistry** reads the Identity Registry only to check that `msg.sender` is the owner or approved operator of `agentId` (`ownerOf`, `isApprovedForAll`, `getApproved`). It never trusts its own callers for this. The Identity Registry address is a **constructor argument** stored as an `immutable`. The EIP describes an `initialize(address)` instead, as used by the reference's upgradeable proxy; we have no proxy, owner or `initialize`, and `getIdentityRegistry()` returns the address. Because the Identity Registry address is part of the init code, the registry's CREATE2 address depends on it: testnet and mainnet use different Identity Registries, so their addresses differ. All differences from the EIP are in [`docs/spec-notes.md`](./docs/spec-notes.md).
 - **MandateRegistry** reads the Identity Registry so that only the agent's owner can set the initial passkey key. After that, every mandate or inbox-key change requires the passkey.
-- **AttestGate** reads the ValidationRegistry. It holds its own **trusted validator set** and **minimum score**, chosen by the consumer contract's owner, not by Attest8004.
+- **AttestGate** reads the ValidationRegistry. It holds an **immutable list of `(validator, minScore)` requirements** (1 to 4), chosen by whoever deploys the consumer contract, not by Attest8004, and fixed at deployment. Every requirement must pass.
 
 ### 4.2 Canonical addresses used
 
@@ -142,12 +142,19 @@ actionHash = keccak256(abi.encode(
 - It's defined once in `contracts/src/ActionHash.sol` and once in `packages/sdk/src/action.ts`. Both are checked against `packages/sdk/test/vectors.json`, whose expected values come from `cast` (`vectors.sh`), so neither implementation grades itself.
 
 ### 4.4 Gate check (in order)
-1. Recompute `requestHash` from the call arguments.
-2. `block.timestamp <= deadline`.
-3. `requestHash` has not been consumed.
-4. `getValidationStatus(requestHash)` returns a validator in the gate's trusted set, with `response >= minScore`. *(P2 must refine this: see the note under §5.2.)*
-5. If the gate requires several validators (e.g. both `mandate-v1` and `risk-qwen-v1`), every one must pass.
-6. Mark it consumed, then execute.
+
+`DemoAgentVault.execute` first requires `action.agentId` to be the vault's own agent. Then `onlyValidated`:
+
+1. `block.timestamp <= deadline`.
+2. `actionHash` has not been consumed.
+3. For each requirement `(validator, minScore)`, in list order (every one must pass):
+   1. Recompute `requestHash` for that validator from the call arguments.
+   2. `getValidationStatus(requestHash)` must exist. The registry reverts for an unknown hash, and the gate reports `ValidationNotFound`.
+   3. The stored `validatorAddress` must be that validator, and the stored `agentId` must be the action's. Anyone who owns an agent can claim a `requestHash` first and name any validator (spec-notes, row 12), so the score alone proves nothing.
+   4. `response >= minScore`. `minScore` is at least 1, because a pending request reads as response 0. The latest response counts, so a validator can withdraw a pass before execution.
+4. Mark `actionHash` consumed and emit `ActionConsumed`, **then** make the external call. `execute` also runs under a reentrancy guard (OpenZeppelin `ReentrancyGuardTransient`).
+
+If the call reverts, the whole transaction reverts, consumption included, so the action can be retried until its deadline. `execute` is permissionless: the validated, deadline-bound action is the authorisation, and to cancel it the agent lets it expire. The requirements are packed into immutables, so the check costs one registry read per validator and one storage write.
 
 ---
 
@@ -182,34 +189,31 @@ sequenceDiagram
 ```mermaid
 sequenceDiagram
   autonumber
-  participant A as Agent
+  participant A as Agent (owner or operator)
   participant VR as ValidationRegistry
   participant VA as mandate-v1
   participant VB as risk-qwen-v1
   participant G as DemoAgentVault (AttestGate)
-  A->>A: build Action, requestHash = H(...)
-  A->>VR: validationRequest(VA, agentId, requestURI, requestHash)
-  A->>VR: validationRequest(VB, agentId, requestURI, requestHash)
-  VR-->>VA: ValidationRequest event
-  VR-->>VB: ValidationRequest event
-  VA->>VA: load request, check hash, check mandate + permissions, simulate at block N
-  VA->>VR: validationResponse(requestHash, 100, evidenceURI, evidenceHash, "mandate-v1")
+  A->>A: build Action; rhA = requestHash(VA), rhB = requestHash(VB)
+  A->>VR: validationRequest(VA, agentId, requestURI_A, rhA)
+  A->>VR: validationRequest(VB, agentId, requestURI_B, rhB)
+  VR-->>VA: ValidationRequest event (rhA)
+  VR-->>VB: ValidationRequest event (rhB)
+  VA->>VA: load request JSON, recompute rhA, check mandate + permissions, simulate at block N
+  VA->>VR: validationResponse(rhA, 100, evidenceURI, evidenceHash, "mandate-v1")
   VB->>VB: Qwen plans → tools (simulate, Nansen, reputation) → JSON verdict
-  VB->>VR: validationResponse(requestHash, 92, evidenceURI, evidenceHash, "risk-qwen-v1")
+  VB->>VR: validationResponse(rhB, 92, evidenceURI, evidenceHash, "risk-qwen-v1")
   A->>G: execute(action)
-  G->>VR: getValidationStatus(requestHash)
-  G-->>A: executed (requestHash consumed)
+  G->>VR: getValidationStatus(rhA), getValidationStatus(rhB)
+  G->>G: check validator, agentId and score for each; consume actionHash
+  G-->>A: executed
 ```
 
-> **Known conflict with EIP-8004, to resolve in P2.** EIP-8004 keys a request by `requestHash`, and each request names exactly **one** validator: our ValidationRegistry, like the reference, reverts a second `validationRequest` with the same hash. The flow above, which sends one `requestHash` to both validators, therefore can't work as drawn. The recommended P2 design:
-> - add `validatorAddress` to the `requestHash` preimage, so the gate recomputes one hash per trusted validator;
-> - mark consumption on a **validator-independent action hash**, so one action can't execute twice using different validators' verdicts;
-> - check the **stored `agentId` and `validatorAddress`** returned by `getValidationStatus`, not only the score (anyone who owns an agent can claim a `requestHash` first);
-> - require `minScore >= 1`, because a pending request reads as response 0.
+> **One request per validator.** EIP-8004 keys a request by `requestHash` and records one validator per request, so each validator gets its own `requestHash` (§4.3) and its own request JSON (§6). The gate recomputes both hashes and consumes the validator-independent `actionHash`. Until P5 the testnet `DemoAgentVault` requires `mandate-v1` (validator A) only, so the flow has a single request.
 >
-> **Who sends `validationRequest` is also open (decide in P3).** The registry accepts it only from the agent's owner or an ERC-721 operator (`isApprovedForAll` / `getApproved`); the `agentWallet` alone is not enough. Making the agent's hot key an operator would also let it transfer the agent NFT, so in the diagram above "Agent" can't simply be the agent's runtime key. One option is a minimal forwarder contract, approved as operator, that can only forward `validationRequest`.
+> **Who sends `validationRequest` is still open (decide in P3).** The registry accepts it only from the agent's owner or an ERC-721 operator (`isApprovedForAll` / `getApproved`); the `agentWallet` alone is not enough. Making the agent's hot key an operator would also let it transfer the agent NFT, so in the diagram above "Agent" can't simply be the agent's runtime key. One option is a minimal forwarder contract, approved as operator, that can only forward `validationRequest`.
 >
-> Details: [`docs/spec-notes.md`](./docs/spec-notes.md), rows 5, 7, 10 and 12, and the P2/P3 decisions in `STATUS.md`.
+> Details: [`docs/spec-notes.md`](./docs/spec-notes.md), rows 5, 7, 10 and 12, and the P3 decision in `STATUS.md`.
 
 ### 5.3 Blocked attack (demo: the Grok/Bankr pattern)
 1. A permission change happens outside the mandate: a new operator approval on the agent in the Identity Registry.
@@ -298,7 +302,7 @@ Validators **must** recompute `requestHash` from this JSON (§4.3) and reject it
 | `mandate-v1` | A deterministic verdict | — | **Anyone can re-execute it** (§5.5) |
 | `risk-qwen-v1` | Advisory risk score and explanation | Being "correct". LLMs can be wrong or manipulated | Evidence hash committed onchain, full trace in the evidence, never the only gate |
 | Validator storage (HTTP) | Availability | Integrity | `responseHash` onchain |
-| Consumer (gate owner) | Choosing which validators to trust and the minimum score | — | Their own policy, visible onchain |
+| Consumer (gate deployer) | Choosing which validators to require and each one's minimum score | — | Fixed at deployment in immutables, readable with `requirements()` |
 
 **Two trust modes:**
 - **Verifiable** (`mandate-v1`): anyone can reproduce the verdict.
@@ -329,8 +333,8 @@ The LLM never sees or holds any private key. Validators sign; the model only pro
 - **The P256 return check:** `0x0100` returns *empty bytes* for an invalid signature. We require `returndata.length == 32 && uint256(returndata) == 1`.
 - **Low-s enforced** (the precompile doesn't), so a passkey signature can't be altered into a second valid form.
 - **WebAuthn binding:** the challenge commits to the chain, the contract, the agent, the payload hash and a nonce. Checks cover `type == "webauthn.get"`, the UP and UV flags, and the rpIdHash.
-- **Replay:** a per-agent nonce on mandate and inbox changes, and single-use `requestHash` at the gate.
-- **Verdict reuse across actions** is impossible, because the gate recomputes `requestHash` from the call.
+- **Replay:** a per-agent nonce on mandate and inbox changes. At the gate, each `actionHash` is single use, marked before the external call, under a reentrancy guard.
+- **Verdict reuse** across actions, gates, chains or validators is impossible: the gate recomputes each validator's `requestHash` from the call. It also checks the stored validator and `agentId`, so a hash that another agent claimed first doesn't pass.
 - **Gas:** Monad charges on the *gas limit*, so every transaction sets an explicit, tight limit.
 - **LLM output** is untrusted data: schema-validated, capped tool calls and tokens, temperature 0–0.2, full trace kept.
 - **Secrets:** gitleaks runs as a pre-commit hook and over the full history before the repo goes public. Only `.env.example` is committed.

@@ -100,13 +100,14 @@ attest8004/
   - `requestHash = keccak256(abi.encode(block.chainid, gate, validatorAddress, agentId, target, value, keccak256(data), deadline, salt))`, **one per validator**, because the registry records exactly one validator per `requestHash`.
   - `actionHash` is the same encoding without `validatorAddress`. The gate marks it consumed.
   - `requestHash` stays an ABI-encoded action hash: that encoding is the "request payload" the EIP's `requestHash` commits to (`docs/spec-notes.md`, row 6).
-- `onlyValidated(Action, minScore)`:
-  1. **Recompute** `requestHash` from the call, so a verdict can't be reused for a different action.
-  2. Look up the status in the ValidationRegistry.
-  3. Require that the validator is in the gate's trusted set, `response >= minScore` and `block.timestamp <= deadline`.
-  4. **Mark the request consumed** (single use).
-- `DemoAgentVault`: holds test MON or ERC-20 for an agent. `execute(Action)` is gated by `onlyValidated`.
-- **Done when:** a validated action executes, and an unvalidated, failed, replayed or different action reverts. Each case has a test.
+- The gate has an **immutable list of `(validator, minScore)` requirements** (1 to 4, fixed at deployment, no owner), and **every one must pass**. The constructor rejects `minScore` 0 (a pending request reads as response 0), `minScore` above 100, a zero validator and duplicate validators.
+- `onlyValidated(Action)`:
+  1. Require `block.timestamp <= deadline`, and that `actionHash` hasn't been consumed.
+  2. For each requirement, **recompute** that validator's `requestHash` from the call, so a verdict can't be reused for a different action, gate, chain or validator.
+  3. Look it up in the ValidationRegistry. Require that the stored `validatorAddress` is that validator, that the stored `agentId` is the action's (anyone who owns an agent can claim a hash first), and that `response >= minScore`.
+  4. **Mark `actionHash` consumed** (single use) **before the external call**. The gated function is also `nonReentrant`.
+- `DemoAgentVault`: holds test MON or ERC-20 for **one immutable `agentId`**, and rejects actions for any other agent. `execute(Action)` is gated by `onlyValidated`. It is permissionless, because the validated action is the authorisation. The P2 testnet deployment requires validator A only; P5 redeploys it requiring both validators.
+- **Done when:** a validated action executes, and these revert: unvalidated, pending, low score, untrusted validator, wrong `agentId` (squatted hash), expired, replayed, a different action, and a verdict for another gate. Each case has a test.
 
 ### 4.4 `packages/sdk` (TypeScript, viem)
 - **Client:**
