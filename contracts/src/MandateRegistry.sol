@@ -95,7 +95,9 @@ contract MandateRegistry {
         record.mandate.validUntil = mandate.validUntil;
         record.mandateHash = hash;
         record.owner = owner;
-        record.setAtBlock = uint64(block.number);
+        // forge-lint: disable-next-line(unsafe-typecast) -- block numbers fit in uint64 for ~1e11 years at Monad's block rate
+        uint64 setAtBlock = uint64(block.number);
+        record.setAtBlock = setAtBlock;
 
         emit MandateSet(
             agentId,
@@ -106,7 +108,7 @@ contract MandateRegistry {
             mandate.maxValuePerTx,
             mandate.maxValuePerDay,
             mandate.validUntil,
-            uint64(block.number)
+            setAtBlock
         );
     }
 
@@ -155,6 +157,7 @@ contract MandateRegistry {
     /// `validUntil`, or a per-tx cap above the per-day cap, all revert. Equal caps and
     /// `validUntil == block.timestamp + 1` are valid.
     function _validate(Mandate calldata mandate) private view {
+        // forge-lint: disable-next-line(block-timestamp) -- validUntil is in seconds; a few seconds of validator skew is harmless
         if (mandate.validUntil <= block.timestamp) {
             revert MandateAlreadyExpired(mandate.validUntil, block.timestamp);
         }
@@ -162,6 +165,7 @@ contract MandateRegistry {
         if (mandate.allowedSelectors.length > MAX_SELECTORS) {
             revert TooManySelectors(mandate.allowedSelectors.length);
         }
+        // forge-lint: disable-next-item(require-revert-in-loop) -- bounded by MAX_TARGETS (16); one bad target must reject the mandate
         for (uint256 i; i < mandate.allowedTargets.length; ++i) {
             if (mandate.allowedTargets[i] == address(0)) revert ZeroTarget();
         }
