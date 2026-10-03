@@ -42,14 +42,16 @@ import { computeActionHash, computeRequestHash, type Action } from "@attest8004/
 import { DEPLOYMENTS } from "./deployments.ts";
 
 /**
- * Explicit gas limits (Monad charges for the limit). Provisional for the first run; afterwards set
- * to Monad testnet eth_estimateGas x 1.2, rounded up to 1k. The estimate guard re-checks each one.
+ * Explicit gas limits (Monad charges for the limit): Monad testnet eth_estimateGas on 3 Oct 2026
+ * x 1.2, rounded up to 1k. Estimates: fund 21,212; validationRequest 202,643; validationResponse
+ * 84,514; execute 87,626 (measured in the first run, which used provisional limits of 30,000,
+ * 400,000, 165,000 and 250,000). The script's estimate guard re-checks each limit before sending.
  */
 const GAS = {
-  fund: 30_000n,
-  validationRequest: 400_000n,
-  validationResponse: 165_000n,
-  execute: 250_000n,
+  fund: 26_000n,
+  validationRequest: 244_000n,
+  validationResponse: 102_000n,
+  execute: 106_000n,
 } as const;
 
 const AGENT_ID = 1982n;
