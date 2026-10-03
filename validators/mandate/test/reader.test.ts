@@ -522,6 +522,22 @@ describe("viemMandateReader: approval evidence and request logs", () => {
     for (const filter of getLogsFilters()) expect(BigInt(filter.toBlock)).toBeLessThanOrEqual(P);
   });
 
+  it("responseLog is the same last log, with the block and log index it was found at", async () => {
+    const ts = tsOf(P - 1_000n);
+    const sameSecond = blocksAt(ts, P);
+    const last = sameSecond.at(-1) as bigint;
+    rpc.logs.push(
+      responseLog(HASH, "data:application/json,first", sameSecond[0] as bigint, 4),
+      responseLog(HASH, "data:application/json,last", last, 2),
+      responseLog(HASH, "data:application/json,later-second", last + 1n, 0),
+    );
+    const r = reader();
+    await expect(r.responseLog(HASH, ts, P)).resolves.toEqual({ uri: "data:application/json,last", block: last, logIndex: 2 });
+    await expect(r.responseEvidence(HASH, ts, P)).resolves.toBe("data:application/json,last");
+    await expect(r.responseLog(OTHER_HASH, ts, P)).resolves.toBeNull();
+    await expect(r.responseLog(HASH, tsOf(P) + 10n, P)).resolves.toBeNull();
+  });
+
   it("stops at notAfter even when later blocks share the timestamp", async () => {
     const ts = tsOf(P - 500n);
     const sameSecond = blocksAt(ts, P);
