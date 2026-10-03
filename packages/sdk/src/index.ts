@@ -5,3 +5,5 @@ export * from "./abi.ts";
 export * from "./gas.ts";
 export * from "./logs.ts";
 export * from "./client.ts";
+export * from "./validator-chain.ts";
+export * from "./validator.ts";

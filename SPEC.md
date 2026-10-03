@@ -116,11 +116,13 @@ attest8004/
   - `awaitVerdict()` and `isValidated()`.
   - `getAgentTrust(agentId)`, which reads from the Envio GraphQL API (P8).
   - As built in P3 (`packages/sdk/src/client.ts`): `requestValidation` goes through the `AgentRequestForwarder` when one is configured (the wallet is then the agent's hot key), else straight to the registry. `awaitVerdict` scans `ValidationResponse` logs in windows of at most 100 blocks (Monad testnet's `eth_getLogs` limit). `isValidated` mirrors `AttestGate`: the deadline, consumption, and each requirement's stored validator, agentId and score. Every transaction goes through `writeWithGasGuard`: simulate, estimate, refuse if the estimate is above the explicit limit, then send with that limit and with fees and nonce set, so the node never fills the gas.
-- **Validator base class:**
-  - Subscribe to `ValidationRequest` where `validatorAddress == self`.
-  - Load the request and check that its action hashes to `requestHash`.
-  - Run `check()`, then post `validationResponse` with an evidence JSON hash.
-  - Handle retries and idempotency, and use **explicit gas limits** (Monad charges on the gas limit, not gas used).
+- **Validator base class** (`ValidatorBase`, `packages/sdk/src/validator.ts`):
+  - Find `ValidationRequest` events where `validatorAddress == self` by **polling `eth_getLogs` from a saved block cursor**, at most 100 blocks per query (Monad testnet's limit), up to the finalized head, rather than relying only on subscriptions.
+  - Treat `requestURI` as attacker-controlled: accept only a `data:` URI of at most **16 KB**, with **no HTTP fetching**.
+  - **Don't respond at all** (log the reason instead) if: the JSON doesn't hash to `requestHash`, `validator` isn't this validator, `agentId` differs from the event's, `chainId` isn't this chain, or the deadline has passed or is more than a configurable maximum (default 1 hour) in the future.
+  - Run `check()`, then post `validationResponse` with an evidence JSON v1 and its keccak256 hash.
+  - Check `getValidationStatus` before posting, so a restart never posts twice. Retry a failed send, re-checking the status first.
+  - Use **explicit gas limits** with the estimate guard (Monad charges on the gas limit, not gas used).
 - **`AgentRequestForwarder.sol`** (in `contracts/src/`; added in P3). It lets an agent's hot key request validations without any power over the agent itself. EIP-8004 accepts `validationRequest` only from the owner or an ERC-721 operator, and an operator can also transfer the agent.
   - The agent's owner calls `setApprovalForAll(forwarder, true)` once on the Identity Registry, then `setAgentKey(agentId, key)` on the forwarder. Only the current `ownerOf(agentId)` may set or revoke (`key = address(0)`) the key, and the record stores that owner.
   - `request(validator, agentId, requestURI, requestHash)` works only when called by that agent's key, and only while the recorded owner is still `ownerOf(agentId)`. It makes exactly one call: `validationRequest` on the fixed ValidationRegistry.
