@@ -277,7 +277,7 @@ npx attest8004 verify <requestHash>
 
 ## 6. Data formats
 
-**Request JSON v1.** Referenced by `requestURI`, preferably as a `data:` URI so no hosting is needed. There is one per validator, because `validator` is part of `requestHash`.
+**Request JSON v1.** Referenced by `requestURI` as a `data:application/json` URI (base64 or percent-encoded), so no hosting is needed. There is one per validator, because `validator` is part of `requestHash`.
 ```json
 {
   "schema": "attest8004.request.v1",
@@ -285,9 +285,13 @@ npx attest8004 verify <requestHash>
   "gate": "0x…",
   "validator": "0x…",
   "agentId": "42",
-  "action": { "target": "0x…", "value": "0", "data": "0x…", "deadline": 1760000000, "salt": "0x…" }
+  "action": { "target": "0x…", "value": "0", "data": "0x…", "deadline": "1760000000", "salt": "0x…" }
 }
 ```
+`agentId`, `value` and `deadline` are decimal strings without leading zeros, so values above 2^53 survive JSON; `chainId` is a JSON number (a safe integer). Addresses may be lower-case or EIP-55 checksummed. The schema is strict: an unknown key anywhere rejects the request, so everything a validator reads is covered by the hash. It is defined once, in zod, in `packages/sdk/src/request.ts` (`buildRequestJson`, `parseRequestUri`).
+
+`requestURI` is attacker-controlled. `parseRequestUri` accepts only a `data:application/json[;charset=utf-8][;base64],…` URI of at most **16 KB (16,384 bytes)**, printable ASCII, that decodes to valid UTF-8 JSON. It **never fetches** anything: an `https://` or `ipfs://` request URI is rejected, not followed.
+
 Validators **must** recompute `requestHash` from this JSON (§4.3) and reject it on mismatch. They must also reject it if `validator` isn't themselves, or if `agentId` differs from the `agentId` in the `ValidationRequest` event (someone else's agent may have claimed the hash first; spec-notes, row 12). The hash commits to the ABI encoding of these fields, not to the JSON bytes, so whitespace and key order don't matter.
 
 **Evidence JSON v1.** Referenced by `responseURI`. `responseHash = keccak256(bytes)`.

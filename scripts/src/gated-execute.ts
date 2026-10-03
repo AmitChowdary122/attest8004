@@ -26,11 +26,9 @@ import {
   createWalletClient,
   getAddress,
   http,
-  keccak256,
   parseAbi,
   parseEther,
   parseEventLogs,
-  stringToBytes,
   toHex,
   type Account,
   type Hash,
@@ -38,7 +36,13 @@ import {
 } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
 import { monadTestnet } from "viem/chains";
-import { computeActionHash, computeRequestHash, type Action } from "@attest8004/sdk";
+import {
+  buildRequestJson,
+  computeActionHash,
+  computeRequestHash,
+  encodeJsonDataUri,
+  type Action,
+} from "@attest8004/sdk";
 import { DEPLOYMENTS } from "./deployments.ts";
 
 /**
@@ -99,15 +103,6 @@ function requireEnv(name: string): string {
   const value = process.env[name];
   if (!value) throw new Error(`${name} is not set (expected in .env)`);
   return value;
-}
-
-/** A JSON document as a base64 data: URI, plus keccak256 of its exact bytes. */
-function jsonDataUri(doc: unknown): { uri: string; hash: Hex } {
-  const text = JSON.stringify(doc);
-  return {
-    uri: `data:application/json;base64,${Buffer.from(text, "utf8").toString("base64")}`,
-    hash: keccak256(stringToBytes(text)),
-  };
 }
 
 function check(label: string, ok: boolean, detail: string): void {
@@ -238,20 +233,9 @@ async function main(): Promise<void> {
   await expectGateRevert("unvalidated action", action, "ValidationNotFound");
 
   // 4. Request validation from validator A, with the request JSON v1 (ARCHITECTURE §6).
-  const request = jsonDataUri({
-    schema: "attest8004.request.v1",
-    chainId: chain.id,
-    gate: vault,
-    validator: validator.address,
-    agentId: action.agentId.toString(),
-    action: {
-      target: action.target,
-      value: action.value.toString(),
-      data: action.data,
-      deadline: Number(action.deadline),
-      salt: action.salt,
-    },
-  });
+  const request = encodeJsonDataUri(
+    buildRequestJson({ chainId: chain.id, gate: vault, validator: validator.address, action }),
+  );
   const requestCall = {
     address: validationRegistry,
     abi: validationAbi,
@@ -265,7 +249,7 @@ async function main(): Promise<void> {
   await confirm("validationRequest", txs.validationRequest, requestGas, requestEstimate);
   await expectGateRevert("pending request", action, "ScoreTooLow");
 
-  const evidence = jsonDataUri({
+  const evidence = encodeJsonDataUri({
     schema: "attest8004.gate-smoke-evidence.v0",
     requestHash,
     score: SCORE,

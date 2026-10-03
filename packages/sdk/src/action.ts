@@ -1,4 +1,4 @@
-import { encodeAbiParameters, keccak256, type Address, type Hex } from "viem";
+import { encodeAbiParameters, getAddress, keccak256, toHex, type Address, type Hex } from "viem";
 
 /** An agent action that a gate executes only with validators' verdicts (SPEC §4.3). */
 export interface Action {
@@ -91,6 +91,40 @@ export function computeRequestHash({ chainId, gate, validator, action }: Request
       ],
     ),
   );
+}
+
+const UINT256_MAX = 2n ** 256n - 1n;
+const UINT64_MAX = 2n ** 64n - 1n;
+
+/**
+ * An action with defaults: value 0, empty data and a random 32-byte salt. Throws on any field the
+ * gate would see differently (out-of-range integers, partial bytes, a salt that isn't 32 bytes, a
+ * bad address checksum), and checksums the target.
+ */
+export function buildAction(args: {
+  agentId: bigint;
+  target: Address;
+  value?: bigint;
+  data?: Hex;
+  deadline: bigint;
+  salt?: Hex;
+}): Action {
+  const action: Action = {
+    agentId: inRange("action.agentId", args.agentId, UINT256_MAX),
+    target: getAddress(args.target),
+    value: inRange("action.value", args.value ?? 0n, UINT256_MAX),
+    data: args.data ?? "0x",
+    deadline: inRange("action.deadline", args.deadline, UINT64_MAX),
+    salt: args.salt ?? toHex(crypto.getRandomValues(new Uint8Array(32))),
+  };
+  dataHash(action.data);
+  salt(action.salt);
+  return action;
+}
+
+function inRange(label: string, value: bigint, max: bigint): bigint {
+  if (value < 0n || value > max) throw new RangeError(`${label} must be between 0 and ${max}, got ${value}`);
+  return value;
 }
 
 // The checks below reject input that viem would otherwise turn into a hash no contract can produce:

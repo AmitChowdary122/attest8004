@@ -112,7 +112,7 @@ attest8004/
 ### 4.4 `packages/sdk` (TypeScript, viem)
 - **Client:**
   - `buildAction()` and `computeRequestHash()`.
-  - `requestValidation({validators[], action})`. Puts the request JSON in `requestURI`, either as a `data:` URI (preferred, no hosting) or over HTTP, then calls the registry.
+  - `requestValidation({validators[], action})`. Puts the request JSON in `requestURI` as a `data:` URI (no hosting; the reference validators accept nothing else), then calls the registry.
   - `awaitVerdict()` and `isValidated()`.
   - `getAgentTrust(agentId)`, which reads from the Envio GraphQL API.
 - **Validator base class:**
@@ -126,7 +126,7 @@ attest8004/
   - Immutable, no admin, holds no funds. Deployed through the CREATE2 factory with the estimate guard.
   - **Tests:** wrong key, a key set by a previous owner and used after the agent is transferred, a revoked key, and that the forwarder can do nothing except `validationRequest`.
   - **Done when:** deployed on testnet, and a demo agent's hot key requests through it in the end-to-end script.
-- Request JSON schema v1: `{ "schema":"attest8004.request.v1", "chainId", "gate", "validator", "agentId", "action":{…} }`, one per validator (ARCHITECTURE §6).
+- Request JSON schema v1: `{ "schema":"attest8004.request.v1", "chainId", "gate", "validator", "agentId", "action":{ "target", "value", "data", "deadline", "salt" } }`, one per validator (ARCHITECTURE §6). `agentId`, `value` and `deadline` are **decimal strings**; `chainId` is a JSON number. It is defined once, as a strict zod schema (unknown keys are rejected), in `packages/sdk/src/request.ts`.
 - Register two demo agents in the canonical Identity Registry using the **agent0 SDK** (sdk.ag0.xyz). Check that it supports testnet 10143; if not, call `register()` directly.
 
 ### 4.5 Validator A — `mandate-v1` (deterministic)
