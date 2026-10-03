@@ -1,4 +1,5 @@
 import { decodeErrorResult, getAddress, type Hex } from "viem";
+import { RISK_V1 } from "./params.ts";
 import type { JsonValue } from "./types.ts";
 
 /** A JSON object, the shape every tool output and {@link flattenTrace} produce. */
@@ -70,27 +71,55 @@ function decodeRevertReason(output: Hex | undefined): string | null {
   }
 }
 
-/** `frame`, every descendant in call order, each paired with its depth (the top frame is depth 0). */
-function flattenFrames(frame: CallFrame, depth: number, out: { depth: number; frame: CallFrame }[]): void {
-  out.push({ depth, frame });
-  for (const child of frame.calls ?? []) flattenFrames(child, depth + 1, out);
+/** callTracer frame types that actually move MON (a `DELEGATECALL`/`STATICCALL` only ever shows the caller's inherited `value`, never a real transfer). */
+const VALUE_MOVING_TYPES = new Set(["CALL", "CREATE", "CREATE2", "SELFDESTRUCT"]);
+
+/**
+ * `frame`, every descendant in call order, each paired with its depth (the top frame is depth 0) and
+ * `clean`: whether *this* frame and every one of its ancestors succeeded (no `error`). A frame whose
+ * own `error` is set, or that is nested inside one that failed, is never `clean` — `valueFlows` reads
+ * this so a reverted branch (or one under a reverted ancestor) never reports a movement that didn't
+ * really happen.
+ */
+function flattenFrames(frame: CallFrame, depth: number, parentClean: boolean, out: { depth: number; frame: CallFrame; clean: boolean }[]): void {
+  const clean = parentClean && !frame.error;
+  out.push({ depth, frame, clean });
+  for (const child of frame.calls ?? []) flattenFrames(child, depth + 1, clean, out);
 }
 
 /**
- * Normalises a `TraceResult` into the evidence/tool-output shape (Task 8 brief): `ok`/`error`/
- * `revertReason` describe the top frame's own outcome; `calls` is every frame (depth-first, call
- * order) up to `maxCalls`, each `{ depth, type, from, to, value, selector, error }`; `valueFlows` is
- * `{ from, to, value }` for every included call that actually moves value; `truncatedCalls` is how
- * many frames beyond `maxCalls` were dropped from the end of that list. Deterministic: the same
- * `TraceResult` always flattens to the same `JsonObject`.
+ * Normalises a `TraceResult` into the evidence/tool-output shape (Task 8 brief, amended by fix round
+ * 1): `ok`/`error`/`revertReason` describe the top frame's own outcome; `calls` is every frame
+ * (depth-first, call order) up to `maxCalls`, each `{ depth, type, from, to, value, selector, error }`;
+ * `truncatedCalls` is how many frames beyond `maxCalls` were dropped from the end of that list.
+ *
+ * `valueFlows` is `{ from, to, value }` for every frame **in the whole trace** (not just the first
+ * `maxCalls` — a forward that happens to be the 17th call must still show up) that: is a `CALL`,
+ * `CREATE`, `CREATE2` or `SELFDESTRUCT` (never `DELEGATECALL`/`STATICCALL`, which only carry the
+ * caller's *inherited* `value` on a real node, not an actual transfer); has `value > 0`; and is
+ * `clean` (itself and every ancestor succeeded — a revert anywhere on the path means no value
+ * actually moved, whatever the frame's own `value` field says).
+ *
+ * `revertReason` is capped at `RISK_V1.maxRevertReasonChars`, with `revertReasonTruncated: true` when
+ * it was cut (this is the text the Prompt Guard screens, so it must stay bounded).
+ *
+ * Deterministic: the same `TraceResult` always flattens to the same `JsonObject`.
  */
 export function flattenTrace(result: TraceResult, maxCalls: number): JsonObject {
   if (!result.ok) {
-    return { ok: false, error: result.error, revertReason: null, calls: [], valueFlows: [], truncatedCalls: 0 };
+    return {
+      ok: false,
+      error: result.error,
+      revertReason: null,
+      revertReasonTruncated: false,
+      calls: [],
+      valueFlows: [],
+      truncatedCalls: 0,
+    };
   }
 
-  const flat: { depth: number; frame: CallFrame }[] = [];
-  flattenFrames(result.frame, 0, flat);
+  const flat: { depth: number; frame: CallFrame; clean: boolean }[] = [];
+  flattenFrames(result.frame, 0, true, flat);
   const included = flat.slice(0, maxCalls);
   const truncatedCalls = flat.length - included.length;
 
@@ -104,8 +133,8 @@ export function flattenTrace(result: TraceResult, maxCalls: number): JsonObject 
     error: frame.error ?? null,
   }));
 
-  const valueFlows: JsonValue[] = included
-    .filter(({ frame }) => valueOf(frame.value) > 0n)
+  const valueFlows: JsonValue[] = flat
+    .filter(({ frame, clean }) => clean && VALUE_MOVING_TYPES.has(frame.type) && valueOf(frame.value) > 0n)
     .map(({ frame }) => ({
       from: getAddress(frame.from),
       to: frame.to === undefined ? null : getAddress(frame.to),
@@ -113,12 +142,15 @@ export function flattenTrace(result: TraceResult, maxCalls: number): JsonObject 
     }));
 
   const topError = classifyFrameError(result.frame.error);
-  const revertReason = topError === "REVERTED" ? decodeRevertReason(result.frame.output) : null;
+  const fullRevertReason = topError === "REVERTED" ? decodeRevertReason(result.frame.output) : null;
+  const revertReasonTruncated = fullRevertReason !== null && fullRevertReason.length > RISK_V1.maxRevertReasonChars;
+  const revertReason = fullRevertReason === null ? null : fullRevertReason.slice(0, RISK_V1.maxRevertReasonChars);
 
   return {
     ok: topError === null,
     error: topError,
     revertReason,
+    revertReasonTruncated,
     calls,
     valueFlows,
     truncatedCalls,

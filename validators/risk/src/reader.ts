@@ -47,8 +47,12 @@ export interface RiskReader extends VerifyReader {
   nonce(address: Address, at: bigint): Promise<bigint>;
   /** The Identity Registry's `ownerOf(agentId)` at `at`; `null` only for a revert (e.g. no such agent). */
   agentOwner(agentId: bigint, at: bigint): Promise<Address | null>;
-  /** The Identity Registry's `balanceOf(address)` at `at`: how many agents it owns. */
-  agentsOwned(address: Address, at: bigint): Promise<bigint>;
+  /**
+   * The Identity Registry's `balanceOf(address)` at `at`: how many agents it owns. `null` only for a
+   * revert (e.g. `balanceOf(address(0))`'s `ERC721InvalidOwner` — address zero can enter scope from
+   * any trace frame) — every other failure still throws.
+   */
+  agentsOwned(address: Address, at: bigint): Promise<bigint | null>;
   /** The ReputationRegistry's `getClients(agentId)` at `at`. */
   reputationClients(agentId: bigint, at: bigint): Promise<Address[]>;
   /**
@@ -134,10 +138,16 @@ export function viemRiskReader(options: { publicClient: PublicClient; addresses:
     return result;
   };
 
-  /** One raw request (`eth_getCode`/`eth_getBalance`/`eth_getTransactionCount`) at block `at`. */
-  const rawHex = async (method: string, address: Address, at: bigint): Promise<Hex> => {
+  /**
+   * One raw request at block `at`, checked with `isValid` (`isCallResult` for `eth_getCode`'s
+   * whole-bytes DATA encoding; the looser `isHexResult` for `eth_getBalance`/`eth_getTransactionCount`'s
+   * QUANTITY encoding, which allows odd length). Fix round 1, finding 7: `eth_getCode` used the loose
+   * check, so an odd-length answer decoded as a fractional `codeSize` and `"0x0"` silently read as
+   * "has code" instead of throwing.
+   */
+  const rawHex = async (method: string, address: Address, at: bigint, isValid: (value: unknown) => value is Hex): Promise<Hex> => {
     const result: unknown = await limited(() => publicClient.request({ method, params: [getAddress(address), toHex(at)] } as never));
-    if (!isHexResult(result)) throw new Error(MALFORMED_ANSWER);
+    if (!isValid(result)) throw new Error(MALFORMED_ANSWER);
     return result;
   };
 
@@ -165,9 +175,9 @@ export function viemRiskReader(options: { publicClient: PublicClient; addresses:
       return { ok: true, frame: result };
     },
 
-    code: (address, at) => rawHex("eth_getCode", address, at),
-    balance: async (address, at) => BigInt(await rawHex("eth_getBalance", address, at)),
-    nonce: async (address, at) => BigInt(await rawHex("eth_getTransactionCount", address, at)),
+    code: (address, at) => rawHex("eth_getCode", address, at, isCallResult),
+    balance: async (address, at) => BigInt(await rawHex("eth_getBalance", address, at, isHexResult)),
+    nonce: async (address, at) => BigInt(await rawHex("eth_getTransactionCount", address, at, isHexResult)),
 
     async agentOwner(agentId, at) {
       try {
@@ -183,11 +193,16 @@ export function viemRiskReader(options: { publicClient: PublicClient; addresses:
     },
 
     async agentsOwned(address, at) {
-      const data = await ethCall(
-        { to: identityRegistry, data: encodeFunctionData({ abi: identityRegistryAbi, functionName: "balanceOf", args: [address] }) },
-        at,
-      );
-      return decodeFunctionResult({ abi: identityRegistryAbi, functionName: "balanceOf", data });
+      try {
+        const data = await ethCall(
+          { to: identityRegistry, data: encodeFunctionData({ abi: identityRegistryAbi, functionName: "balanceOf", args: [address] }) },
+          at,
+        );
+        return decodeFunctionResult({ abi: identityRegistryAbi, functionName: "balanceOf", data });
+      } catch (error) {
+        if (hasRpcErrorCode(error, 3)) return null;
+        throw error;
+      }
     },
 
     async reputationClients(agentId, at) {

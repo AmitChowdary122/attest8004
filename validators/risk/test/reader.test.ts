@@ -113,6 +113,22 @@ describe("viemRiskReader: code/balance/nonce", () => {
     };
     await expect(reader().code(TARGET, P)).rejects.toThrow(/HTTP request failed/);
   });
+
+  it("an odd-length eth_getCode answer throws (fix round 1, finding 7: eth_getCode is DATA-encoded, whole bytes only — unlike eth_getBalance/eth_getTransactionCount's QUANTITY encoding, which allows odd length)", async () => {
+    rpc.intercept = (method) => (method === "eth_getCode" ? "0x0" : undefined);
+    await expect(reader().code(TARGET, P)).rejects.toThrow(/malformed RPC answer/);
+  });
+
+  it("eth_getBalance and eth_getTransactionCount still accept an odd-length (QUANTITY) answer", async () => {
+    rpc.intercept = (method) => {
+      if (method === "eth_getBalance") return "0x4d2"; // 1234, 3 hex digits
+      if (method === "eth_getTransactionCount") return "0x7";
+      return undefined;
+    };
+    const r = reader();
+    await expect(r.balance(TARGET, P)).resolves.toBe(1_234n);
+    await expect(r.nonce(TARGET, P)).resolves.toBe(7n);
+  });
 });
 
 describe("viemRiskReader: agentOwner", () => {
@@ -168,6 +184,26 @@ describe("viemRiskReader: agentsOwned, reputationClients, reputationSummary", ()
       new RevertError("0x08c379a0"),
     );
     await expect(reader().reputationSummary(AGENT, [], P)).rejects.toThrow();
+  });
+});
+
+describe("viemRiskReader: agentsOwned is null on revert, never a throw (fix round 1, finding 5)", () => {
+  it("balanceOf reverting (e.g. address zero's ERC721InvalidOwner) gives null", async () => {
+    rpc.onCall(ADDRESSES.identityRegistry, identityRegistryAbi, "balanceOf", () => new RevertError("0x"));
+    await expect(reader().agentsOwned(SOMEONE, P)).resolves.toBeNull();
+  });
+
+  it("an RPC or transport error throws, never null", async () => {
+    rpc.intercept = (method) => {
+      if (method === "eth_call") throw new HttpRequestError({ url: "https://testnet-rpc.monad.xyz", status: 429 });
+      return undefined;
+    };
+    await expect(reader().agentsOwned(SOMEONE, P)).rejects.toThrow(/HTTP request failed/);
+  });
+
+  it("a malformed (non-hex) eth_call answer throws, not null", async () => {
+    rpc.intercept = (method) => (method === "eth_call" ? 123 : undefined);
+    await expect(reader().agentsOwned(SOMEONE, P)).rejects.toThrow(/malformed RPC answer/);
   });
 });
 

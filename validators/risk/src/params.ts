@@ -24,6 +24,7 @@ export const RISK_V1 = {
   maxEvidenceBytes: 24_576,
   simulationGas: 1_000_000n,
   maxTraceCalls: 16,
+  maxRevertReasonChars: 256,
   ageProbeBlocks: [1_000n, 10_000n, 100_000n, 1_000_000n, 2_000_000n],
   reputationMaxClients: 16,
   nansenWindowSeconds: 2_592_000n,

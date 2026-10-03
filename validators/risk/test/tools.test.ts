@@ -101,18 +101,36 @@ describe("runTool: arguments", () => {
     expect(result.output).toEqual({ error: "INVALID_ARGUMENTS" });
   });
 
-  it("an unknown tool name gives UNKNOWN_TOOL, onchain: false, never throws", async () => {
+  it("an unknown tool name gives UNKNOWN_TOOL, onchain: true (fix round 1, finding 6 — only the two Nansen tools are ever onchain: false, and only once Task 9 implements them), never throws", async () => {
     const ctx = makeCtx(makeReader());
     const result = await runTool("made_up_tool", "{}", ctx);
     expect(result.output).toEqual({ error: "UNKNOWN_TOOL" });
-    expect(result.onchain).toBe(false);
+    expect(result.onchain).toBe(true);
   });
 
-  it("the two not-yet-implemented Nansen names also give UNKNOWN_TOOL (Task 9 adds them)", async () => {
+  it("the two not-yet-implemented Nansen names also give UNKNOWN_TOOL, onchain: true (Task 9 adds real handling)", async () => {
     const ctx = makeCtx(makeReader());
     await expect(runTool("nansen_counterparty_profile", "{}", ctx)).resolves.toEqual(
-      expect.objectContaining({ output: { error: "UNKNOWN_TOOL" } }),
+      expect.objectContaining({ output: { error: "UNKNOWN_TOOL" }, onchain: true }),
     );
+  });
+
+  it("canonicalJson(parsed) throwing (a non-safe-integer number, e.g. a float or a 78-digit integer) falls back to the raw string as `arguments` (fix round 1, finding 4)", async () => {
+    const ctx = makeCtx(makeReader());
+    const rawFloat = JSON.stringify({ agentId: 1.5 });
+    const floatResult = await runTool("erc8004_reputation", rawFloat, ctx);
+    expect(floatResult.output).toEqual({ error: "INVALID_ARGUMENTS" });
+    expect(floatResult.arguments).toBe(rawFloat);
+
+    const rawHuge = `{"agentId": ${"9".repeat(78)}}`;
+    const hugeResult = await runTool("erc8004_reputation", rawHuge, ctx);
+    expect(hugeResult.output).toEqual({ error: "INVALID_ARGUMENTS" });
+    expect(hugeResult.arguments).toBe(rawHuge);
+
+    // a normal, canonical-JSON-safe argument is still recorded as parsed JSON, not the raw string
+    const rawGood = JSON.stringify({ address: TARGET });
+    const goodResult = await runTool("counterparty_onchain", rawGood, ctx);
+    expect(goodResult.arguments).toEqual({ address: TARGET });
   });
 });
 
@@ -191,6 +209,24 @@ describe("runTool: age probes (counterparty_onchain)", () => {
   });
 });
 
+describe("runTool: counterparty_onchain, agentsOwned null on revert (fix round 1, finding 5)", () => {
+  it("agentsOwned: null (the Identity Registry's balanceOf reverted, e.g. address zero) passes through as null, not a thrown error", async () => {
+    const reader = makeReader({ agentsOwned: vi.fn(async () => null) });
+    const ctx = makeCtx(reader);
+    const result = await runTool("counterparty_onchain", JSON.stringify({ address: TARGET }), ctx);
+    const output = result.output as { agentsOwned: unknown };
+    expect(output.agentsOwned).toBeNull();
+  });
+
+  it("a normal agentsOwned count is still a decimal string", async () => {
+    const reader = makeReader({ agentsOwned: vi.fn(async () => 3n) });
+    const ctx = makeCtx(reader);
+    const result = await runTool("counterparty_onchain", JSON.stringify({ address: TARGET }), ctx);
+    const output = result.output as { agentsOwned: unknown };
+    expect(output.agentsOwned).toBe("3");
+  });
+});
+
 describe("runTool: EIP-7702 delegate", () => {
   it("code 0xef0100<addr> gives delegatesTo: <addr>, and it is not treated as a contract", async () => {
     const delegate = getAddress("0x1234567890123456789012345678901234567890");
@@ -264,13 +300,13 @@ describe("capOutput", () => {
     expect(capOutput(value, 1_536)).toEqual(value);
   });
 
-  it("cuts the longest array from its end and records truncated: {field, dropped}", () => {
+  it("cuts the longest array from its end and records a cumulative drop count for that field", () => {
     const value: JsonValue = { events: Array.from({ length: 200 }, (_, i) => ({ block: i.toString(), note: "x".repeat(20) })) };
-    const capped = capOutput(value, 1_536) as { events: JsonValue[]; truncated: { field: string; dropped: number } };
+    const capped = capOutput(value, 1_536) as { events: JsonValue[]; truncated: Record<string, number> };
     expect(new TextEncoder().encode(canonicalJson(capped)).length).toBeLessThanOrEqual(1_536);
-    expect(capped.truncated.field).toBe("events");
-    expect(capped.truncated.dropped).toBeGreaterThan(0);
-    expect(capped.events.length).toBe(200 - capped.truncated.dropped);
+    expect(capped.truncated.events).toBeGreaterThan(0);
+    expect(capped.events.length).toBe(200 - (capped.truncated.events ?? 0));
+    expect(Object.keys(capped.truncated)).toEqual(["events"]);
   });
 
   it("is deterministic: capping the same input twice gives the same result", () => {
@@ -283,6 +319,63 @@ describe("capOutput", () => {
     const before = canonicalJson(value);
     capOutput(value, 1_536);
     expect(canonicalJson(value)).toBe(before);
+  });
+
+  it("fix round 1, finding 3(a): drops are tracked cumulatively per field even when cuts move between two arrays", () => {
+    // `calls` (13 items) and `valueFlows` (6 items), each item large enough that cutting one field a
+    // little still leaves the overall output too big, so capOutput must cross over to the other field.
+    const value: JsonValue = {
+      calls: Array.from({ length: 13 }, (_, i) => ({ depth: i, type: "CALL", note: "c".repeat(60) })),
+      valueFlows: Array.from({ length: 6 }, (_, i) => ({ from: i.toString(), to: i.toString(), note: "f".repeat(60) })),
+    };
+    const maxBytes = 400; // small enough that both fields must give something up
+    const capped = capOutput(value, maxBytes) as { calls: JsonValue[]; valueFlows: JsonValue[]; truncated: Record<string, number> };
+
+    expect(new TextEncoder().encode(canonicalJson(capped)).length).toBeLessThanOrEqual(maxBytes);
+    // Every field that lost elements is accounted for, and the recorded count is exactly how many
+    // elements are actually missing relative to the original — the bug this fixes under-reported
+    // `dropped` for whichever field *wasn't* the one most recently cut.
+    expect(capped.truncated.calls ?? 0).toBe(13 - capped.calls.length);
+    expect(capped.truncated.valueFlows ?? 0).toBe(6 - capped.valueFlows.length);
+    // and at least one field actually needed cutting for this input size
+    expect((capped.truncated.calls ?? 0) + (capped.truncated.valueFlows ?? 0)).toBeGreaterThan(0);
+  });
+
+  it("fix round 1, finding 3(b): when every array is exhausted, the longest string is cut from its end so the cap still holds", () => {
+    const value: JsonValue = { revertReason: "x".repeat(20_000), ok: false };
+    const capped = capOutput(value, 1_536) as { revertReason: string; truncated: Record<string, number> };
+    expect(new TextEncoder().encode(canonicalJson(capped)).length).toBeLessThanOrEqual(1_536);
+    expect(capped.revertReason.length).toBeLessThan(20_000);
+    expect(capped.truncated.revertReason).toBe(20_000 - capped.revertReason.length);
+  });
+
+  it("property-style: capOutput's result is always <= maxBytes, for a range of shapes", () => {
+    // A small deterministic PRNG (no new dependency) standing in for a property-testing library:
+    // same seed every run, so this is still a fully deterministic test.
+    let seed = 42;
+    const rand = (): number => {
+      seed = (seed * 1_103_515_245 + 12_345) & 0x7fffffff;
+      return seed / 0x7fffffff;
+    };
+    const randomShape = (): JsonValue => {
+      const arrays = 1 + Math.floor(rand() * 3);
+      const shape: Record<string, JsonValue> = { ok: rand() > 0.5 };
+      for (let i = 0; i < arrays; i++) {
+        const length = Math.floor(rand() * 400);
+        shape[`field${i}`] = Array.from({ length }, () => ({
+          note: "n".repeat(Math.floor(rand() * 100)),
+          n: Math.floor(rand() * 1_000_000),
+        }));
+      }
+      shape.bigString = "s".repeat(Math.floor(rand() * 30_000));
+      return shape;
+    };
+
+    for (let trial = 0; trial < 25; trial++) {
+      const shape = randomShape();
+      const capped = capOutput(shape, 1_536);
+      expect(new TextEncoder().encode(canonicalJson(capped)).length).toBeLessThanOrEqual(1_536);
+    }
   });
 });
 
@@ -300,6 +393,19 @@ describe("runTool: size — every tool's output after capping is <= 1,536 bytes"
     const ctx = makeCtx(reader);
     const result = await runTool("recent_permission_events", "{}", ctx);
     expect(new TextEncoder().encode(canonicalJson(result.output)).length).toBeLessThanOrEqual(1_536);
+  });
+
+  it("simulate_action with a 20,000-char revert reason still fits (fix round 1, finding 3): flattenTrace's own 256-char cap plus capOutput's string-cutting fallback both apply", async () => {
+    const output = encodeErrorResult({
+      abi: [{ type: "error", name: "Error", inputs: [{ name: "message", type: "string" }] }],
+      errorName: "Error",
+      args: ["x".repeat(20_000)],
+    });
+    const reader = makeReader({ trace: vi.fn(async () => okTrace(fakeFrame({ error: "execution reverted", output }))) });
+    const ctx = makeCtx(reader);
+    const result = await runTool("simulate_action", "{}", ctx);
+    expect(new TextEncoder().encode(canonicalJson(result.output)).length).toBeLessThanOrEqual(1_536);
+    expect((result.output as { revertReasonTruncated: boolean }).revertReasonTruncated).toBe(true);
   });
 
   for (const name of ["get_mandate", "simulate_action", "counterparty_onchain", "erc8004_reputation"] as const) {

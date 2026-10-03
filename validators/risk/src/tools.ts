@@ -233,7 +233,7 @@ async function counterpartyOnchainTool(address: Address, ctx: ToolContext): Prom
   }
   const at = ctx.pinned.number;
   const { reader } = ctx;
-  const [code, balance, nonce, agentsOwned] = await Promise.all([
+  const [code, balance, nonce, agentsOwnedCount] = await Promise.all([
     reader.code(address, at),
     reader.balance(address, at),
     reader.nonce(address, at),
@@ -264,7 +264,10 @@ async function counterpartyOnchainTool(address: Address, ctx: ToolContext): Prom
     delegatesTo,
     balance: balance.toString(),
     nonce: nonce.toString(),
-    agentsOwned: agentsOwned.toString(),
+    // `null` only when the Identity Registry's balanceOf reverted (e.g. address zero's
+    // ERC721InvalidOwner) — fix round 1, finding 5: never thrown, since the chain state here is
+    // deterministic and re-derivable by `verify`, not an RPC failure.
+    agentsOwned: agentsOwnedCount === null ? null : agentsOwnedCount.toString(),
     age,
   };
   return { output, untrusted: [] };
@@ -310,7 +313,12 @@ function byteLength(value: JsonValue): number {
   return new TextEncoder().encode(canonicalJson(value)).length;
 }
 
-/** The `{key, array}` of the longest array anywhere in `value` (ties: the first one found), or `null`. */
+/**
+ * The `{key, array}` of the longest array anywhere in `value` (ties: the first one found), or `null`.
+ * `key` is the nearest enclosing object property name — an array nested directly inside another
+ * array's elements (not our shape, but handled defensively) isn't attributed to any key, matching
+ * {@link longestString}'s identical rule.
+ */
 function longestArray(value: JsonValue): { key: string; array: JsonValue[] } | null {
   let best: { key: string; array: JsonValue[] } | null = null;
   const visit = (node: JsonValue, parentKey: string | null): void => {
@@ -325,35 +333,78 @@ function longestArray(value: JsonValue): { key: string; array: JsonValue[] } | n
   return best;
 }
 
-function withTruncated(value: JsonValue, field: string | null, dropped: number): JsonValue {
-  if (field === null || dropped === 0) return value;
-  return { ...(value as { [key: string]: JsonValue }), truncated: { field, dropped } };
+/**
+ * The longest string leaf anywhere in `value` (ties: the first one found), with a `set` callback that
+ * writes a replacement back into its exact slot — used only once every array is already empty, so
+ * `capOutput`'s `maxBytes` guarantee still holds when one field is a giant string (e.g. a hostile or
+ * just very long revert reason) rather than a long array.
+ */
+function longestString(value: JsonValue): { key: string; value: string; set: (next: string) => void } | null {
+  let best: { key: string; value: string; set: (next: string) => void } | null = null;
+  const visit = (node: JsonValue, parentKey: string | null, set: (next: string) => void): void => {
+    if (typeof node === "string") {
+      if (parentKey !== null && (best === null || node.length > best.value.length)) best = { key: parentKey, value: node, set };
+    } else if (Array.isArray(node)) {
+      node.forEach((item, i) => visit(item, null, (next) => { (node as JsonValue[])[i] = next; }));
+    } else if (node !== null && typeof node === "object") {
+      for (const [key, item] of Object.entries(node)) {
+        visit(item, key, (next) => { (node as Record<string, JsonValue>)[key] = next; });
+      }
+    }
+  };
+  visit(value, null, () => {});
+  return best;
+}
+
+function withTruncated(value: JsonValue, drops: ReadonlyMap<string, number>): JsonValue {
+  if (drops.size === 0) return value;
+  return { ...(value as { [key: string]: JsonValue }), truncated: Object.fromEntries(drops) };
 }
 
 /**
- * Caps `output`'s canonical JSON to `maxBytes`, deterministically: while it is too long, finds the
- * longest array anywhere in the structure and pops one element from its end, tracking how many came
- * from that array; once a different array becomes the longest, the count restarts for it. The final
- * result carries `truncated: {field, dropped}` (the array's own key, and how many of its elements were
- * dropped) only when something was actually cut; `maxBytes` is checked against the *final* shape,
- * including that marker's own bytes.
+ * Caps `output`'s canonical JSON to `maxBytes`, deterministically (fix round 1, finding 3):
+ *
+ * 1. While still too long, finds the longest array anywhere in the structure and pops one element
+ *    from its end. Whichever array is longest can change between pops — cutting `calls` down may
+ *    hand off to `valueFlows`, say — so drops are tracked **cumulatively per field** in a map, not
+ *    reset when the target changes; the recorded count for a field is always exactly how many of its
+ *    elements are missing relative to the input, however the cutting was interleaved.
+ * 2. Once every array is empty (or there were none), it cuts the longest *string* leaf instead,
+ *    removing however many characters the current overage needs in one step (not one at a time — a
+ *    20,000-character string must not cost 20,000 iterations), looping to correct for JSON-escaping
+ *    overhead if one cut wasn't quite enough. This is what keeps the ≤ `maxBytes` guarantee even when
+ *    a single string field dominates the output.
+ *
+ * The result carries `truncated: {field: dropped, ...}` (one entry per field that lost anything —
+ * element count for an array, character count for a string) only when something was actually cut;
+ * `maxBytes` is checked against the *final* shape, including that marker's own bytes. Never mutates
+ * `output` (operates on a `structuredClone`).
  */
 export function capOutput(output: JsonValue, maxBytes: number): JsonValue {
   const working = structuredClone(output);
-  let field: string | null = null;
-  let dropped = 0;
-  for (;;) {
-    if (byteLength(withTruncated(working, field, dropped)) <= maxBytes) break;
-    const found = longestArray(working);
-    if (found === null || found.array.length === 0) break;
-    if (field !== found.key) {
-      field = found.key;
-      dropped = 0;
+  const drops = new Map<string, number>();
+  const bump = (key: string, by: number): void => {
+    drops.set(key, (drops.get(key) ?? 0) + by);
+  };
+  const currentSize = (): number => byteLength(withTruncated(working, drops));
+
+  while (currentSize() > maxBytes) {
+    const arrayTarget = longestArray(working);
+    if (arrayTarget !== null && arrayTarget.array.length > 0) {
+      arrayTarget.array.pop();
+      bump(arrayTarget.key, 1);
+      continue;
     }
-    found.array.pop();
-    dropped++;
+
+    const stringTarget = longestString(working);
+    if (stringTarget === null || stringTarget.value.length === 0) break; // nothing left to cut
+    const over = currentSize() - maxBytes;
+    const removeChars = Math.min(stringTarget.value.length, Math.max(1, over));
+    stringTarget.set(stringTarget.value.slice(0, stringTarget.value.length - removeChars));
+    bump(stringTarget.key, removeChars);
   }
-  return withTruncated(working, field, dropped);
+
+  return withTruncated(working, drops);
 }
 
 /**
@@ -393,12 +444,28 @@ export async function runTool(
   } catch {
     parsedOk = false;
   }
-  const argumentsRecord: JsonValue = parsedOk ? (parsed as JsonValue) : rawArguments;
-
-  if (!isOnchainToolName(name)) {
-    return { arguments: argumentsRecord, output: { error: "UNKNOWN_TOOL" }, onchain: false, untrusted: [] };
+  // Ruling R3/fix round 1, finding 4: `parsed` can be JSON-valid but not canonical-JSON-safe (a
+  // fractional number, or an integer above 2^53, e.g. `{"agentId": 1.5}`) — recording it as-is would
+  // make a later `canonicalJson` call (building evidence) throw, turning a deterministic
+  // INVALID_ARGUMENTS answer into a thrown error. When that would happen, record the raw string
+  // instead, exactly as for unparseable JSON.
+  let argumentsRecord: JsonValue = rawArguments;
+  if (parsedOk) {
+    try {
+      canonicalJson(parsed);
+      argumentsRecord = parsed as JsonValue;
+    } catch {
+      parsedOk = false; // treated the same as unparseable from here on: validateArguments is skipped
+    }
   }
+
+  // Fix round 1, finding 6: `onchain` is true for every tool call here. types.ts documents
+  // `onchain: false` as reserved for the two Nansen tools specifically (Task 9) — never for an
+  // unrecognised name, which must still be re-checked (as UNKNOWN_TOOL) by `verify`, not skipped.
   const onchain = true;
+  if (!isOnchainToolName(name)) {
+    return { arguments: argumentsRecord, output: { error: "UNKNOWN_TOOL" }, onchain, untrusted: [] };
+  }
 
   const args = parsedOk ? validateArguments(name, parsed) : null;
   if (args === null) {
