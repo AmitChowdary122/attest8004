@@ -7,8 +7,12 @@
   "type": "module",
   "scripts": {
     "typecheck": "tsc --noEmit",
+    "test": "vitest run",
     "roundtrip": "node --env-file=../.env src/validation-roundtrip.ts",
-    "gated-execute": "node --conditions=@attest8004/source --env-file=../.env src/gated-execute.ts"
+    "gated-execute": "node --conditions=@attest8004/source --env-file=../.env src/gated-execute.ts",
+    "hot-keys": "node src/hot-keys.ts",
+    "setup-demo-agents": "node --conditions=@attest8004/source --env-file=../.env src/setup-demo-agents.ts",
+    "e2e": "node --conditions=@attest8004/source --env-file=../.env src/e2e.ts"
   },
   "dependencies": {
     "@attest8004/sdk": "workspace:*",
@@ -16,6 +20,7 @@
   },
   "devDependencies": {
     "@types/node": "catalog:",
-    "typescript": "catalog:"
+    "typescript": "catalog:",
+    "vitest": "catalog:"
   }
 }

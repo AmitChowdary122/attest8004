@@ -11,6 +11,8 @@ export const DEPLOYMENTS = {
     validationRegistry: "0xc4A4D0cEB3971cbE7a2536494aC106f2Cd9F9a8f",
     /** Forwards validationRequest for an agent's registered hot key (SPEC §4.4). */
     agentRequestForwarder: "0x1451F3C36545b191d3642f759D59f21DcFD657B2",
+    /** The two demo agents, owned by the deployer (setup-demo-agents). Empty until registered. */
+    demoAgents: [] as readonly bigint[],
     /** Bound to agent 1982; requires validator A (mandate-v1) at 100 until the P5 redeploy. */
     demoAgentVault: "0x7A5EC388CCbfD3B255CFa94fc2062c0807F2C4CD",
   },
@@ -18,5 +20,6 @@ export const DEPLOYMENTS = {
   identityRegistry: Address;
   validationRegistry: Address;
   agentRequestForwarder: Address;
+  demoAgents: readonly bigint[];
   demoAgentVault: Address;
 }>;
