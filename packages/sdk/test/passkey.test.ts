@@ -220,3 +220,25 @@ describe("mandateRuleProblems", () => {
     expect(mandateRuleProblems({ ...ok, maxValuePerTx: 2n }, 100n)).toEqual(["TX_CAP_ABOVE_DAILY_CAP"]);
   });
 });
+
+describe("the real device vectors (P6 live run: one synced GPM passkey, laptop Chrome then Android Chrome)", () => {
+  const vectorsDir = new URL("../../../contracts/test/vectors/", import.meta.url);
+  const read = (name: string): unknown => JSON.parse(readFileSync(new URL(name, vectorsDir), "utf8"));
+
+  it("the registration is usable, its key and credential id the attested ones", () => {
+    expect(registrationProblems(registrationSchema.parse(read("passkey-registration.json")))).toEqual([]);
+  });
+
+  it("both approvals are consistent and their assertions verify against the registered key", async () => {
+    const registration = registrationSchema.parse(read("passkey-registration.json"));
+    for (const [name, nonce] of [
+      ["passkey-01-laptop-chrome.json", "0"],
+      ["passkey-02-android-chrome.json", "1"],
+    ] as const) {
+      const approval = approvalSchema.parse(read(name));
+      expect(approval.nonce, name).toBe(nonce);
+      expect([approval.passkey.qx, approval.passkey.qy, approval.passkey.credentialId], name).toEqual([registration.qx, registration.qy, registration.credentialId]);
+      await expect(approvalSelfProblems(approval), name).resolves.toEqual([]);
+    }
+  });
+});

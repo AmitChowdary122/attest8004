@@ -1,0 +1,14 @@
+{
+  "schema": "attest8004.passkey.v1",
+  "rpId": "attest8004.vercel.app",
+  "credentialId": "0QGvcMotO-w-2c_gJbwNSA",
+  "transports": [
+    "hybrid",
+    "internal"
+  ],
+  "alg": -7,
+  "qx": "0xa2502d7749840f70d8776fd6669ab62988d5026ef92f3c19d680e9642f40958e",
+  "qy": "0xd7988334fe141b7ef9070e078db0e6a89653f1c66f6fa0bc0857add0d0419db6",
+  "authenticatorData": "0x73edb32eef76e2327e40680c9f5362a608f5f8b49eae73c45df6af46fd904cbf5d00000000ea9b8d664d011d213ce4b6b48cb575d40010d101af70ca2d3bec3ed9cfe025bc0d48a5010203262001215820a2502d7749840f70d8776fd6669ab62988d5026ef92f3c19d680e9642f40958e225820d7988334fe141b7ef9070e078db0e6a89653f1c66f6fa0bc0857add0d0419db6",
+  "prfEnabled": true
+}

@@ -1,0 +1,37 @@
+{
+  "schema": "attest8004.approval.v1",
+  "chainId": 10143,
+  "registry": "0x2Ee5f78149762DE630c6bFF8CD81166010D0454B",
+  "agentId": "1984",
+  "change": {
+    "kind": "setMandate",
+    "mandate": {
+      "allowedTargets": [
+        "0x3EFEB3Cf2FB54A7D99abE90AaB786cE5A831a8CF",
+        "0xEEEBBa55620afC42E9c88b5d962476367b8da338"
+      ],
+      "allowedSelectors": [
+        "0x00000000"
+      ],
+      "maxValuePerTx": "2000000000000000",
+      "maxValuePerDay": "5000000000000000",
+      "validUntil": "1793404800"
+    }
+  },
+  "changeHash": "0xf935d1625a09661cd7ac71eeaac67de09df9a9a96be76c3f68b37cec44bc7601",
+  "nonce": "1",
+  "challenge": "0xb30ab4de0e62d0dcfe2753ebbe7b3c7fe5af6fc86364e02319a7583548aab89a",
+  "passkey": {
+    "credentialId": "0QGvcMotO-w-2c_gJbwNSA",
+    "qx": "0xa2502d7749840f70d8776fd6669ab62988d5026ef92f3c19d680e9642f40958e",
+    "qy": "0xd7988334fe141b7ef9070e078db0e6a89653f1c66f6fa0bc0857add0d0419db6"
+  },
+  "auth": {
+    "r": "0x5ef325d33623b9e810f895c32edb27a85edebebd92c992daf77ce1bbe5fc8d0b",
+    "s": "0x0d38d80abeea9dc6233f2b03ebe539274bff892ad35997b8713d9151210e2ff9",
+    "typeIndex": 1,
+    "challengeIndex": 23,
+    "authenticatorData": "0x73edb32eef76e2327e40680c9f5362a608f5f8b49eae73c45df6af46fd904cbf1d00000000",
+    "clientDataJSON": "{\"type\":\"webauthn.get\",\"challenge\":\"swq03g5i0Nz-J1Prvns8f-Wvb8hjZOAjGadYNUiquJo\",\"origin\":\"https://attest8004.vercel.app\",\"crossOrigin\":false,\"other_keys_can_be_added_here\":\"do not compare clientDataJSON against a template. See https://goo.gl/yabPex\"}"
+  }
+}
