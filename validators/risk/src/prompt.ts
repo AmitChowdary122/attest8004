@@ -21,7 +21,7 @@ import { untrustedBlock } from "./untrusted.ts";
 export const PROMPT_VERSION: string = RISK_V1.promptVersion;
 
 /**
- * The system prompt: about 525 words. It must carry the amended rubric of Decision 10 exactly in
+ * The system prompt: about 510 words. It must carry the amended rubric of Decision 10 exactly in
  * meaning (`prompt.test.ts` pins its key sentences): the subject rule for `NEW_CONTRACT` and
  * `FRESH_COUNTERPARTY`, `FRESH_COUNTERPARTY` at medium only for nonce 0 and no code, an EOA that has
  * sent transactions never above low for age alone, and missing data or an unavailable tool never a

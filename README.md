@@ -2,7 +2,7 @@
 
 > **The missing ERC-8004 Validation layer for Monad.**
 > Built for Monad Metropolis, Track 04 (Trust, Identity & AI Infrastructure).
-> **Status: work in progress.** On Monad testnet, the ValidationRegistry, the AgentRequestForwarder, the MandateRegistry, a two-validator demo AttestGate consumer (`DemoAgentVault`, requiring both `mandate-v1` and `risk-v1`) and a demo "risky but mandated" target (`DemoPassThrough`) are live. The deterministic validator **`mandate-v1`** has run end to end against the earlier, now-superseded single-validator vault: it approved an action inside demo agent 1984's mandate, which executed, and scored 0 an action outside it, which the gate refuses (checked by simulation). Anyone can re-run those verdicts with `pnpm attest8004 verify <requestHash>` (see [Deployments](#deployments)). The new two-validator vault is deployed but hasn't processed an end-to-end run yet, since the agentic validator `risk-v1` it also requires is still being built. Mandates are set by the agent owner's wallet for now; passkey approval, `risk-v1`, the findings inbox and the indexer are being built. Progress is in [STATUS.md](./STATUS.md).
+> **Status: work in progress.** On Monad testnet, the ValidationRegistry, the AgentRequestForwarder, the MandateRegistry, a two-validator demo AttestGate consumer (`DemoAgentVault`, requiring both `mandate-v1` and `risk-v1`) and a demo "risky but mandated" target (`DemoPassThrough`) are live. The deterministic validator **`mandate-v1`** has run end to end against the earlier, now-superseded single-validator vault: it approved an action inside demo agent 1984's mandate, which executed, and scored 0 an action outside it, which the gate refuses (checked by simulation). Anyone can re-run those verdicts with `pnpm attest8004 verify <requestHash>` (see [Deployments](#deployments)). The agentic validator **`risk-v1`** is built and tested against recorded Groq runs (offline replay fixtures, not a testnet verdict — see [`validators/risk/test/fixtures/llm/`](./validators/risk/test/fixtures/llm/)); it and demo agent 1984 are funded on testnet, and agent 1984's mandate now allowlists `DemoPassThrough` next to the deployer. **The live end-to-end run with both validators is the next step; `risk-v1` has not yet posted a testnet verdict.** Mandates are set by the agent owner's wallet for now; passkey approval, the findings inbox and the indexer are being built. Progress is in [STATUS.md](./STATUS.md).
 
 ## What
 
@@ -14,7 +14,9 @@ Attest8004 provides that answer onchain. It has five parts:
 - **Passkey-approved mandates**: an agent's operator approves what the agent may do (targets, functions, spend caps, expiry) with a passkey, verified onchain by Monad's P256 precompile at `0x0100`. Today the MandateRegistry takes the mandate from the owner's wallet; passkey approval replaces that in P6.
 - **Validator SDK** with two reference validators:
   - `mandate-v1`: deterministic, so anyone can re-run it and get the same verdict
-  - `risk-v1`: agentic, an LLM with read-only onchain tools and Nansen
+  - `risk-v1`: agentic, an LLM with read-only onchain tools and Nansen. Tested against recorded Groq runs, replayed
+    offline by the tests ([`validators/risk/test/fixtures/llm/`](./validators/risk/test/fixtures/llm/)); not yet
+    run live on testnet
 - **Private findings inbox**: detailed findings are encrypted to a key derived from the operator's passkey (Mera PRF). The key is never stored.
 - **Trust API**: an Envio HyperIndex indexer behind the SDK and the dashboard.
 

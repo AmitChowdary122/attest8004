@@ -1,6 +1,6 @@
 # contracts
 
-Foundry project for the Attest8004 contracts (SPEC §4.1–4.4):
+Foundry project for the Attest8004 contracts (SPEC §4.1–4.4; `DemoPassThrough` below is the §4.6 demo target, for the end-to-end demo scenario in §5):
 
 | Contract | Status |
 |---|---|
@@ -8,7 +8,7 @@ Foundry project for the Attest8004 contracts (SPEC §4.1–4.4):
 | `AttestGate` + `DemoAgentVault` | **live on Monad testnet**: `DemoAgentVault` at `0x12fAb3E3cA810Cc44bD9f537613a230a2be8D614`, for demo agent 1984, requiring both `mandate-v1` and `risk-v1` (the P2 vault for agent 1982 and the single-validator P3 vault for agent 1984 are superseded; see [docs/deployments.md](../docs/deployments.md)) |
 | `AgentRequestForwarder` | **live on Monad testnet** at `0x1451F3C36545b191d3642f759D59f21DcFD657B2` (P3; see [docs/deployments.md](../docs/deployments.md)) |
 | `MandateRegistry` | **live on Monad testnet** at `0x2523197373ef813E19b5b14Ef2984130868cD17c`, owner-set mandates (P4; passkey approval is a new deployment in P6; see [docs/deployments.md](../docs/deployments.md)) |
-| `DemoPassThrough` | demo-only, **live on Monad testnet** at `0xEEEBBa55620afC42E9c88b5d962476367b8da338`: the P5 risky-but-mandated target (SPEC §4.6) that forwards every payment to a fixed sink nobody controls; not yet allowlisted in any mandate (see [docs/deployments.md](../docs/deployments.md)) |
+| `DemoPassThrough` | demo-only, **live on Monad testnet** at `0xEEEBBa55620afC42E9c88b5d962476367b8da338`: the P5 risky-but-mandated target (SPEC §4.6) that forwards every payment to a fixed sink nobody controls; now allowlisted in demo agent 1984's mandate, next to the deployer (see [docs/deployments.md](../docs/deployments.md)) |
 
 ```bash
 forge build
@@ -99,7 +99,7 @@ testnet deployment (status table above) matches, superseding the single-validato
 | `test/DeployDemoAgentVault.t.sol` | The CREATE2 deploy script: predicted address, idempotence, wiring, the testnet configuration (both validators and tags) |
 | `test/Toolchain.t.sol` | P0 toolchain smoke test: P256VERIFY at `0x0100` in Foundry's Monad profile (32 bytes `…01` for a valid signature, empty for an invalid one), and the OpenZeppelin remapping (`P256.verify`) |
 
-## DemoPassThrough (demo-only, not yet deployed)
+## DemoPassThrough (demo-only, live on Monad testnet)
 
 `src/DemoPassThrough.sol` is the P5 risky-but-mandated demo target (SPEC §4.6, decision 34): a fresh "payment
 router" that actually sweeps every payment it receives straight to a fixed `sink` nobody controls
@@ -108,8 +108,9 @@ has no matching function and reverts before `receive` ever runs. The story: the 
 deployer in demo agent 1984's mandate (`set-mandate`); mandate-v1 then approves a plain transfer to it like any
 other allowlisted target (within caps, simulation succeeds), while risk-v1's `simulate_action` trace sees the value
 keep moving on to `sink`, which isn't on the mandate, has no code and nonce 0 — the rubric scores that **high**, so
-the gate refuses. `script/DeployDemoPassThrough.s.sol` deploys it through the same CREATE2 factory; it is **not yet
-deployed anywhere**.
+the gate refuses. `script/DeployDemoPassThrough.s.sol` deploys it through the same CREATE2 factory; it is **live on
+Monad testnet** at `0xEEEBBa55620afC42E9c88b5d962476367b8da338` and **is now allowlisted** in demo agent 1984's
+mandate, next to the deployer (see [docs/deployments.md](../docs/deployments.md)).
 
 | Test file | What it covers |
 |---|---|

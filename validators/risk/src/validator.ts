@@ -61,7 +61,7 @@ export type RiskValidatorOptions = Omit<ValidatorOptions, "tag" | "maxDeadlineAh
  *   validator A, read with {@link readPrerequisite}); **no guard or model call happens before that**.
  *   A verdict from another validator, or under another tag, declines `MANDATE_V1_VERDICT_INVALID:
  *   <reason>`. A score of 0 from A still runs B. Then it runs {@link runRiskV1} at `P`, which may
- *   itself decline (`MODEL_OUTPUT_INVALID`, `EVIDENCE_TOO_LARGE`).
+ *   itself decline (`PROMPT_TOO_LARGE`, `MODEL_OUTPUT_INVALID`, `EVIDENCE_TOO_LARGE`).
  * - **The pin.** `P` is `PIN_LAG_BLOCKS` (5) below the finalized head, never below the request's own
  *   block or the block this process's last response landed in; `P`'s time must be no more than
  *   3,600 s before the action's deadline (`verify` checks that at `P`); and A's verdict must be
