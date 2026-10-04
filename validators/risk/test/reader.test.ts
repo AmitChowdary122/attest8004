@@ -3,7 +3,7 @@ import { HttpRequestError, getAddress, keccak256, toHex, zeroHash, type Hex } fr
 import { generatePrivateKey, privateKeyToAccount } from "viem/accounts";
 import { beforeEach, describe, expect, it } from "vitest";
 import { FakeRpc, RevertError, revert } from "../../../packages/sdk/test/helpers/fake-rpc.ts";
-import { viemRiskReader, type RiskAddresses } from "../src/reader.ts";
+import { checkRpcServesRiskV1, viemRiskReader, type RiskAddresses } from "../src/reader.ts";
 
 const ADDRESSES: RiskAddresses = {
   validationRegistry: getAddress("0xc4a4d0ceb3971cbe7a2536494ac106f2cd9f9a8f"),
@@ -238,5 +238,77 @@ describe("viemRiskReader: still a VerifyReader (mandate-v1's own methods pass th
     const r = reader();
     await expect(r.finalized()).resolves.toEqual({ number: P - 1n, hash: keccak256(toHex(P - 1n)), timestamp: expect.any(BigInt) });
     await expect(r.mandate(AGENT, P)).resolves.toBeNull(); // mandateHash zero: never set
+  });
+});
+
+describe("checkRpcServesRiskV1: the service's startup checks (final review A4)", () => {
+  const SECRET_URL = "https://rpc.secret-provider.example/v2/not-a-real-key-42";
+  const okFrame = { type: "CALL", from: "0x0000000000000000000000000000000000000000", to: "0x0000000000000000000000000000000000000000", value: "0x0", input: "0x" };
+  const check = () => checkRpcServesRiskV1(rpc.clients(account, { retryCount: 0 }).publicClient, ADDRESSES.identityRegistry);
+
+  function answering(o: { trace?: () => unknown; code?: () => unknown } = {}) {
+    rpc.intercept = (method) => {
+      if (method === "debug_traceCall") return (o.trace ?? (() => okFrame))();
+      if (method === "eth_getCode") return (o.code ?? (() => "0x6080"))();
+      return undefined;
+    };
+  }
+
+  it("makes one trivial debug_traceCall at latest with callTracer, and one eth_getCode of the Identity Registry at head - 2,000,000", async () => {
+    answering();
+    await expect(check()).resolves.toEqual({ historyBlock: P - 2_000_000n });
+    expect(callsOf("debug_traceCall").map((c) => c.params)).toEqual([
+      [{ from: "0x0000000000000000000000000000000000000000", to: "0x0000000000000000000000000000000000000000", value: "0x0", gas: toHex(21_000n) }, "latest", { tracer: "callTracer" }],
+    ]);
+    expect(callsOf("eth_getCode").map((c) => c.params)).toEqual([[ADDRESSES.identityRegistry, toHex(P - 2_000_000n)]]);
+  });
+
+  it("empty code at that block still passes: only whether the node serves the state is checked", async () => {
+    answering({ code: () => "0x" });
+    await expect(check()).resolves.toEqual({ historyBlock: P - 2_000_000n });
+  });
+
+  it("a head under 2,000,000 reads block 0", async () => {
+    rpc.blockNumber = 1_234n;
+    answering();
+    await expect(check()).resolves.toEqual({ historyBlock: 0n });
+    expect(callsOf("eth_getCode")[0]?.params).toEqual([ADDRESSES.identityRegistry, "0x0"]);
+  });
+
+  const traceFailures: Array<[string, () => unknown]> = [
+    ["the method is refused", () => { throw rpcError(-32601, `the method debug_traceCall does not exist (${SECRET_URL})`); }],
+    ["a transport failure", () => { throw new HttpRequestError({ url: SECRET_URL, status: 503 }); }],
+    ["an answer that isn't a callTracer frame", () => ({ structLogs: [] })],
+    ["a null answer", () => null],
+  ];
+  it.each(traceFailures)("debug_traceCall failing (%s) stops with fixed text, never the URL, before any history read", async (_name, trace) => {
+    answering({ trace });
+    const error = await check().then(
+      () => null,
+      (e: unknown) => e,
+    );
+    expect(error).toBeInstanceOf(Error);
+    expect((error as Error).message).toBe("the RPC must serve debug_traceCall (callTracer)");
+    expect((error as { cause?: unknown }).cause).toBeUndefined();
+    expect(JSON.stringify(error, Object.getOwnPropertyNames(error))).not.toContain("secret-provider");
+    expect(callsOf("eth_getCode")).toEqual([]);
+  });
+
+  const historyFailures: Array<[string, () => unknown]> = [
+    ["history the node no longer serves (-32602)", () => { throw rpcError(-32602, `Block requested not found (${SECRET_URL})`); }],
+    ["a transport failure", () => { throw new HttpRequestError({ url: SECRET_URL, status: 429 }); }],
+    ["a malformed answer", () => "0x123"],
+    ["a null answer", () => null],
+  ];
+  it.each(historyFailures)("eth_getCode 2,000,000 blocks back failing (%s) stops with fixed text, never the URL", async (_name, code) => {
+    answering({ code });
+    const error = await check().then(
+      () => null,
+      (e: unknown) => e,
+    );
+    expect(error).toBeInstanceOf(Error);
+    expect((error as Error).message).toBe("the RPC must serve state 2,000,000 blocks back");
+    expect((error as { cause?: unknown }).cause).toBeUndefined();
+    expect(JSON.stringify(error, Object.getOwnPropertyNames(error))).not.toContain("secret-provider");
   });
 });

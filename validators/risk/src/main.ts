@@ -24,7 +24,7 @@ import { openAiCompatibleClient } from "./llm.ts";
 import { nansenClient } from "./nansen.ts";
 import { RatePacer } from "./pacer.ts";
 import { RISK_V1 } from "./params.ts";
-import { riskAddressesFor, viemRiskReader, type RiskAddresses } from "./reader.ts";
+import { checkRpcServesRiskV1, riskAddressesFor, viemRiskReader, type RiskAddresses } from "./reader.ts";
 import { RiskValidator } from "./validator.ts";
 
 const REPO_ROOT = fileURLToPath(new URL("../../../", import.meta.url));
@@ -121,8 +121,9 @@ async function main(): Promise<void> {
 
 /**
  * Refuses to start unless this key is the recorded validator B (requests name that address, and the
- * vault requires `risk-v1` from it), the RPC is on the expected chain, and the contracts agree on one
- * Identity Registry, the one the reader uses for owners and permission events.
+ * vault requires `risk-v1` from it), the RPC is on the expected chain, the contracts agree on one
+ * Identity Registry, the one the reader uses for owners and permission events, and the RPC serves
+ * `debug_traceCall` with callTracer and state 2,000,000 blocks back (`checkRpcServesRiskV1`).
  */
 async function startupChecks(
   publicClient: PublicClient,
@@ -149,6 +150,7 @@ async function startupChecks(
   if (getAddress(fromValidationRegistry) !== expected) {
     throw new Error(`the registries use Identity Registry ${fromValidationRegistry}, but the deployment records ${expected}`);
   }
+  const { historyBlock } = await checkRpcServesRiskV1(publicClient, expected);
   log("info", "startup checks passed", {
     chainId: rpcChainId,
     address: getAddress(address),
@@ -157,6 +159,8 @@ async function startupChecks(
     validationRegistry: addresses.validationRegistry,
     mandateRegistry: addresses.mandateRegistry,
     forwarder: addresses.forwarder,
+    debugTraceCall: true,
+    historyBlock,
   });
 }
 

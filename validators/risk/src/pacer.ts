@@ -11,10 +11,11 @@
  * Thrown by `acquire()` when a single call's estimated tokens can never fit within the per-minute
  * token budget — not a transient capacity squeeze that waiting resolves, so `acquire()` throws
  * immediately instead of looping on 60 s sleeps forever (fix round 1, finding 2: previously this
- * left `check()` never settling and the cursor stalled with no log). `kind: "transient"` mirrors
- * {@link import("./llm.ts").ProviderError}'s own field, so a caller that duck-types on `.kind` (the
- * agent loop, `check()`) treats this exactly like a provider failure: no response, retried from
- * scratch in a later cycle.
+ * left `check()` never settling and the cursor stalled with no log). Callers classify errors only
+ * through {@link import("./llm.ts").isTransientError}, which is true for this error as for a transient
+ * `ProviderError`, so the agent loop and `check()` treat it exactly like a provider failure: no
+ * response, retried from scratch in a later cycle. (`kind: "transient"` mirrors `ProviderError`'s own
+ * field for anyone reading the error.)
  */
 export class TokenBudgetExceededError extends Error {
   readonly kind: "transient" = "transient";

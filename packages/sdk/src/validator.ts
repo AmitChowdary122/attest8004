@@ -147,7 +147,7 @@ export function buildEvidence(args: { tag: string; requestHash: Hex; result: Che
  * - Lets a subclass decline a valid request without responding, either before `check()` runs
  *   (`accepts()`) or from inside it (`check()` returning `{ decline: "<reason>" }` instead of a
  *   `CheckResult`), optionally with a reason, and notifies it once a response lands
- *   (`onResponded()`).
+ *   (`onResponded()`) or once it gives up on a request (`onGaveUp()`).
  */
 export abstract class ValidatorBase {
   private readonly options: Required<Omit<ValidatorOptions, "startBlock">> & { startBlock: bigint | undefined };
@@ -205,6 +205,16 @@ export abstract class ValidatorBase {
   }
 
   /**
+   * Called once when the base gives up on a request (after `maxFailedCycles` failed cycles, logged as
+   * `gave up on request`): no response will be sent for it. A subclass might release a reservation it
+   * holds for the request (`Admission.release`). If it throws, the throw is logged and swallowed, as
+   * for {@link onResponded}: the request is given up either way. Default: no-op.
+   */
+  protected onGaveUp(_requestHash: Hex): void {
+    // no-op by default
+  }
+
+  /**
    * Where the evidence goes. Default: canonical JSON (sorted keys, no whitespace) as a data: URI;
    * responseHash = keccak256 of those exact bytes, so `verify` can rebuild them byte for byte from a
    * recomputed `CheckResult` via {@link buildEvidence} and get the same hash.
@@ -237,6 +247,7 @@ export abstract class ValidatorBase {
         if (failures >= maxFailedCycles) {
           this.failedCycles.delete(event.requestHash);
           this.log("error", "gave up on request", { requestHash: event.requestHash, failures, error: message });
+          this.notifyGaveUp(event.requestHash);
           outcomes.push({ kind: "gave-up", requestHash: event.requestHash, error: message });
           continue;
         }
@@ -361,6 +372,15 @@ export abstract class ValidatorBase {
         requestHash: response.requestHash,
         error: errorMessage(error),
       });
+    }
+  }
+
+  /** Calls the subclass's `onGaveUp`, swallowing a throw: the request is given up either way. */
+  private notifyGaveUp(requestHash: Hex): void {
+    try {
+      this.onGaveUp(requestHash);
+    } catch (error) {
+      this.log("error", "onGaveUp threw; the request is given up regardless", { requestHash, error: errorMessage(error) });
     }
   }
 

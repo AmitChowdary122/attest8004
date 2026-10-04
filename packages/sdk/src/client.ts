@@ -175,6 +175,14 @@ export class Attest8004Client {
    * reports, a stored verdict naming that validator and this agent, with at least the minimum
    * score and a tag that hashes to the requirement's `tagHash`. A request that doesn't exist
    * reads as false; an RPC failure throws.
+   *
+   * It reads the tag-aware `requirements()` (`attestGateAbi`: `{validator, minScore, tagHash}`).
+   * Against a pre-P5 gate, whose `Requirement` has two fields (`{validator, minScore}`, such as the P2
+   * and P3 vaults), decoding fails and this rejects with viem's decoding error (with viem 2.57,
+   * `PositionOutOfBoundsError`, or `IntegerOutOfRangeError` once a misread field is out of range,
+   * wrapped in a `ContractFunctionExecutionError`): read as three words per requirement where the gate
+   * returns two, the decoder always runs past the data. That is safe — it never returns a wrong
+   * `true` — but such gates need their own ABI, as `scripts/src/gated-execute.ts` has.
    */
   async isValidated(args: { gate: Address; action: Action }): Promise<boolean> {
     const { publicClient } = this.options;

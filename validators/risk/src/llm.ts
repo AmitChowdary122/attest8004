@@ -205,7 +205,10 @@ export function parseChatResponse(body: unknown): ChatResponse {
 const DEFAULT_TIMEOUT_MS = 60_000;
 const MAX_429_RETRIES = 4;
 const OTHER_RETRY_DELAYS_MS = [2_000, 4_000] as const;
-const RETRYABLE_STATUSES = new Set([500, 502, 503, 498, 499]);
+/** Retried in-call (2 s, 4 s) before becoming transient: any 5xx, plus Groq's 498 (flex capacity) and 499 (request cancelled). Final review A2. */
+function isRetryableStatus(status: number): boolean {
+  return (status >= 500 && status <= 599) || status === 498 || status === 499;
+}
 
 /**
  * `new URL(baseUrl).host`, wrapped: Node's `ERR_INVALID_URL` for an unparseable string carries the
@@ -327,7 +330,7 @@ export function openAiCompatibleClient(o: {
           continue;
         }
 
-        if (RETRYABLE_STATUSES.has(status)) {
+        if (isRetryableStatus(status)) {
           if (retriesOther >= OTHER_RETRY_DELAYS_MS.length) {
             throw new ProviderError(`provider error (status ${status})`, { kind: "transient", status, code, failedGeneration: null });
           }

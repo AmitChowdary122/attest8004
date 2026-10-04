@@ -98,7 +98,8 @@ export type MandateValidatorOptions = Omit<ValidatorOptions, "tag" | "maxDeadlin
  *   `pinPollMs`, and after `pinTimeoutMs` throws: nothing is posted, and the base retries the request
  *   later. This assumes one validator process per key.
  * - **`onResponded()`** records the response's block for the pin and settles the admission reservation
- *   to the gas limit actually sent. It never throws.
+ *   to the gas limit actually sent. It never throws. **`onGaveUp()`** releases the reservation of a
+ *   request the base gave up on (`Admission.release`): no response will be sent for it.
  *
  * The tag is always `mandate-v1`, the deadline horizon always 3,600 s and the request size limit always
  * 16,384 bytes (what `verify` decodes), whatever the options say.
@@ -237,6 +238,15 @@ export class MandateValidator extends ValidatorBase {
         // The response already landed; nothing here may throw.
       }
     }
+  }
+
+  /**
+   * Releases the admission reservation of a request the base gave up on (`Admission.release`): no
+   * response will be sent for it. (Every decline happens in `accepts()`, before admission, so there is
+   * nothing else to release.)
+   */
+  protected override onGaveUp(requestHash: Hex): void {
+    this.admission.release(requestHash);
   }
 
   /**

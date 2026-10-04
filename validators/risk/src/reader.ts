@@ -6,7 +6,7 @@ import {
   type MandateAddresses,
   type VerifyReader,
 } from "@attest8004/validator-mandate";
-import { decodeFunctionResult, encodeFunctionData, getAddress, toHex, type Address, type Hex, type PublicClient } from "viem";
+import { decodeFunctionResult, encodeFunctionData, getAddress, toHex, zeroAddress, type Address, type Hex, type PublicClient } from "viem";
 import type { CallFrame, TraceResult } from "./trace.ts";
 
 /** The contracts `risk-v1` reads: `mandate-v1`'s four, plus the canonical ERC-8004 ReputationRegistry. */
@@ -226,4 +226,42 @@ export function viemRiskReader(options: { publicClient: PublicClient; addresses:
       return { count, value, decimals };
     },
   };
+}
+
+/** How far back the service checks that its RPC serves state: `RISK_V1.ageProbeBlocks`' deepest probe. */
+const HISTORY_CHECK_BLOCKS = 2_000_000n;
+
+/**
+ * The `risk-v1` service's RPC checks before it polls (final review A4): one `debug_traceCall` of a
+ * trivial call (the zero address to itself, value 0, gas 21,000) at `latest` with
+ * `{tracer: "callTracer"}`, which must answer a callTracer frame (`simulate_action` needs it); then one
+ * `eth_getCode` of the Identity Registry at the head minus 2,000,000 blocks (block 0 for a younger
+ * chain), which must answer whole-byte hex, empty included (the deepest age probe of
+ * `counterparty_onchain`, and `verify`'s re-runs, read that far back). Either failing throws our own
+ * fixed text, with no `cause`: never the RPC's URL, which can carry a key, nor its error. A failure to
+ * read the head itself propagates as viem's error, as the service's other startup reads do. Resolves
+ * with the block the history check read.
+ */
+export async function checkRpcServesRiskV1(publicClient: PublicClient, identityRegistry: Address): Promise<{ historyBlock: bigint }> {
+  let frame: unknown;
+  try {
+    frame = await publicClient.request({
+      method: "debug_traceCall",
+      params: [{ from: zeroAddress, to: zeroAddress, value: "0x0", gas: toHex(21_000n) }, "latest", { tracer: "callTracer" }],
+    } as never);
+  } catch {
+    frame = undefined;
+  }
+  if (!isCallFrame(frame)) throw new Error("the RPC must serve debug_traceCall (callTracer)");
+
+  const head = BigInt(await publicClient.request({ method: "eth_blockNumber" }));
+  const historyBlock = head > HISTORY_CHECK_BLOCKS ? head - HISTORY_CHECK_BLOCKS : 0n;
+  let code: unknown;
+  try {
+    code = await publicClient.request({ method: "eth_getCode", params: [getAddress(identityRegistry), toHex(historyBlock)] } as never);
+  } catch {
+    code = undefined;
+  }
+  if (!isCallResult(code)) throw new Error("the RPC must serve state 2,000,000 blocks back");
+  return { historyBlock };
 }

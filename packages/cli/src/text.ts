@@ -11,12 +11,13 @@ import { formatEther } from "viem";
 export const MODEL_OUTPUT = "recorded, not re-run";
 
 /**
- * Escapes control characters (except newlines) and bidirectional overrides as `\uXXXX`, so strings
- * from the chain (a response's tag, the posted evidence's keys, a finding's explanation) can't drive
- * the terminal. Inside JSON strings the escape is still valid JSON for the same character.
+ * Escapes control characters (except newlines) and bidirectional controls (U+061C, U+200E/F, the
+ * U+202A-E embeddings and overrides, the U+2066-9 isolates) as `\uXXXX`, so strings from the chain (a
+ * response's tag, the posted evidence's keys, a finding's explanation) can't drive the terminal.
+ * Inside JSON strings the escape is still valid JSON for the same character.
  */
 export function printable(text: string): string {
-  return text.replace(/[\u0000-\u0009\u000b-\u001f\u007f-\u009f\u200e\u200f\u2028\u2029\u202a-\u202e\u2066-\u2069]/g, (c) =>
+  return text.replace(/[\u0000-\u0009\u000b-\u001f\u007f-\u009f\u061c\u200e\u200f\u2028\u2029\u202a-\u202e\u2066-\u2069]/g, (c) =>
     `\\u${c.charCodeAt(0).toString(16).padStart(4, "0")}`,
   );
 }
@@ -34,6 +35,21 @@ function oneLine(value: string): string {
 /** A value as one line of JSON, every `bigint` as a decimal string. */
 export function jsonText(value: unknown): string {
   return JSON.stringify(value, (_key, v: unknown) => (typeof v === "bigint" ? v.toString() : v));
+}
+
+/** The human output's bound on the model id (operator-controlled), as `quoted()` bounds a tag. */
+const MODEL_MAX_CHARS = 64;
+/** The human output's bound on one finding's explanation (operator-controlled): `RISK_V1.maxExplanationChars`. */
+const EXPLANATION_MAX_CHARS = 400;
+
+/**
+ * An operator-controlled string clipped for the human output (final review B4): every run of
+ * whitespace (newlines included) collapsed to one space, then cut at `max` characters with "…" (a
+ * trailing lone surrogate the cut leaves is dropped). `--json` prints the report unclipped.
+ */
+function clipped(value: string, max: number): string {
+  const collapsed = value.replace(/\s+/g, " ");
+  return collapsed.length > max ? `${collapsed.slice(0, max).replace(/[\uD800-\uDBFF]$/, "")}…` : collapsed;
 }
 
 /** A chain string quoted and bounded for one line. */
@@ -174,6 +190,8 @@ function calls(refs: readonly ToolCallRef[]): string {
  * not re-run`; the request, validator and tag; the model; the pinned block; the posted and recomputed
  * scores (and reasons); the findings (`severity code — explanation`); the tool calls re-checked at
  * `P`, those left unchecked (Nansen) and those the model never saw (`TOOL_CALL_LIMIT`); the problems.
+ * The model id is clipped at 64 characters and each explanation at 400, whitespace runs collapsed
+ * (`clipped`); `riskJson` keeps them whole.
  */
 export function riskText(report: RiskVerifyReport): string {
   const out = rows();
@@ -185,7 +203,7 @@ export function riskText(report: RiskVerifyReport): string {
   row("request", report.requestHash);
   row("validator", report.validator);
   row("tag", JSON.stringify(posted.tag));
-  row("model", report.model === null ? "-" : oneLine(report.model));
+  row("model", report.model === null ? "-" : oneLine(clipped(report.model, MODEL_MAX_CHARS)));
   pinnedRows(out, report, "named by the evidence; not read");
   row("score", `posted ${posted.score}, recomputed ${recomputed?.score ?? "-"}`);
   if (recomputed !== null) row("reasons", recomputed.reasons.length === 0 ? "none" : recomputed.reasons.map(oneLine).join(", "));
@@ -195,7 +213,9 @@ export function riskText(report: RiskVerifyReport): string {
   } else if (report.findings.length === 0) {
     row("findings", "none");
   } else {
-    report.findings.forEach((f, i) => row(i === 0 ? "findings" : "", `${oneLine(f.severity)} ${oneLine(f.code)} — ${oneLine(f.explanation)}`));
+    report.findings.forEach((f, i) =>
+      row(i === 0 ? "findings" : "", `${oneLine(f.severity)} ${oneLine(f.code)} — ${oneLine(clipped(f.explanation, EXPLANATION_MAX_CHARS))}`),
+    );
   }
 
   // The tool step ran on a match, on TOOL_OUTPUT_MISMATCH, and on a coverage gap found after the

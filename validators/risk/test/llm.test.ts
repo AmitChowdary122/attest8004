@@ -166,6 +166,36 @@ describe("openAiCompatibleClient: errors", () => {
     expect(sleep.calls).toEqual([2_000, 4_000]);
   });
 
+  // Final review A2: any 5xx is retried, not just 500/502/503 (504 Gateway Timeout is the common one).
+  it.each([504, 501, 505, 599])("%i (any 5xx) is retried twice (2 s, 4 s) then transient", async (status) => {
+    const { fn, calls } = fakeFetch([jsonResponse(status, {}), jsonResponse(status, {}), jsonResponse(status, {})]);
+    const sleep = fakeSleep();
+    const client = openAiCompatibleClient({ baseUrl: "https://api.example.com/v1", apiKey: "k", fetch: fn, sleep: sleep.fn });
+
+    await expect(client.complete(baseRequest())).rejects.toMatchObject({ kind: "transient", status });
+    expect(calls).toHaveLength(3);
+    expect(sleep.calls).toEqual([2_000, 4_000]);
+  });
+
+  it("a 504 that recovers on retry succeeds normally", async () => {
+    const { fn, calls } = fakeFetch([jsonResponse(504, {}), jsonResponse(200, successBody())]);
+    const sleep = fakeSleep();
+    const client = openAiCompatibleClient({ baseUrl: "https://api.example.com/v1", apiKey: "k", fetch: fn, sleep: sleep.fn });
+    expect((await client.complete(baseRequest())).content).toBe("hello");
+    expect(calls).toHaveLength(2);
+    expect(sleep.calls).toEqual([2_000]);
+  });
+
+  it.each([400, 404, 497])("%i is not retried: transient at once", async (status) => {
+    const { fn, calls } = fakeFetch([jsonResponse(status, { error: { code: "whatever" } })]);
+    const sleep = fakeSleep();
+    const client = openAiCompatibleClient({ baseUrl: "https://api.example.com/v1", apiKey: "k", fetch: fn, sleep: sleep.fn });
+
+    await expect(client.complete(baseRequest())).rejects.toMatchObject({ kind: "transient", status });
+    expect(calls).toHaveLength(1);
+    expect(sleep.calls).toEqual([]);
+  });
+
   it("timeout aborts after timeoutMs -> transient", async () => {
     const neverResolves = (async (_url: string | URL | Request, init?: RequestInit): Promise<Response> => {
       return await new Promise<Response>((_resolve, reject) => {

@@ -206,6 +206,74 @@ describe("RiskValidator: accepts()", () => {
   });
 });
 
+describe("RiskValidator: admission release (final review A3)", () => {
+  /** Room for exactly one response's reservation at a time. */
+  const oneAtATime = () => new Admission({ maxRequestsPerAgent: 20, agentWindowSeconds: 3_600n, dailyGasBudget: 1_000_000n, maxGasPerResponse: 1_000_000n });
+
+  it("a check() decline (MANDATE_V1_VERDICT_INVALID) frees its reservation: the next request is admitted with the budget full", async () => {
+    const first = addAction();
+    answerA(first, { tag: "mandate-v2" });
+    const second = addAction();
+    answerA(second);
+    const admission = oneAtATime();
+    const release = vi.spyOn(admission, "release");
+    const { validator } = makeValidator({ admission });
+
+    const { outcomes } = await validator.pollOnce();
+    expect(declined(outcomes)).toEqual([expect.stringMatching(/^DECLINED: MANDATE_V1_VERDICT_INVALID: /), "responded"]);
+    expect(release).toHaveBeenCalledWith(first.rhB);
+    expect(release).toHaveBeenCalledTimes(1);
+    expect(chain.sent.map((s) => s.requestHash)).toEqual([second.rhB]);
+  });
+
+  it("a decline from runRiskV1 (MODEL_OUTPUT_INVALID) frees its reservation too", async () => {
+    const first = addAction();
+    answerA(first);
+    const second = addAction();
+    answerA(second);
+    const llm = scriptedLlm([
+      chatResponse({ content: "Done." }),
+      chatResponse({ content: "no" }),
+      chatResponse({ content: "no" }),
+      chatResponse({ content: "no" }),
+      ...riskyRun(),
+    ]);
+    const { validator } = makeValidator({ llm, admission: oneAtATime() });
+
+    const { outcomes } = await validator.pollOnce();
+    expect(declined(outcomes)).toEqual(["DECLINED: MODEL_OUTPUT_INVALID: not JSON", "responded"]);
+    expect(chain.sent.map((s) => s.requestHash)).toEqual([second.rhB]);
+  });
+
+  it("a given-up request frees its reservation: once A never answers the first, the second is admitted", async () => {
+    const first = addAction();
+    const second = addAction();
+    answerA(second);
+    const admission = oneAtATime();
+    const release = vi.spyOn(admission, "release");
+    const { validator } = makeValidator({ admission, pinTimeoutMs: 20 });
+
+    let outcomes: Outcome[] = [];
+    for (let cycle = 1; cycle <= 6; cycle++) outcomes = (await validator.pollOnce()).outcomes;
+    expect(outcomes).toEqual([
+      expect.objectContaining({ kind: "gave-up", requestHash: first.rhB }),
+      expect.objectContaining({ kind: "responded", requestHash: second.rhB }),
+    ]);
+    expect(release).toHaveBeenCalledWith(first.rhB);
+    expect(release).toHaveBeenCalledTimes(1);
+  });
+
+  it("a response keeps its reservation (settled, never released)", async () => {
+    const pair = addAction();
+    answerA(pair);
+    const admission = oneAtATime();
+    const release = vi.spyOn(admission, "release");
+    await makeValidator({ admission }).validator.pollOnce();
+    expect(chain.sent).toHaveLength(1);
+    expect(release).not.toHaveBeenCalled();
+  });
+});
+
 describe("RiskValidator: waiting for mandate-v1", () => {
   it("no verdict from A: no model call, no response; check throws after pinTimeoutMs, the base retries, then gives up after 6 cycles", async () => {
     const pair = addAction();

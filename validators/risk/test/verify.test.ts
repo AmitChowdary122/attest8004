@@ -274,6 +274,28 @@ describe("verifyRiskRequest: an honest verdict", () => {
     expect(await verify(rhB)).toMatchObject({ verdict: "match", recomputed: { score: 40 } });
   });
 
+  it("a nested frame's non-standard error text is screened as an extra result: flagged, the code finding follows and the run matches; benign, it still matches (final review A1)", async () => {
+    const nested = (error: string): TraceResult => {
+      const trace = passThroughTrace();
+      if (!trace.ok) throw new Error("test setup: passThroughTrace is ok");
+      return { ok: true, frame: { ...trace.frame, calls: [{ ...trace.frame.calls![0]!, error }] } };
+    };
+    const flagged = `execution reverted: ${INJECTION}`;
+    reader.traceResult = nested(flagged);
+    const { rhB, doc } = await honest({ steps: steps([toolCall("simulate_action")]) });
+    expect(doc.classifier.results).toEqual([{ source: "tool:simulate_action", text: flagged, score: "0.9995530247688293", flagged: true }]);
+    expect(doc.findings.map((f) => [f.code, f.origin])).toEqual([[PROMPT_INJECTION_SUSPECTED, "code"]]);
+    expect(await verify(rhB)).toMatchObject({ verdict: "match", recomputed: { score: 40, reasons: [PROMPT_INJECTION_SUSPECTED] } });
+
+    // verify derives no field from it (runTool's `untrusted` is unchanged), so the result is an extra one, which is allowed.
+    chain = new FakeChain();
+    reader = new FakeRiskReader(chain);
+    reader.traceResult = nested("some node's own words");
+    const benign = await honest({ steps: steps([toolCall("simulate_action")]) });
+    expect(benign.doc.classifier.results.map((r) => [r.text, r.flagged])).toEqual([["some node's own words", false]]);
+    expect(await verify(benign.rhB)).toMatchObject({ verdict: "match", recomputed: { score: 100 } });
+  });
+
   it("calldata text longer than one guard chunk: the recorded (highest-scoring) chunk covers it", async () => {
     const text = `${"x".repeat(420)} ${INJECTION}`;
     const { rhB, doc } = await honest({ steps: riskyRun(), data: calldataWith(text) });
@@ -295,7 +317,7 @@ describe("verifyRiskRequest: an honest verdict", () => {
     expect((await verify(rhB)).verdict).toBe("match");
   });
 
-  it("Nansen labels are covered by their classifier results; labels the output cap removed or shortened leave extra results, which are allowed", async () => {
+  it("Nansen labels are covered by their classifier results, screened as the output cap left them (removed ones aren't screened, shortened ones are screened shortened)", async () => {
     const many = {
       available: true,
       labels: Array.from({ length: 20 }, (_, i) => ({ label: `entity label ${i} ${"x".repeat(48)}`, category: "cex", kind: ["hot_wallet"] })),
@@ -314,8 +336,10 @@ describe("verifyRiskRequest: an honest verdict", () => {
     const second = doc.toolCalls[1]!.output as { firstFunder: { name: string } };
     expect(second.firstFunder.name.length).toBeLessThan(longName.length);
     expect(longName.startsWith(second.firstFunder.name)).toBe(true);
-    // Every label was screened in full, before the cap.
-    expect(doc.classifier.results).toHaveLength(20 + 1 + 1);
+    // Only what survived the cap was screened (final review A5b), exactly as it was shown.
+    const firstKept = (doc.toolCalls[0]!.output as { labels: unknown[]; firstFunder: unknown }).firstFunder === undefined ? 0 : 1;
+    expect(doc.classifier.results).toHaveLength(first.labels.length + firstKept + 1);
+    expect(doc.classifier.results.at(-1)).toMatchObject({ source: "tool:nansen_counterparty_profile", text: second.firstFunder.name });
     expect((await verify(rhB)).verdict).toBe("match");
   });
 

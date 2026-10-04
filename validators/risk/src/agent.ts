@@ -51,7 +51,8 @@ import { screen, type PromptGuard } from "./guard.ts";
 import { estimateTokens, isTransientError, ProviderError, type ChatClient, type ChatMessage, type ChatRequest, type ChatResponse } from "./llm.ts";
 import { RISK_V1 } from "./params.ts";
 import { finalMessages, initialMessages, invalidOutputMessage, TOOL_SCHEMA_RETRY_MESSAGE, type InitialData } from "./prompt.ts";
-import { isRecordableJson, NANSEN_TOOLS, runTool, TOOL_DEFINITIONS, type ToolContext } from "./tools.ts";
+import { isRecordableJson, NANSEN_TOOLS, runTool, TOOL_DEFINITIONS, type ToolContext, type UntrustedField } from "./tools.ts";
+import { STANDARD_CALL_TRACER_ERRORS } from "./trace.ts";
 import type { Finding, GuardResult, JsonValue, ToolCallRecord, TurnRecord } from "./types.ts";
 import { safeJson } from "./untrusted.ts";
 
@@ -83,6 +84,33 @@ export const FINAL_TOOL_CALLS_ERROR = "the final answer called a tool, but the f
  * this text (as for a zod failure), so the seeded retry is not the identical request.
  */
 export const FINAL_SCHEMA_ERROR = "it did not match the JSON schema (every key exactly as named, nothing else)";
+
+const STANDARD_FRAME_ERRORS: ReadonlySet<string> = new Set(STANDARD_CALL_TRACER_ERRORS);
+
+/**
+ * The extra text the loop screens for a `simulate_action` answer (final review A1): every distinct
+ * `calls[].error` string in the (capped) output the model is shown that isn't one of callTracer's
+ * standard outcome strings ({@link STANDARD_CALL_TRACER_ERRORS}), in call order, each once, as
+ * `tool:simulate_action` (the revert reason's source). `runTool`'s own `untrusted` (what `verify`
+ * re-derives) is unchanged: these are extra classifier results, which `verify` allows, and its
+ * injection rule runs over every recorded result, so a flagged one still forces the code finding.
+ * Exported for its tests.
+ */
+export function frameErrorFields(output: JsonValue): UntrustedField[] {
+  if (output === null || typeof output !== "object" || Array.isArray(output)) return [];
+  const calls = output.calls;
+  if (!Array.isArray(calls)) return [];
+  const seen = new Set<string>();
+  const fields: UntrustedField[] = [];
+  for (const frame of calls) {
+    if (frame === null || typeof frame !== "object" || Array.isArray(frame)) continue;
+    const error = frame.error;
+    if (typeof error !== "string" || error.length === 0 || STANDARD_FRAME_ERRORS.has(error) || seen.has(error)) continue;
+    seen.add(error);
+    fields.push({ source: "tool:simulate_action", text: error });
+  }
+  return fields;
+}
 
 /** The answer to a call that is not run (Decision 21); a fresh object each time, so no two records share one. */
 function toolCallLimit(): JsonValue {
@@ -315,7 +343,6 @@ export async function runAgent(o: {
     return invalidOutputs > RISK_V1.invalidOutputRetries;
   };
 
-  /** One model call: the response (recorded), or the provider's failed generation for invalid output. */
   /** One model call: the response (its usage counted), or the provider's failed generation for invalid output. Records nothing. */
   const complete = async (request: ChatRequest): Promise<{ response: ChatResponse } | { invalid: string }> => {
     let response: ChatResponse;
@@ -399,8 +426,10 @@ export async function runAgent(o: {
         answerLimit(turn, call, ranTool.arguments);
         continue;
       }
-      // Screened before the model can see it (Decision 12): the next model call comes after this.
-      guardResults.push(...(await screen(guard, ranTool.untrusted, RISK_V1.guardThreshold)));
+      // Screened before the model can see it (Decision 12): the next model call comes after this. A
+      // simulation's non-standard frame error texts are screened too, after runTool's own fields.
+      const untrusted = call.name === "simulate_action" ? [...ranTool.untrusted, ...frameErrorFields(ranTool.output)] : ranTool.untrusted;
+      guardResults.push(...(await screen(guard, untrusted, RISK_V1.guardThreshold)));
       turn.push(toolMessage);
       toolCalls.push({ id: call.id, name: call.name, arguments: ranTool.arguments, output: ranTool.output, onchain: ranTool.onchain });
       ran.add(call.name);

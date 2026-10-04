@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs";
 import { encodeErrorResult, getAddress, type Hex } from "viem";
 import { describe, expect, it } from "vitest";
-import { flattenTrace, type CallFrame, type TraceResult } from "../src/trace.ts";
+import { flattenTrace, STANDARD_CALL_TRACER_ERRORS, type CallFrame, type TraceResult } from "../src/trace.ts";
 
 const FIXTURE = JSON.parse(readFileSync(new URL("./fixtures/chain/trace-passthrough.json", import.meta.url), "utf8")) as {
   result: CallFrame;
@@ -360,5 +360,24 @@ describe("flattenTrace: determinism", () => {
   it("flattening the same TraceResult twice gives byte-identical JSON", () => {
     const result: TraceResult = { ok: true, frame: FIXTURE.result };
     expect(JSON.stringify(flattenTrace(result, 16))).toBe(JSON.stringify(flattenTrace(result, 16)));
+  });
+});
+
+describe("STANDARD_CALL_TRACER_ERRORS (final review A1)", () => {
+  it("is exactly callTracer's nine standard outcome strings, and flattenTrace still shows any frame error verbatim", () => {
+    expect(STANDARD_CALL_TRACER_ERRORS).toEqual([
+      "execution reverted",
+      "out of gas",
+      "invalid opcode",
+      "stack underflow",
+      "stack overflow",
+      "write protection",
+      "insufficient balance for transfer",
+      "contract creation code storage out of gas",
+      "max code size exceeded",
+    ]);
+    const top = frame({ type: "CALL", from: "0x23BfBD12545CCd1501ddA1B65a54518FD6212a96", calls: [frame({ type: "CALL", from: "0x23BfBD12545CCd1501ddA1B65a54518FD6212a96", error: "execution reverted: node text" })] });
+    const flattened = flattenTrace({ ok: true, frame: top }, 16);
+    expect((flattened.calls as { error: string | null }[]).map((c) => c.error)).toEqual([null, "execution reverted: node text"]);
   });
 });

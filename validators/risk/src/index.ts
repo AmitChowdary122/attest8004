@@ -1,4 +1,4 @@
-// risk-v1: agentic validator, an OpenAI-compatible LLM (Groq today) + onchain tools + Nansen (SPEC §4.6). The service entry point and its env parsing come later and stay out of this entry.
+// risk-v1: agentic validator, an OpenAI-compatible LLM (Groq today) + onchain tools + Nansen (SPEC §4.6). The service entry point (src/main.ts) and its env parsing (src/config.ts) are not exported from this entry.
 export * from "./params.ts";
 export * from "./types.ts";
 export * from "./findings.ts";

@@ -113,6 +113,8 @@ class TestValidator extends ValidatorBase {
   result: () => CheckResult | { decline: string } = () => ({ score: 100, reasons: ["OK"] });
   accept: (request: VerifiedRequest) => boolean | { decline: string } = () => true;
   onRespondedImpl: (info: RespondedInfo) => void = () => {};
+  readonly gaveUp: Hex[] = [];
+  onGaveUpImpl: (requestHash: Hex) => void = () => {};
   protected override async accepts(request: VerifiedRequest): Promise<boolean | { decline: string }> {
     return this.accept(request);
   }
@@ -123,6 +125,10 @@ class TestValidator extends ValidatorBase {
   protected override onResponded(info: RespondedInfo): void {
     this.responded.push(info);
     this.onRespondedImpl(info);
+  }
+  protected override onGaveUp(requestHash: Hex): void {
+    this.gaveUp.push(requestHash);
+    this.onGaveUpImpl(requestHash);
   }
 }
 
@@ -584,6 +590,55 @@ describe("ValidatorBase", () => {
       expect(third.outcomes).toEqual([expect.objectContaining({ kind: "gave-up", error: expect.stringMatching(/model timeout/) })]);
       expect(await cursor.load()).toBe(1_000n);
       expect(chain.respondCalls).toBe(0);
+    });
+
+    it("calls onGaveUp once with the request's hash when it gives up, and never before (final review A3)", async () => {
+      const e = event();
+      chain.events.push(e);
+      const v = validator({ cursor: new MemoryCursorStore(999n), maxFailedCycles: 3 });
+      v.result = () => {
+        throw new Error("model timeout");
+      };
+
+      await v.pollOnce();
+      await v.pollOnce();
+      expect(v.gaveUp).toEqual([]);
+      const third = await v.pollOnce();
+      expect(third.outcomes).toEqual([expect.objectContaining({ kind: "gave-up" })]);
+      expect(v.gaveUp).toEqual([e.requestHash]);
+      expect(v.responded).toEqual([]);
+    });
+
+    it("is not called for a request that responds, is declined or is skipped", async () => {
+      const responds = event({ json: request({ salt: `0x${"21".repeat(32)}` }) });
+      const declined = event({ json: request({ salt: `0x${"22".repeat(32)}` }), logIndex: 1 });
+      chain.events.push(responds, declined);
+      const v = validator({ maxFailedCycles: 1 });
+      v.accept = (r) => (r.event.requestHash === declined.requestHash ? { decline: "NOPE" } : true);
+      const { outcomes } = await v.pollOnce();
+      expect(outcomes.map((o) => o.kind)).toEqual(["responded", "skipped"]);
+      expect(v.gaveUp).toEqual([]);
+    });
+
+    it("a throw from onGaveUp is logged and swallowed: the request is still given up and the cycle carries on", async () => {
+      const first = event({ json: request({ salt: `0x${"31".repeat(32)}` }) });
+      const second = event({ json: request({ salt: `0x${"32".repeat(32)}` }), logIndex: 1 });
+      chain.events.push(first, second);
+      const v = validator({ maxFailedCycles: 1 });
+      v.result = () => {
+        throw new Error("model timeout");
+      };
+      v.onGaveUpImpl = () => {
+        throw new Error("hook failed");
+      };
+
+      const { outcomes } = await v.pollOnce();
+      expect(outcomes.map((o) => [o.kind, o.requestHash])).toEqual([
+        ["gave-up", first.requestHash],
+        ["gave-up", second.requestHash],
+      ]);
+      expect(v.gaveUp).toEqual([first.requestHash, second.requestHash]);
+      expect(logs.some((l) => l.level === "error" && l.requestHash === first.requestHash && String(l.error).includes("hook failed"))).toBe(true);
     });
 
     it("never posts a score outside 0..100, a fractional score, or evidence overriding a reserved key", async () => {

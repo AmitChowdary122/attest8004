@@ -60,6 +60,26 @@ function classifyFrameError(error: string | undefined): "REVERTED" | "OUT_OF_GAS
   return "REVERTED";
 }
 
+/**
+ * The standard outcome strings geth-style callTracers put in a frame's `error` (exact, case-sensitive):
+ * the two {@link classifyFrameError} recognises (`"execution reverted"`, `"out of gas"`) and the EVM's
+ * other fixed failure texts. They are our nodes' own words, never data a contract chose. Any other
+ * `error` text in a simulation's `calls[]` (say `"execution reverted: <reason>"`, if a node ever embeds
+ * the revert data there) is shown to the model verbatim, so the agent loop screens it as untrusted text
+ * (final review A1); `flattenTrace` itself, and `runTool`'s `untrusted`, are unchanged by it.
+ */
+export const STANDARD_CALL_TRACER_ERRORS: readonly string[] = [
+  "execution reverted",
+  "out of gas",
+  "invalid opcode",
+  "stack underflow",
+  "stack overflow",
+  "write protection",
+  "insufficient balance for transfer",
+  "contract creation code storage out of gas",
+  "max code size exceeded",
+];
+
 /** `Error(string)`'s decoded message from `output`, or `null` when it isn't that revert. */
 function decodeRevertReason(output: Hex | undefined): string | null {
   if (output === undefined) return null;

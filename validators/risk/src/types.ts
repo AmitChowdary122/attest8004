@@ -18,10 +18,12 @@ export type JsonValue = null | boolean | number | string | JsonValue[] | { [key:
  * model: the call was beyond the 8-call cap, or the token budget refused it before it ran or discarded
  * its answer after (Task 10 fix round 1). `verify` skips re-running such a record.
  *
- * Ruling R4 (controller): `arguments` holds the *parsed* JSON of the model's raw argument string when
- * that string parsed as JSON, or the raw string itself (as a `JsonValue` string) when it didn't — the
- * tool runner still answers an unparseable call (with `{error: "INVALID_ARGUMENTS"}` in `output`), so
- * the record keeps whatever the model actually sent instead of discarding it.
+ * `arguments` holds the *parsed* JSON of the model's raw argument string when that string parses and
+ * can be recorded as is (`isRecordableJson`: canonical-JSON-safe, no `__proto__` key at any depth), or
+ * the raw string itself (as a `JsonValue` string) otherwise — the tool runner still answers such a
+ * call (an unparseable one with `{error: "INVALID_ARGUMENTS"}` in `output`), so the record keeps
+ * whatever the model actually sent instead of discarding it. `verify` re-runs a call from the raw
+ * string in `modelOutputs`, never from this field.
  */
 export interface ToolCallRecord {
   id: string;

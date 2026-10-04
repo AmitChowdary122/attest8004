@@ -779,6 +779,23 @@ describe("MandateValidator: the pinned block", () => {
     );
   });
 
+  it("a given-up request frees its admission reservation: the next request is admitted with the budget full (final review A3)", async () => {
+    admission = new Admission({ maxRequestsPerAgent: 20, agentWindowSeconds: 3_600n, dailyGasBudget: 400_000n, maxGasPerResponse: 400_000n });
+    const release = vi.spyOn(admission, "release");
+    const first = addRequest(requestJson());
+    const second = addRequest(requestJson());
+    vi.spyOn(reader, "simulate").mockRejectedValueOnce(new Error("rpc down"));
+
+    const { outcomes } = await validator({ maxFailedCycles: 1 }).pollOnce();
+
+    expect(outcomes).toEqual([
+      expect.objectContaining({ kind: "gave-up", requestHash: first.requestHash }),
+      expect.objectContaining({ kind: "responded", requestHash: second.requestHash }),
+    ]);
+    expect(release).toHaveBeenCalledWith(first.requestHash);
+    expect(release).toHaveBeenCalledTimes(1);
+  });
+
   it("never throws from onResponded: a failing settle still leaves the response block recorded", async () => {
     vi.spyOn(admission, "settle").mockImplementation(() => {
       throw new Error("settle failed");

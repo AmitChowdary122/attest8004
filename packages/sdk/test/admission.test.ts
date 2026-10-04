@@ -224,3 +224,56 @@ describe("Admission: settle", () => {
     });
   });
 });
+
+describe("Admission: release (final review A3)", () => {
+  const tight: AdmissionOptions = { maxRequestsPerAgent: 2, agentWindowSeconds: 3_600n, dailyGasBudget: 800_000n, maxGasPerResponse: 400_000n };
+  const now = 1_700_000_000n;
+
+  it("drops the request's gas reservation: with the budget full, the next request is admitted", () => {
+    const admission = new Admission({ ...tight, maxRequestsPerAgent: 20 });
+    admission.admit({ requestHash: hashOf("r-0"), agentId: AGENT_A, now });
+    admission.admit({ requestHash: hashOf("r-1"), agentId: AGENT_A, now });
+    expect(admission.admit({ requestHash: hashOf("r-2"), agentId: AGENT_B, now })).toMatchObject({ ok: false, reason: "GAS_BUDGET_EXHAUSTED" });
+
+    admission.release(hashOf("r-0"));
+    expect(admission.admit({ requestHash: hashOf("r-2"), agentId: AGENT_B, now })).toEqual({ ok: true });
+    // Only one reservation was dropped.
+    expect(admission.admit({ requestHash: hashOf("r-3"), agentId: AGENT_B, now })).toMatchObject({ ok: false, reason: "GAS_BUDGET_EXHAUSTED" });
+  });
+
+  it("is a no-op for an unknown requestHash", () => {
+    const admission = new Admission(tight);
+    admission.admit({ requestHash: hashOf("k-0"), agentId: AGENT_A, now });
+    admission.admit({ requestHash: hashOf("k-1"), agentId: AGENT_B, now });
+    admission.release(hashOf("never-admitted"));
+    expect(admission.admit({ requestHash: hashOf("k-2"), agentId: AGENT_B, now })).toMatchObject({ ok: false, reason: "GAS_BUDGET_EXHAUSTED" });
+  });
+
+  it("leaves the agent's rate-limit count alone: a released request still counts in its window, and ages out as before", () => {
+    const admission = new Admission({ ...tight, dailyGasBudget: 10_000_000n });
+    admission.admit({ requestHash: hashOf("c-0"), agentId: AGENT_A, now });
+    admission.admit({ requestHash: hashOf("c-1"), agentId: AGENT_A, now: now + 10n });
+    admission.release(hashOf("c-0"));
+    expect(admission.admit({ requestHash: hashOf("c-2"), agentId: AGENT_A, now: now + 20n })).toMatchObject({ ok: false, reason: "RATE_LIMITED" });
+    // c-0 leaves the window at now + 3,600; c-1 is still in it.
+    expect(admission.admit({ requestHash: hashOf("c-2"), agentId: AGENT_A, now: now + 3_600n })).toEqual({ ok: true });
+    expect(admission.admit({ requestHash: hashOf("c-3"), agentId: AGENT_A, now: now + 3_600n })).toMatchObject({ ok: false, reason: "RATE_LIMITED" });
+  });
+
+  it("leaves other entries' reservations and windows alone, and a released hash is still idempotent", () => {
+    const admission = new Admission({ ...tight, maxRequestsPerAgent: 20, dailyGasBudget: 1_200_000n });
+    admission.admit({ requestHash: hashOf("o-0"), agentId: AGENT_A, now });
+    admission.admit({ requestHash: hashOf("o-1"), agentId: AGENT_B, now: now + 100n });
+    admission.settle({ requestHash: hashOf("o-1"), gasLimit: 300_000n, now: now + 100n });
+    admission.release(hashOf("o-0"));
+    // o-1's settled 300,000 still counts: 300,000 + 400,000 + 400,000 fits 1,200,000, a third doesn't.
+    expect(admission.admit({ requestHash: hashOf("o-2"), agentId: AGENT_B, now: now + 200n })).toEqual({ ok: true });
+    expect(admission.admit({ requestHash: hashOf("o-3"), agentId: AGENT_B, now: now + 200n })).toEqual({ ok: true });
+    expect(admission.admit({ requestHash: hashOf("o-4"), agentId: AGENT_B, now: now + 200n })).toMatchObject({ ok: false, reason: "GAS_BUDGET_EXHAUSTED" });
+    // Re-admitting the released hash reserves nothing and counts nothing.
+    expect(admission.admit({ requestHash: hashOf("o-0"), agentId: AGENT_A, now: now + 200n })).toEqual({ ok: true });
+    expect(admission.admit({ requestHash: hashOf("o-4"), agentId: AGENT_B, now: now + 200n })).toMatchObject({ ok: false, reason: "GAS_BUDGET_EXHAUSTED" });
+    // o-1 ages out of the budget 24 h after its own admission, as before.
+    expect(admission.admit({ requestHash: hashOf("o-4"), agentId: AGENT_B, now: now + 100n + 86_400n })).toEqual({ ok: true });
+  });
+});

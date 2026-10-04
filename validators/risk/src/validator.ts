@@ -70,13 +70,18 @@ export type RiskValidatorOptions = Omit<ValidatorOptions, "tag" | "maxDeadlineAh
  *   up to `maxFailedCycles`, then gives up with no response). This assumes one process per key.
  * - **`onResponded()`** records the response's block for the pin and settles the admission
  *   reservation to the gas limit actually sent. It never throws.
+ * - **Releases.** A decline from `check()` (any reason) and a request the base gives up on
+ *   (`onGaveUp()`) release the request's admission reservation (`Admission.release`): no response
+ *   will be sent for it, so its gas no longer counts against the daily budget (it still counts toward
+ *   the agent's rate limit).
  * - **`pollOnce()`** is the base's, plus one `info` line (`caught up`, with the cursor's block) each
  *   time it catches up with the head, as `mandate-v1` logs.
  *
  * The tag is always `risk-v1`, the deadline horizon always 3,600 s and the request size limit always
  * the SDK's 16,384 bytes, whatever the options say. Defaults: `retryDelayMs` 15,000 and
- * `maxFailedCycles` 6. Logs are JSON lines through the base's logger (`jsonLineLog` by default); they
- * never carry the LLM key, its URL or its host.
+ * `maxFailedCycles` 6. Logs are JSON lines through the base's logger (`jsonLineLog` by default). They
+ * carry the LLM endpoint's host at most (the service's `starting` line in `main.ts`; this class logs
+ * none of it), never its URL or the key.
  */
 export class RiskValidator extends ValidatorBase {
   private readonly reader: RiskReader;
@@ -160,7 +165,19 @@ export class RiskValidator extends ValidatorBase {
     return admitted.ok ? true : { decline: admitted.detail };
   }
 
+  /** `verdict()`, releasing the admission reservation on a decline (any reason): no response will be sent for it. */
   protected override async check(request: VerifiedRequest): Promise<CheckResult | { decline: string }> {
+    const result = await this.verdict(request);
+    if ("decline" in result) this.admission.release(request.event.requestHash);
+    return result;
+  }
+
+  /** Releases the admission reservation of a request the base gave up on: no response will be sent for it. */
+  protected override onGaveUp(requestHash: Hex): void {
+    this.admission.release(requestHash);
+  }
+
+  private async verdict(request: VerifiedRequest): Promise<CheckResult | { decline: string }> {
     const { requestHash, blockNumber } = request.event;
     const requestHashA = computeRequestHash({ chainId: request.chainId, gate: request.gate, validator: this.mandateValidator, action: request.action });
     const pin = await this.pin(request, requestHashA);

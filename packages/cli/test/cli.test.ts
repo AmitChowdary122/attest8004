@@ -4,6 +4,7 @@ import { riskAddressesFor, type RiskReader, type RiskVerifyReport } from "@attes
 import { encodeErrorResult, getAddress, HttpRequestError, InvalidParamsRpcError, keccak256, RpcRequestError, toHex, type Hex } from "viem";
 import { describe, expect, it } from "vitest";
 import { chainVerifiers, DEFAULT_RPC_URL, main, USAGE, type CliDeps, type Verifiers } from "../src/cli.ts";
+import { printable } from "../src/text.ts";
 
 const HASH = `0x${"ab".repeat(32)}` as Hex;
 const RESPONSE_HASH = `0x${"cd".repeat(32)}` as Hex;
@@ -528,6 +529,51 @@ describe("attest8004 CLI: risk-v1 output", () => {
     expect(lines.filter((line) => line.startsWith("match:"))).toEqual([]);
     expect(h.out.join("\n")).toContain("\\u000a");
     expect(h.all()).not.toMatch(/[\u000d\u2028\u0085]/);
+  });
+
+  it("clips the model id at 64 characters and each finding explanation at 400 (with …), whitespace runs collapsed; --json stays whole (final review B4)", async () => {
+    const model = `m${"o".repeat(99)}`;
+    const explanation = `start \t\n\u00a0  middle${"x".repeat(450)}`;
+    const riskReport: RiskVerifyReport = {
+      ...riskMatchReport,
+      model,
+      findings: [{ code: "OTHER", severity: "low", explanation, sources: ["request"], origin: "model" }],
+    };
+    const h = harness({ tag: "risk-v1", riskReport });
+    await h.run(["verify", HASH]);
+    const lines = h.out.join("\n").split("\n");
+    const modelLine = lines.find((line) => line.startsWith("model".padEnd(19))) as string;
+    expect(modelLine).toBe(`${"model".padEnd(19)}${model.slice(0, 64)}…`);
+    const findingLine = lines.find((line) => line.startsWith("findings")) as string;
+    const shown = `start middle${"x".repeat(450)}`.slice(0, 400);
+    expect(findingLine).toBe(`${"findings".padEnd(19)}low OTHER — ${shown}…`);
+
+    // A short value is shown whole, with no ellipsis; whitespace runs still collapse.
+    const short = harness({ tag: "risk-v1", riskReport: { ...riskMatchReport, model: "gpt  \t oss" } });
+    await short.run(["verify", HASH]);
+    expect(short.out.join("\n")).toMatch(/^model\s+gpt oss$/m);
+
+    // --json is the report itself: nothing clipped or collapsed.
+    const json = harness({ tag: "risk-v1", riskReport });
+    await json.run(["verify", HASH, "--json"]);
+    const parsed = JSON.parse(json.out[0] as string) as { model: string; findings: { explanation: string }[] };
+    expect(parsed.model).toBe(model);
+    expect(parsed.findings[0]?.explanation).toBe(explanation);
+  });
+
+  it("escapes U+061C (Arabic letter mark), a bidirectional control, like the others (final review B4)", async () => {
+    const riskReport: RiskVerifyReport = {
+      ...riskMatchReport,
+      model: "gpt\u061c-x",
+      findings: [{ code: "OTHER", severity: "low", explanation: "evil\u061ctext", sources: ["request"], origin: "model" }],
+    };
+    for (const argv of [["verify", HASH], ["verify", HASH, "--json"]]) {
+      const h = harness({ tag: "risk-v1", riskReport });
+      await h.run(argv);
+      expect(h.all()).not.toContain("\u061c");
+      expect(h.all()).toContain("\\u061c");
+    }
+    expect(printable("a\u061cb")).toBe("a\\u061cb");
   });
 
   it("mandate-v1's differing keys (operator-controlled) can't inject report lines either", async () => {

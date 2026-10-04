@@ -6,7 +6,7 @@ import { TOOL_NAMES } from "../src/findings.ts";
 import type { NansenClient } from "../src/nansen.ts";
 import { RISK_V1 } from "../src/params.ts";
 import type { RiskReader } from "../src/reader.ts";
-import { capOutput, initialScope, NANSEN_TOOLS, ONCHAIN_TOOLS, runTool, TOOL_DEFINITIONS, type ToolContext } from "../src/tools.ts";
+import { capOutput, initialScope, NANSEN_TOOLS, ONCHAIN_TOOLS, runTool, TOOL_DEFINITIONS, untrustedFromFlows, untrustedFromProfile, type ToolContext } from "../src/tools.ts";
 import type { CallFrame, TraceResult } from "../src/trace.ts";
 import type { JsonValue } from "../src/types.ts";
 
@@ -336,6 +336,39 @@ describe("runTool: nansen_counterparty_profile and nansen_flows", () => {
     const ctx = makeCtx(makeReader(), undefined, nansen);
     const result = await runTool("nansen_flows", JSON.stringify({ address: TARGET }), ctx);
     expect(new TextEncoder().encode(canonicalJson(result.output)).length).toBeLessThanOrEqual(RISK_V1.toolOutputMaxBytes);
+  });
+
+  it("final review A5b: only the Nansen strings that survive capOutput are screened, read from the capped output", async () => {
+    const counterparties = Array.from({ length: RISK_V1.nansenMaxCounterparties }, (_, i) => ({
+      address: getAddress(`0x${(i + 1).toString(16).padStart(40, "0")}`),
+      labels: [`Exchange ${i}`, `Hot Wallet ${i}`, `Market Maker ${i}`],
+      interactionCount: i,
+      totalVolumeUsd: "123456.789",
+      volumeInUsd: "60000",
+      volumeOutUsd: "63456.789",
+    }));
+    const nansen = makeNansen({ flows: vi.fn(async () => ({ available: true, counterparties })) });
+    const flows = await runTool("nansen_flows", JSON.stringify({ address: TARGET }), makeCtx(makeReader(), undefined, nansen));
+    const kept = (flows.output as { counterparties: unknown[] }).counterparties.length;
+    expect(kept).toBeLessThan(counterparties.length);
+    expect(flows.untrusted).toEqual(untrustedFromFlows(flows.output));
+    expect(flows.untrusted).toHaveLength(kept * 3);
+    expect(flows.untrusted.map((f) => f.text)).not.toContain(`Exchange ${counterparties.length - 1}`);
+
+    // A string the cap shortened is screened as shortened: what the model is shown.
+    const longName = "n".repeat(390);
+    const profileNansen = makeNansen({
+      profile: vi.fn(async () => ({
+        available: true,
+        labels: [],
+        firstFunder: { name: longName, a: "a".repeat(389), b: "b".repeat(389), c: "c".repeat(389) },
+      })),
+    });
+    const profile = await runTool("nansen_counterparty_profile", JSON.stringify({ address: TARGET }), makeCtx(makeReader(), undefined, profileNansen));
+    const shownName = (profile.output as { firstFunder: { name: string } }).firstFunder.name;
+    expect(shownName.length).toBeLessThan(longName.length);
+    expect(profile.untrusted).toEqual([{ source: "tool:nansen_counterparty_profile", text: shownName }]);
+    expect(profile.untrusted).toEqual(untrustedFromProfile(profile.output));
   });
 
   it("fix round 1, finding 1: a malformed address Nansen returns is null in output, never added to scope, and never surfaces in untrusted", async () => {

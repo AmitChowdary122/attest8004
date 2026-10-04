@@ -1,4 +1,5 @@
 import {
+  BaseError,
   decodeFunctionData,
   encodeAbiParameters,
   encodeEventTopics,
@@ -282,5 +283,43 @@ describe("Attest8004Client.isValidated (mirrors AttestGate)", () => {
       throw new Error("node unavailable");
     });
     await expect(isValidated()).rejects.toThrow();
+  });
+
+  it("against a pre-P5 gate (a two-field Requirement, as the P2 and P3 vaults return) rejects with a viem decoding error, never a wrong true", async () => {
+    const preTagGateAbi = parseAbi([
+      "struct Requirement { address validator; uint8 minScore; }",
+      "function requirements() view returns (Requirement[])",
+    ]);
+    // Read as three words per requirement where the gate returns two, the decoder always runs past the
+    // data (or meets an out-of-range field first): one to four requirements, large or small addresses.
+    for (const requirements of [
+      [{ validator: VALIDATOR_A, minScore: 100 }],
+      [{ validator: VALIDATOR_B, minScore: 70 }],
+      [
+        { validator: VALIDATOR_A, minScore: 100 },
+        { validator: VALIDATOR_B, minScore: 70 },
+      ],
+      [
+        { validator: VALIDATOR_A, minScore: 100 },
+        { validator: VALIDATOR_B, minScore: 70 },
+        { validator: VALIDATOR_C, minScore: 1 },
+      ],
+      [
+        { validator: VALIDATOR_B, minScore: 70 },
+        { validator: VALIDATOR_C, minScore: 1 },
+        { validator: VALIDATOR_B, minScore: 1 },
+        { validator: VALIDATOR_C, minScore: 1 },
+      ],
+    ]) {
+      rpc.onCall(GATE, preTagGateAbi, "requirements", () => requirements);
+      const error = await isValidated().then(
+        (value) => value,
+        (e: unknown) => e,
+      );
+      expect(error).toBeInstanceOf(BaseError);
+      // viem doesn't export PositionOutOfBoundsError from its root, so both are matched by name.
+      const decoding = (error as BaseError).walk((e) => ["PositionOutOfBoundsError", "IntegerOutOfRangeError"].includes((e as Error).name));
+      expect(decoding, `${requirements.length} requirement(s)`).not.toBeNull();
+    }
   });
 });

@@ -26,9 +26,9 @@ still surfaces.
 model. Without a key (today), `nansenClient` reports itself unavailable and both tools answer
 `{available: false, reason: "NANSEN_API_KEY is not set"}` without ever calling Nansen — `fetch` is
 never invoked, no credits are spent, and the model is told up front that they're unavailable. With a
-key, a Nansen error (rate limit, insufficient credits, a network failure, …) becomes ordinary tool
-output (`{available: false, reason: "NANSEN_ERROR <status> <code>"}`), never a check failure — Nansen
-is advisory and, unlike the five onchain tools, its calls can't be re-run by `verify` (they're
+key, a Nansen error (rate limit, insufficient credits, a network failure or a 15 s timeout, …) becomes
+ordinary tool output (`{available: false, reason: "NANSEN_ERROR <status> <code>"}`), never a check
+failure — Nansen is advisory and, unlike the five onchain tools, its calls can't be re-run by `verify` (they're
 reported `unchecked`). Every verdict's evidence records whether Nansen was available for that run
 (`tools.nansen`), so a verdict never silently claims Nansen data it didn't have. No "Qwen" or
 Nansen-sourced claim is made about a past verdict unless Nansen was actually available for it.
@@ -40,6 +40,16 @@ costs up to 101 credits (100 for labels + 1 for first-funder) and `nansen_flows`
 credits run out means this would exhaust it in under one check — a key is a deliberate upgrade
 decision, not a prerequisite for shipping `risk-v1` today.
 
-Every Nansen-sourced string this validator ever surfaces (an entity `label`, a `first_funder_name`, a
-counterparty label) is capped at 64 characters and screened by Prompt Guard before the model sees it,
-exactly like any other untrusted text (SPEC "Prompt-injection defence").
+Every Nansen-sourced free-text string this validator ever surfaces (an entity `label`, a
+`first_funder_name`, a counterparty label) is capped at 64 characters and screened by Prompt Guard
+before the model sees it, exactly like any other untrusted text (SPEC "Prompt-injection defence").
+Only the strings that survive the tool's 1,536-byte output cap are screened, read from the capped
+output, so what is screened is exactly what the model is shown: a label the cap removed never reaches
+the model, and one it shortened is screened shortened. An entity's `category` and `kind` entries are a
+fixed Nansen taxonomy, not free text: they are capped at 64 characters and not screened. The first
+funder's `chain` is capped at 64 characters too.
+
+Every Nansen request is aborted after 15 seconds (the response body included), which becomes
+`{available: false, reason: "NANSEN_ERROR network"}`. The error `code` echoed in a
+`NANSEN_ERROR <status> <code>` reason is capped at 64 characters and must be lower-case letters, digits
+and `_`; anything else reads `unknown`.

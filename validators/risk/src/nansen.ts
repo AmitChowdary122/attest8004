@@ -12,23 +12,29 @@
  * `{available: false, reason: "NANSEN_ERROR <status> <code>"}` (or `"NANSEN_ERROR network"`), after
  * one retry on 429 or 5xx that honours `Retry-After` (capped at 10 s, falling back to a 2 s delay when
  * the header is missing or unusable) — Nansen is advisory and, unlike the onchain tools, can't be
- * re-checked by `verify`, so a bad call must never fail the check. The key never appears in any output,
- * error or log: only the fixed `NANSEN_ERROR <status> <code>` text and the response's own
- * `status`/`code` are recorded, exactly as `llm.ts` does for the LLM provider.
+ * re-checked by `verify`, so a bad call must never fail the check. Every fetch carries
+ * `AbortSignal.timeout(15_000)`: a request (or a 200's body) that takes longer is `NANSEN_ERROR
+ * network` too (final review A5). The key never appears in any output, error or log: only the fixed
+ * `NANSEN_ERROR <status> <code>` text and the response's own `status`/`code` are recorded, exactly as
+ * `llm.ts` does for the LLM provider. `<code>` is capped at 64 characters (dropping a trailing lone
+ * surrogate) and must then be `[a-z0-9_]{1,64}`, else it reads `unknown`, so the reason always passes
+ * `prompt.ts`'s strict reason check.
  *
  * Response normalisation keeps canonicalJson safe throughout (never an unsafe-integer or non-finite
  * number reaches `output`): Nansen's USD volumes become decimal strings (`String(n)` of a finite
  * number, else `null`), and every Nansen string this validator surfaces — an entity `label`,
- * `category`, each `kind` entry, a `first_funder_name`, a counterparty label — is capped at 64
- * characters, with {@link import("./trace.ts").dropTrailingLoneSurrogate} applied after the cut,
- * exactly as `capOutput` does for its own string cuts. Only `label`/`first_funder_name`/counterparty
- * labels are free text that goes to `untrusted` for Prompt Guard screening (Decisions 12-13);
- * `category`/`kind` are a fixed Nansen taxonomy and stay unscreened, but are still capped so a
- * malformed response can't inflate `output`. An address-shaped field (`first_funder_address`,
+ * `category`, each `kind` entry, a `first_funder_name`, the first funder's `chain`, a counterparty
+ * label — is capped at 64 characters, with {@link import("./trace.ts").dropTrailingLoneSurrogate}
+ * applied after the cut, exactly as `capOutput` does for its own string cuts. Only
+ * `label`/`first_funder_name`/counterparty labels are free text that goes to `untrusted` for Prompt
+ * Guard screening (Decisions 12-13); `category`/`kind` are a fixed Nansen taxonomy and stay
+ * unscreened, but are still capped so a malformed response can't inflate `output` (the first funder's
+ * `chain` likewise). An address-shaped field (`first_funder_address`,
  * `counterparty_address`) that *isn't* a 20-byte hex address becomes `null`, never the raw string —
  * it's consumed as an address, not free text, so a non-matching value must never reach `output`
- * uncapped and unscreened. `tools.ts` reads the already-capped strings back out of `output` for
- * Prompt Guard screening (`untrusted`), so the two can never disagree.
+ * uncapped and unscreened. `tools.ts` reads the strings back out of the tool's *capped* output (after
+ * `capOutput`) for Prompt Guard screening (`untrusted`), so only what the model is shown is screened,
+ * exactly as shown (final review A5).
  */
 import { getAddress, type Address } from "viem";
 import { RISK_V1 } from "./params.ts";
@@ -122,6 +128,12 @@ function normalizeLabels(body: unknown): JsonValue[] {
     }));
 }
 
+/** The first funder's `chain`, capped like every other Nansen string (final review A5), or `null`. */
+function chainOf(value: unknown): string | null {
+  const chain = asString(value);
+  return chain === null ? null : capLabel(chain);
+}
+
 /** `{address, name, chain, time} | null` from the first-funder endpoint's `data[0]` (`null` when `data` is empty). */
 function normalizeFirstFunder(body: unknown): JsonValue {
   const first = dataArray(body)[0];
@@ -132,7 +144,7 @@ function normalizeFirstFunder(body: unknown): JsonValue {
   return {
     address: addressLike(first.first_funder_address),
     name: name === null ? null : capLabel(name),
-    chain: asString(first.chain),
+    chain: chainOf(first.chain),
     time,
   };
 }
@@ -161,6 +173,10 @@ type FetchResult = { ok: true; body: unknown } | { ok: false; reason: string };
 
 const RETRY_AFTER_CAP_MS = 10_000;
 const RETRY_FALLBACK_MS = 2_000;
+/** Every Nansen fetch, its body included, is aborted after this long (final review A5). */
+const DEFAULT_TIMEOUT_MS = 15_000;
+/** The only error codes echoed in a reason: anything else reads `unknown` (final review A5). */
+const ERROR_CODE_PATTERN = /^[a-z0-9_]{1,64}$/;
 
 /** 429, or any 5xx (Decision 20 / the brief: "one retry on 429 or 5xx") — fix round 1, finding 2: the original set ({429, 500, 502, 503}) missed 501, 504 and the rest of 5xx. */
 function isRetryableStatus(status: number): boolean {
@@ -177,26 +193,40 @@ function retryDelayMs(headers: Headers): number {
   return RETRY_FALLBACK_MS;
 }
 
-/** `body.code` (context: Nansen's error body is `{error, message, code, status, ...}`), read defensively. */
+/**
+ * `body.code` (context: Nansen's error body is `{error, message, code, status, ...}`), read
+ * defensively, as it may be echoed in a reason: capped at 64 characters (dropping a trailing lone
+ * surrogate), then `unknown` unless it is `[a-z0-9_]{1,64}`; `null` when there is no string code.
+ */
 function readErrorCode(body: unknown): string | null {
-  if (!isRecord(body)) return null;
-  return typeof body.code === "string" ? body.code : null;
+  if (!isRecord(body) || typeof body.code !== "string") return null;
+  const code = capLabel(body.code);
+  return ERROR_CODE_PATTERN.test(code) ? code : "unknown";
 }
 
+function isAbortLike(error: unknown): boolean {
+  return error instanceof Error && (error.name === "AbortError" || error.name === "TimeoutError");
+}
+
+/** What {@link readJsonSafely} gives when reading the body hit the request's timeout. */
+const TIMED_OUT = Symbol("timed out");
+
+/** The body as JSON; `null` when it isn't JSON; {@link TIMED_OUT} when reading it hit the request's timeout. */
 async function readJsonSafely(response: Response): Promise<unknown> {
   try {
     return await response.json();
-  } catch {
-    return null;
+  } catch (error) {
+    return isAbortLike(error) ? TIMED_OUT : null;
   }
 }
 
 /**
  * POSTs one Nansen endpoint, with one retry on 429/5xx (Decision 20). Never throws: a network failure
- * (`fetch` itself rejecting) is reported the same way, as `NANSEN_ERROR network`, with no retry.
+ * (`fetch` itself rejecting) or the `timeoutMs` abort (the request, or a 200's body) is reported as
+ * `NANSEN_ERROR network`, with no retry.
  */
 async function postNansen(
-  o: { apiKey: string; fetchFn: typeof fetch; sleepFn: (ms: number) => Promise<void> },
+  o: { apiKey: string; fetchFn: typeof fetch; sleepFn: (ms: number) => Promise<void>; timeoutMs: number },
   path: string,
   body: unknown,
 ): Promise<FetchResult> {
@@ -207,13 +237,15 @@ async function postNansen(
         method: "POST",
         headers: { "content-type": "application/json", apikey: o.apiKey },
         body: JSON.stringify(body),
+        signal: AbortSignal.timeout(o.timeoutMs),
       });
     } catch {
       return { ok: false, reason: "NANSEN_ERROR network" };
     }
 
     if (response.status === 200) {
-      return { ok: true, body: await readJsonSafely(response) };
+      const json = await readJsonSafely(response);
+      return json === TIMED_OUT ? { ok: false, reason: "NANSEN_ERROR network" } : { ok: true, body: json };
     }
 
     if (isRetryableStatus(response.status) && attempt === 0) {
@@ -222,7 +254,7 @@ async function postNansen(
     }
 
     const errorBody = await readJsonSafely(response);
-    const code = readErrorCode(errorBody);
+    const code = errorBody === TIMED_OUT ? null : readErrorCode(errorBody);
     return { ok: false, reason: code === null ? `NANSEN_ERROR ${response.status}` : `NANSEN_ERROR ${response.status} ${code}` };
   }
 }
@@ -235,9 +267,10 @@ function iso(seconds: bigint): string {
 /**
  * `o.apiKey` missing or empty: `available` is `false`, `reason` is {@link NANSEN_NO_KEY_REASON}, and
  * `profile`/`flows` return `{available: false, reason}` without ever calling `fetchFn` (Decision 20).
- * `fetchFn`/`sleepFn` are injectable so tests make zero network calls and wait on no real clock.
+ * `fetchFn`/`sleepFn` are injectable so tests make zero network calls and wait on no real clock;
+ * `timeoutMs` (default 15,000) so a test needn't wait 15 s for the abort.
  */
-export function nansenClient(o: { apiKey?: string; fetch?: typeof fetch; sleep?: (ms: number) => Promise<void> }): NansenClient {
+export function nansenClient(o: { apiKey?: string; fetch?: typeof fetch; sleep?: (ms: number) => Promise<void>; timeoutMs?: number }): NansenClient {
   const fetchFn = o.fetch ?? fetch;
   const sleepFn = o.sleep ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
 
@@ -254,7 +287,7 @@ export function nansenClient(o: { apiKey?: string; fetch?: typeof fetch; sleep?:
     };
   }
 
-  const transport = { apiKey: o.apiKey, fetchFn, sleepFn };
+  const transport = { apiKey: o.apiKey, fetchFn, sleepFn, timeoutMs: o.timeoutMs ?? DEFAULT_TIMEOUT_MS };
 
   return {
     available: true,

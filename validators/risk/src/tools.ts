@@ -367,7 +367,8 @@ function asPlainObject(value: JsonValue | undefined): { [key: string]: JsonValue
 
 /**
  * Every `label` in a `nansen_counterparty_profile` output's `labels[]`, plus `firstFunder.name` when
- * present (Decision 12-13; context's "Strings from Nansen ... are returned in `untrusted`"). `output`
+ * present (Decision 12-13; context's "Strings from Nansen ... are returned in `untrusted`"), read from
+ * the capped output `runTool` returns (final review A5). `output`
  * is read defensively: an unavailable result (`{available: false, reason}`) has neither key, so this
  * is `[]` for it, exactly as it is for any other tool that found nothing to screen.
  */
@@ -419,8 +420,8 @@ async function nansenCounterpartyProfileTool(address: Address, ctx: ToolContext)
   if (!ctx.scope.has(address.toLowerCase())) {
     return { output: { error: "ADDRESS_OUT_OF_SCOPE" }, untrusted: [] };
   }
-  const output = await ctx.nansen.profile(address);
-  return { output, untrusted: untrustedFromProfile(output) };
+  // `runTool` screens what survives its output cap, read from the capped output (final review A5).
+  return { output: await ctx.nansen.profile(address), untrusted: [] };
 }
 
 /**
@@ -433,8 +434,8 @@ async function nansenFlowsTool(address: Address, ctx: ToolContext): Promise<{ ou
   }
   const to = ctx.pinned.timestamp;
   const from = to - RISK_V1.nansenWindowSeconds;
-  const output = await ctx.nansen.flows(address, from, to);
-  return { output, untrusted: untrustedFromFlows(output) };
+  // `runTool` screens what survives its output cap, read from the capped output (final review A5).
+  return { output: await ctx.nansen.flows(address, from, to), untrusted: [] };
 }
 
 async function execute(
@@ -643,5 +644,10 @@ export async function runTool(
   const { output, untrusted } = await execute(name, args, ctx);
   const capped = capOutput(output, RISK_V1.toolOutputMaxBytes);
   collectAddresses(capped, ctx.scope);
-  return { arguments: argumentsRecord, output: capped, onchain, untrusted };
+  // A Nansen answer's strings are screened as the model is shown them: read from the capped output, so a
+  // label the cap removed isn't screened and one it shortened is screened shortened (final review A5).
+  // `verify` derives the fields it requires from the recorded (capped) output the same way.
+  const screened =
+    name === "nansen_counterparty_profile" ? untrustedFromProfile(capped) : name === "nansen_flows" ? untrustedFromFlows(capped) : untrusted;
+  return { arguments: argumentsRecord, output: capped, onchain, untrusted: screened };
 }

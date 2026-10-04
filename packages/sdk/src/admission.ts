@@ -19,7 +19,7 @@ interface AdmittedEntry {
   agentId: bigint;
   /** The time passed to `admit`. Unchanged by `settle`, so both windows age it the same way. */
   admittedAt: bigint;
-  /** `maxGasPerResponse` until `settle` replaces it with the gas limit actually sent. */
+  /** `maxGasPerResponse` until `settle` replaces it with the gas limit actually sent, or `release` with 0. */
   gas: bigint;
 }
 
@@ -45,6 +45,11 @@ const DAILY_WINDOW_SECONDS = 86_400n;
  *   request's original admission time for both windows (settling doesn't "renew" it). Settling an
  *   unknown `requestHash` is a no-op: a caller only ever settles a hash it just admitted, so an
  *   unknown one means that request was declined — there is nothing to reconcile.
+ * - `release` drops a request's gas reservation (it then counts 0 gas) when no response will be sent
+ *   for it: a decline from `check()`, or a request the validator gave up on. The request still counts
+ *   toward its agent's rate limit for its window (it was admitted and the validator worked on it), and
+ *   no other entry changes. Releasing an unknown `requestHash` is a no-op, and a released hash stays
+ *   recorded, so admitting it again is still idempotent.
  * - Both windows are evaluated by filtering on time, so an aged-out entry simply stops counting;
  *   `admit` and `settle` additionally drop any entry past both windows, so the map a long-running
  *   validator holds never grows past the last 24 h of traffic.
@@ -131,6 +136,17 @@ export class Admission {
     const entry = this.entries.get(requestHash);
     if (!entry) return;
     entry.gas = gasLimit;
+  }
+
+  /**
+   * Drops `requestHash`'s gas reservation: no response will be sent for it (see class doc). Its
+   * admission time and its place in its agent's rate-limit count are unchanged, as is every other
+   * entry. A no-op for an unknown `requestHash`.
+   */
+  release(requestHash: Hex): void {
+    const entry = this.entries.get(requestHash);
+    if (!entry) return;
+    entry.gas = 0n;
   }
 
   private countForAgent(agentId: bigint, now: bigint): number {

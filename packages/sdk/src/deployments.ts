@@ -19,15 +19,15 @@ export interface Deployment {
    * so it never pins before this, and `verify` rejects evidence pinned before it without reading there.
    */
   mandateRegistryDeployBlock: bigint;
-  /** The two reference validators (SPEC §4.5 `mandate-v1`, live; §4.6 `risk-v1`, still being built). */
+  /** The two reference validators (SPEC §4.5 `mandate-v1`; §4.6 `risk-v1`, built, funded and tested). */
   validators: {
     mandateV1: Address;
     riskV1: Address;
   };
   demoAgents: readonly bigint[];
   /**
-   * The P5 "risky but mandated" demo target (SPEC §4.6, decision 34): forwards every payment straight
-   * to `SINK`, an address nobody controls. Not yet allowlisted in any mandate (Task 15).
+   * The P5 "risky but mandated" demo target (SPEC §4.6): forwards every payment straight to `SINK`, an
+   * address nobody controls. In demo agent 1984's mandate (allowed target) since block 68,005,485.
    */
   demoPassThrough: Address;
   /**
@@ -65,7 +65,7 @@ export const DEPLOYMENTS = {
     validators: {
       /** `mandate-v1`, deterministic. */
       mandateV1: "0xa62DaB21E0C0F57e94B3ed6e675F214199989e92",
-      /** `risk-v1`, agentic (P5; still being built). */
+      /** `risk-v1`, agentic (P5; built, funded and tested). */
       riskV1: "0x780df855b48AeC7A3907433b0b5984A2fe5dca5E",
     },
     /** The two demo agents, owned by the deployer; their hot keys request through the forwarder. */
