@@ -18,6 +18,8 @@ check=0
 hex2bin() { if command -v xxd >/dev/null; then xxd -r -p; else tr 'a-f' 'A-F' | basenc --base16 -d; fi; }
 # sha256 of the bytes an 0x-hex string encodes, as 0x-hex.
 sha256hex() { printf '%s' "${1#0x}" | hex2bin | sha256sum | cut -d' ' -f1 | sed 's/^/0x/'; }
+# Unpadded base64url of the bytes an 0x-hex string encodes: the challenge as clientDataJSON carries it.
+b64url() { printf '%s' "${1#0x}" | hex2bin | base64 -w0 | tr '+/' '-_' | tr -d '='; }
 
 json=$(cat "$file")
 mismatches=0
@@ -39,13 +41,16 @@ get() { jq -r "$1" <<<"$json"; }
 # rpIdHash = sha256(rpId)
 put .rpIdHash "0x$(printf '%s' "$(get .rpId)" | sha256sum | cut -d' ' -f1)"
 
-# challenge = sha256(abi.encode(uint256 chainId, address registry, uint256 agentId, bytes32 changeHash, uint256 nonce))
+# challenge = sha256(abi.encode(uint256 chainId, address registry, uint256 agentId, bytes32 changeHash, uint256 nonce)),
+# and its unpadded base64url (43 characters), as the browser puts it in clientDataJSON
 count=$(get '.challenges | length')
 for ((i = 0; i < count; i++)); do
   c=".challenges[$i]"
   encoded=$(cast abi-encode "f(uint256,address,uint256,bytes32,uint256)" \
     "$(get "$c.chainId")" "$(get "$c.registry")" "$(get "$c.agentId")" "$(get "$c.changeHash")" "$(get "$c.nonce")")
-  put "$c.expected" "$(sha256hex "$encoded")"
+  challenge=$(sha256hex "$encoded")
+  put "$c.expected" "$challenge"
+  put "$c.challengeB64url" "$(b64url "$challenge")"
 done
 
 # rotatePasskey: keccak256(abi.encode(ROTATE_PASSKEY, qx, qy)), ROTATE_PASSKEY = keccak256(tagPreimage)

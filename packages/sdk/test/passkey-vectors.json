@@ -12,7 +12,8 @@
       "agentId": "1984",
       "changeHash": "0x8fc7de61e1149f4f4f5ff14ffe9119d9e273b4aea7150263033cf3d3d6cec46e",
       "nonce": "0",
-      "expected": "0x140c610ff8f0b7d6e45c8eff7c07989a9ce3264c7aa9c977d224c7b7a10376bb"
+      "expected": "0x140c610ff8f0b7d6e45c8eff7c07989a9ce3264c7aa9c977d224c7b7a10376bb",
+      "challengeB64url": "FAxhD_jwt9bkXI7_fAeYmpzjJkx6qcl30iTHt6EDdrs"
     },
     {
       "name": "testnet-agent-1984-nonce-1",
@@ -21,7 +22,8 @@
       "agentId": "1984",
       "changeHash": "0x8fc7de61e1149f4f4f5ff14ffe9119d9e273b4aea7150263033cf3d3d6cec46e",
       "nonce": "1",
-      "expected": "0xc7dc6b72d6aeb36385bfd155f3473b16b6a6343d8bd6196538e5d729ee52e5c4"
+      "expected": "0xc7dc6b72d6aeb36385bfd155f3473b16b6a6343d8bd6196538e5d729ee52e5c4",
+      "challengeB64url": "x9xrctaus2OFv9FV80c7FramND2L1hllOOXXKe5S5cQ"
     },
     {
       "name": "testnet-agent-1984-nonce-2^64",
@@ -30,7 +32,8 @@
       "agentId": "1984",
       "changeHash": "0x8fc7de61e1149f4f4f5ff14ffe9119d9e273b4aea7150263033cf3d3d6cec46e",
       "nonce": "18446744073709551616",
-      "expected": "0xc87655b66e8dcda6adb60ad329dd770ee7baffc2f886603f49b5978eb188ca09"
+      "expected": "0xc87655b66e8dcda6adb60ad329dd770ee7baffc2f886603f49b5978eb188ca09",
+      "challengeB64url": "yHZVtm6NzaattgrTKd13Due6_8L4hmA_SbWXjrGIygk"
     },
     {
       "name": "mainnet-agent-1-nonce-0",
@@ -39,7 +42,8 @@
       "agentId": "1",
       "changeHash": "0xaec431fe3581470868623ea4a242234a233df4db3c6188038d693f414f104a59",
       "nonce": "0",
-      "expected": "0x1738feda3f6892a04e333896958c90bc5c4b128b9a84766ed9489cbec52e76b5"
+      "expected": "0x1738feda3f6892a04e333896958c90bc5c4b128b9a84766ed9489cbec52e76b5",
+      "challengeB64url": "Fzj-2j9okqBOMziWlYyQvFxLEouahHZu2UicvsUudrU"
     },
     {
       "name": "other-registry-max-agent-id",
@@ -48,7 +52,8 @@
       "agentId": "115792089237316195423570985008687907853269984665640564039457584007913129639935",
       "changeHash": "0x8fc7de61e1149f4f4f5ff14ffe9119d9e273b4aea7150263033cf3d3d6cec46e",
       "nonce": "7",
-      "expected": "0x160dc3be6bc42d6c5fd96618c2519ecfeaff38e93ecc8bd1d1b74d78f9e7b142"
+      "expected": "0x160dc3be6bc42d6c5fd96618c2519ecfeaff38e93ecc8bd1d1b74d78f9e7b142",
+      "challengeB64url": "Fg3DvmvELWxf2WYYwlGez-r_OOk-zIvR0bdNePnnsUI"
     }
   ],
   "rotateChangeHash": {

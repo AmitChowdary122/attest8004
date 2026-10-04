@@ -10,3 +10,5 @@ export * from "./logs.ts";
 export * from "./client.ts";
 export * from "./validator-chain.ts";
 export * from "./validator.ts";
+export * from "./webauthn.ts";
+export * from "./passkey.ts";

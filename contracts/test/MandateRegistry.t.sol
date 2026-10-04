@@ -8,6 +8,7 @@ import {StdStorage, stdStorage} from "forge-std/StdStorage.sol";
 import {IERC721Errors} from "@openzeppelin/contracts/interfaces/draft-IERC6093.sol";
 import {WebAuthn} from "@openzeppelin/contracts/utils/cryptography/WebAuthn.sol";
 import {P256} from "@openzeppelin/contracts/utils/cryptography/P256.sol";
+import {Base64} from "@openzeppelin/contracts/utils/Base64.sol";
 import {MandateRegistry} from "../src/MandateRegistry.sol";
 import {MockIdentityRegistry} from "./mocks/MockIdentityRegistry.sol";
 import {MandateRegistryHookHarness} from "./mocks/MandateRegistryHookHarness.sol";
@@ -1272,6 +1273,12 @@ contract MandateRegistryTest is WebAuthnFixture {
                     ),
                 json.readBytes32(_at(".challenges", n, ".expected")),
                 json.readString(_at(".challenges", n, ".name"))
+            );
+            // The 43-character form clientDataJSON carries, computed by the script, not by OZ's Base64.
+            assertEq(
+                Base64.encodeURL(abi.encodePacked(json.readBytes32(_at(".challenges", n, ".expected")))),
+                json.readString(_at(".challenges", n, ".challengeB64url")),
+                "challengeB64url"
             );
             ++n;
         }

@@ -509,6 +509,35 @@ Because spend accounting and `verify` read it, `mandate-v1`'s evidence stays pub
 
 Encodings are `mandate-v1`'s: every `bigint` (block numbers, timestamps, wei, gas) is a decimal string; addresses are EIP-55 and hashes lower-case; the two non-integer constants are decimal strings, `"temperature": "0.2"` and `"guardThreshold": "0.5"`, because canonical JSON has no floats; every other number is a safe integer. `parseRiskEvidence` reads it back strictly: every key is required, an unknown key anywhere outside a tool's `arguments` and `output` is invalid, any float is invalid, every value must have exactly the encoding above, and a tool call must be `onchain` exactly when it isn't a Nansen tool (so a verifier can't be told to skip re-running an onchain one). A parsed document passed back through `riskEvidence` and `buildEvidence` gives the same bytes. **The format froze with the first live verdict** (4 Oct 2026, block 68,023,090), as `mandate-v1`'s did: the tag, the keys, the encodings and every constant `verify` uses. Only the prompt can still change, under a new `promptVersion`; any other change needs a new tag, `risk-v2`.
 
+**Passkey files (P6).** Two public JSON documents carry a passkey from the browser to the owner's wallet. Nothing in them is secret, and neither is ever stored by the page. Both are strict zod schemas in `packages/sdk/src/passkey.ts`, where unknown keys are rejected and `uint256` values are decimal strings. The browser-safe subset `@attest8004/sdk/browser` (viem and zod only) holds them, the WebAuthn parsing (`webauthn.ts`) and a local P-256 check, so `/approve` and the scripts run the same code.
+- **`attest8004.passkey.v1`, the registration** ("Download registration" on `/approve`, the input of `set-passkey`):
+  ```json
+  { "schema": "attest8004.passkey.v1", "rpId": "attest8004.vercel.app", "credentialId": "<base64url>",
+    "transports": ["internal", "hybrid"], "alg": -7, "qx": "0x…", "qy": "0x…",
+    "authenticatorData": "0x…", "prfEnabled": true }
+  ```
+  - `qx, qy` come from `getPublicKey()`, the SPKI form. The exact 26-byte P-256 SPKI prefix is checked, and so is the point.
+  - `authenticatorData` is the creation ceremony's, kept for its rpIdHash and its UP/UV flags.
+  - `registrationProblems` refuses another rpId, an algorithm other than ES256 (-7), PRF not enabled (P7's Mera inbox needs it), missing UP or UV, the wrong rpIdHash and a point off the curve.
+- **`attest8004.approval.v1`, one signed change** ("Download approval" or "Copy approval", the input of `submit-approval`):
+  ```json
+  { "schema": "attest8004.approval.v1", "chainId": 10143, "registry": "0x…", "agentId": "1984",
+    "change": { "kind": "setMandate", "mandate": { "allowedTargets": ["0x…"], "allowedSelectors": ["0x00000000"],
+      "maxValuePerTx": "2000000000000000", "maxValuePerDay": "5000000000000000", "validUntil": "1793404800" } },
+    "changeHash": "0x…", "nonce": "0", "challenge": "0x…",
+    "passkey": { "credentialId": "<base64url>", "qx": "0x…", "qy": "0x…" },
+    "auth": { "r": "0x…", "s": "0x…", "challengeIndex": 23, "typeIndex": 1,
+      "authenticatorData": "0x…", "clientDataJSON": "{\"type\":\"webauthn.get\",…}" } }
+  ```
+  - `changeHash` is `mandateHash(mandate)`, and `challenge` is `passkeyChallenge`, which is exactly the contract's `challengeFor` (§9). Both are pinned by the cast-computed `passkey-vectors.json`, including each challenge's 43-character base64url form.
+  - `passkey` is the agent's onchain key that the page checked the assertion against.
+  - `auth` is OpenZeppelin's `WebAuthnAuth`:
+    - `s` is always low: authenticators return either form, and the SDK replaces `s > n/2` with `n − s`, an equally valid signature.
+    - The two indices are **byte offsets** into the UTF-8 `clientDataJSON`, exactly as the browser returned it. They are found by search, never by matching a template, because Chrome sometimes adds keys such as `other_keys_can_be_added_here`.
+  - `change.kind` is `setMandate` in P6; P7 adds `setInboxKey`. Rotation has a contract path but no page.
+  - **Before export or send**, `approvalSelfProblems` recomputes both hashes, then runs `verifyAssertionLocally` (WebCrypto ECDSA P-256). That check repeats the contract's own checks in the same order: rpIdHash, UP, UV, BE/BS, the type and challenge at their indices, low-s, then the signature. `submit-approval` adds the chain checks on top: the current registry, `nonceOf` (a stale approval says to approve again), `passkeyOf`, the owner, and the registry's own `mandateHashOf` and `challengeFor`.
+  - `packages/sdk/test/webauthn-vector.json` is such a document, signed by a fixed test key with node:crypto and parsed by the SDK. `contracts/test/PasskeyVectors.t.sol` replays it through the contract, and the real laptop and Android assertions join it once they are recorded.
+
 **Findings envelope.** Encrypted to the operator's inbox key, served at a URI of its own — **never `responseURI`**, which stays each validator's public plaintext evidence (`mandate-v1`'s and `risk-v1`'s alike; `verify` and spend accounting depend on it, so P7 must not replace it). How that URI is announced (a field inside the evidence, a separate event, or the indexer) is P7's decision, not yet made.
 ```json
 { "schema": "attest8004.findings.v1", "epk": "<x25519 ephemeral pub>", "nonce": "…", "ct": "…" }

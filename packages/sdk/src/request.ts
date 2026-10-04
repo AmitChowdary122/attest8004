@@ -52,6 +52,9 @@ const bytes32 = z
   .regex(/^0x[0-9a-fA-F]{64}$/, "must be 32 bytes of 0x-prefixed hex")
   .transform((s) => s as Hex);
 
+/** The field validators above, shared with the passkey file formats (`passkey.ts`). */
+export { decimal as zDecimal, address as zAddress, wholeBytes as zHexBytes, bytes32 as zBytes32 };
+
 /** Strict: unknown keys are rejected, so everything a validator reads is something the hash covers. */
 export const requestJsonV1Schema: z.ZodType<RequestJsonV1> = z.strictObject({
   schema: z.literal(REQUEST_SCHEMA_V1),

@@ -16,6 +16,9 @@ fs_permissions = [
     { access = "read", path = "../packages/sdk/test/vectors.json" },
     # test/MandateRegistry.t.sol reads the passkey challenge vectors (SPEC §4.2).
     { access = "read", path = "../packages/sdk/test/passkey-vectors.json" },
+    # test/PasskeyVectors.t.sol replays approval documents: the SDK-built one and the real device vectors.
+    { access = "read", path = "../packages/sdk/test/webauthn-vector.json" },
+    { access = "read", path = "./test/vectors" },
     # test/AgentRequestForwarder.t.sol pins the forwarder's compiled ABI.
     { access = "read", path = "./out" },
 ]
