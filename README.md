@@ -18,7 +18,7 @@ Before trusting an AI agent's action, any contract, app or x402 seller can ask: 
 Attest8004 provides that answer onchain. It has five parts:
 
 - **ValidationRegistry**: implements the EIP-8004 validation interface and authorises requesters through the canonical ERC-8004 Identity Registry on Monad. It is spec-conformant but **not** the canonical deployment.
-- **Passkey-approved mandates**: an agent's operator approves what the agent may do (targets, functions, spend caps, expiry) with a passkey, verified onchain by Monad's P256 precompile at `0x0100`. Today the MandateRegistry takes the mandate from the owner's wallet; passkey approval replaces that in P6.
+- **Passkey-approved mandates**: an agent's operator approves what the agent may do (targets, functions, spend caps, expiry) with a passkey, verified onchain by Monad's P256 precompile at `0x0100`. Since P6 (MandateRegistry v2, live on testnet) every mandate change needs two factors: the owner's transaction and an assertion from the agent's passkey.
 - **Validator SDK** with two reference validators:
   - `mandate-v1`: deterministic, so anyone can re-run it and get the same verdict
   - `risk-v1`: agentic, an LLM with read-only onchain tools and Nansen (unused until a key is set). It has posted
@@ -53,7 +53,7 @@ which anyone can fully reproduce.
 The flow, in short:
 
 1. An agent builds an `Action` and requests validation on the **ValidationRegistry**, once per validator. Each `requestHash` is bound to one chain, one gate, one validator, one exact action and a deadline. The agent's own hot key sends the request through the **AgentRequestForwarder**, which the agent's owner approved once: the key can request validations for its agent and do nothing else with it.
-2. Validators pick up the `ValidationRequest` event (the SDK's validator base polls for it and verifies the request JSON against `requestHash`), check the action against the agent's **mandate** in the MandateRegistry (owner-set today, passkey-approved from P6) and recent permission changes (and, for `risk-v1`, against simulation, Nansen data and ERC-8004 reputation), then post `validationResponse` with a score and an evidence hash.
+2. Validators pick up the `ValidationRequest` event (the SDK's validator base polls for it and verifies the request JSON against `requestHash`), check the action against the agent's **mandate** in the MandateRegistry (owner + passkey since P6) and recent permission changes (and, for `risk-v1`, against simulation, Nansen data and ERC-8004 reputation), then post `validationResponse` with a score and an evidence hash.
 3. A consumer contract using **AttestGate** recomputes each required validator's `requestHash` from the call. It executes only if every one of those verdicts names the right agent and meets its minimum score, and each action runs once.
 4. Detailed findings go to the operator's encrypted inbox. Envio indexes everything for the trust API.
 
@@ -189,7 +189,8 @@ and 8,000 tokens a minute for the main model; Prompt Guard has its own budget), 
 |---|---|---|
 | Monad testnet (10143) | `ValidationRegistry` (spec-conformant, **not canonical**) | [`0xc4A4D0cEB3971cbE7a2536494aC106f2Cd9F9a8f`](https://monad-testnet.socialscan.io/address/0xc4a4d0ceb3971cbe7a2536494ac106f2cd9f9a8f) |
 | Monad testnet (10143) | `AgentRequestForwarder` (agent hot keys request through it) | [`0x1451F3C36545b191d3642f759D59f21DcFD657B2`](https://monad-testnet.socialscan.io/address/0x1451f3c36545b191d3642f759d59f21dcfd657b2) |
-| Monad testnet (10143) | `MandateRegistry` (per-agent spending mandates; owner-set until P6) | [`0x2523197373ef813E19b5b14Ef2984130868cD17c`](https://monad-testnet.socialscan.io/address/0x2523197373ef813e19b5b14ef2984130868cd17c) |
+| Monad testnet (10143) | `MandateRegistry` v2 (per-agent spending mandates; owner + passkey, P6) | [`0x2Ee5f78149762DE630c6bFF8CD81166010D0454B`](https://monad-testnet.socialscan.io/address/0x2ee5f78149762de630c6bff8cd81166010d0454b) |
+| Monad testnet (10143) | `MandateRegistry` (P4, owner-set; read only for verdicts pinned before block 68,196,462) | [`0x2523197373ef813E19b5b14Ef2984130868cD17c`](https://monad-testnet.socialscan.io/address/0x2523197373ef813e19b5b14ef2984130868cd17c) |
 | Monad testnet (10143) | `DemoAgentVault` (AttestGate demo, demo agent 1984, requires `mandate-v1` and `risk-v1`) | [`0x12fAb3E3cA810Cc44bD9f537613a230a2be8D614`](https://monad-testnet.socialscan.io/address/0x12fab3e3ca810cc44bd9f537613a230a2be8d614) |
 | Monad testnet (10143) | `DemoPassThrough` (AttestGate demo target, forwards every payment to `SINK`) | [`0xEEEBBa55620afC42E9c88b5d962476367b8da338`](https://monad-testnet.socialscan.io/address/0xeeebba55620afc42e9c88b5d962476367b8da338) |
 | Monad testnet (10143) | `DemoAgentVault`, agent 1984, validator A only (**superseded**) | [`0x23BfBD12545CCd1501ddA1B65a54518FD6212a96`](https://monad-testnet.socialscan.io/address/0x23bfbd12545ccd1501dda1b65a54518fd6212a96) |

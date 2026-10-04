@@ -72,10 +72,14 @@ export const DEPLOYMENTS = {
     /** Forwards validationRequest for an agent's registered hot key (SPEC §4.4). */
     agentRequestForwarder: "0x1451F3C36545b191d3642f759D59f21DcFD657B2",
     /**
-     * The per-agent spending mandate's registries (SPEC §4.2). P4's, owner-set: deploy tx 0x1222b700…3ca0b84
-     * (docs/deployments.md). P6's v2 (owner + passkey) is appended once it is deployed.
+     * The per-agent spending mandate's registries (SPEC §4.2), in order (docs/deployments.md):
+     * - P4's, owner-set: deploy tx 0x1222b700…3ca0b84, read for verdicts pinned before v2's deploy block;
+     * - P6's v2, owner + passkey (rpId attest8004.vercel.app): deploy tx 0xfa483be3…751c0d.
      */
-    mandateRegistries: [{ address: "0x2523197373ef813E19b5b14Ef2984130868cD17c", fromBlock: 67_842_487n }],
+    mandateRegistries: [
+      { address: "0x2523197373ef813E19b5b14Ef2984130868cD17c", fromBlock: 67_842_487n },
+      { address: "0x2Ee5f78149762DE630c6bFF8CD81166010D0454B", fromBlock: 68_196_462n },
+    ],
     validators: {
       /** `mandate-v1`, deterministic. */
       mandateV1: "0xa62DaB21E0C0F57e94B3ed6e675F214199989e92",

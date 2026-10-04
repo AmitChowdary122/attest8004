@@ -6,7 +6,8 @@ Every Attest8004 deployment is recorded here: chain, contract, address, the comm
 |---|---|---|---|---|---|
 | Monad testnet (10143) | `ValidationRegistry` | [`0xc4A4D0cEB3971cbE7a2536494aC106f2Cd9F9a8f`](https://monad-testnet.socialscan.io/address/0xc4a4d0ceb3971cbe7a2536494ac106f2cd9f9a8f) | `8dc8859` | 2026-10-02 | [`0x724f31e0…cf64d03`](https://monad-testnet.socialscan.io/tx/0x724f31e0efd09993f2d73581cb742e71d4bef52c0f4f2a30cccd43d79cf64d03) (block 67,604,893) |
 | Monad testnet (10143) | `AgentRequestForwarder` | [`0x1451F3C36545b191d3642f759D59f21DcFD657B2`](https://monad-testnet.socialscan.io/address/0x1451f3c36545b191d3642f759d59f21dcfd657b2) | `5f2f4a4` | 2026-10-03 | [`0x82883206…72a3cd7`](https://monad-testnet.socialscan.io/tx/0x828832065b96235728c1782e9be9b4b712e3f408f8755e20f554a210472a3cd7) (block 67,779,694) |
-| Monad testnet (10143) | `MandateRegistry` | [`0x2523197373ef813E19b5b14Ef2984130868cD17c`](https://monad-testnet.socialscan.io/address/0x2523197373ef813e19b5b14ef2984130868cd17c) | `6e08223` | 2026-10-03 | [`0x1222b700…3ca0b84`](https://monad-testnet.socialscan.io/tx/0x1222b700027bc1e03676ed0f986a31ee2d5ac06ea5c5b1847672ca05b3ca0b84) (block 67,842,487) |
+| Monad testnet (10143) | `MandateRegistry` v2 (owner + passkey, rpId `attest8004.vercel.app`) | [`0x2Ee5f78149762DE630c6bFF8CD81166010D0454B`](https://monad-testnet.socialscan.io/address/0x2ee5f78149762de630c6bff8cd81166010d0454b) | `dda8e5e` | 2026-10-05 | [`0xfa483be3…751c0d`](https://monad-testnet.socialscan.io/tx/0xfa483be3f43b1e9c53fb00571adda242818b0abe92e0605519a09e3ce2751c0d) (block 68,196,462) |
+| Monad testnet (10143) | `MandateRegistry` (P4, owner-set) — **superseded for new mandates**; read for verdicts pinned before block 68,196,462 | [`0x2523197373ef813E19b5b14Ef2984130868cD17c`](https://monad-testnet.socialscan.io/address/0x2523197373ef813e19b5b14ef2984130868cd17c) | `6e08223` | 2026-10-03 | [`0x1222b700…3ca0b84`](https://monad-testnet.socialscan.io/tx/0x1222b700027bc1e03676ed0f986a31ee2d5ac06ea5c5b1847672ca05b3ca0b84) (block 67,842,487) |
 | Monad testnet (10143) | `DemoAgentVault` (AttestGate), agent 1984, mandate-v1 + risk-v1 | [`0x12fAb3E3cA810Cc44bD9f537613a230a2be8D614`](https://monad-testnet.socialscan.io/address/0x12fab3e3ca810cc44bd9f537613a230a2be8d614) | `7380fdc` | 2026-10-04 | [`0x65125575…61b990e`](https://monad-testnet.socialscan.io/tx/0x651255753f1d100da6b8e99bdfdbe3da60748c2297d9cffeb6554ca6161b990e) (block 67,943,657) |
 | Monad testnet (10143) | `DemoPassThrough` (AttestGate demo target, forwards to `SINK`) | [`0xEEEBBa55620afC42E9c88b5d962476367b8da338`](https://monad-testnet.socialscan.io/address/0xeeebba55620afc42e9c88b5d962476367b8da338) | `7380fdc` | 2026-10-04 | [`0x0be882c3…65128bc`](https://monad-testnet.socialscan.io/tx/0x0be882c31c27d98e93934e71a573bf65f4be450759420de02a2101d8a65128bc) (block 67,943,539) |
 | Monad testnet (10143) | `DemoAgentVault` (AttestGate), agent 1984, validator A only — **superseded** | [`0x23BfBD12545CCd1501ddA1B65a54518FD6212a96`](https://monad-testnet.socialscan.io/address/0x23bfbd12545ccd1501dda1b65a54518fd6212a96) | `319006a` | 2026-10-03 | [`0x2fed0cee…a14bf80`](https://monad-testnet.socialscan.io/tx/0x2fed0ceeec43384305a6cf095dc22be83a28c0d5b54e0b9055c467227a14bf80) (block 67,784,294) |
@@ -45,7 +46,31 @@ Every Attest8004 deployment is recorded here: chain, contract, address, the comm
 - **Gas:** explicit limit 490,000 (Monad `eth_estimateGas` was 407,868; limit = ×1.2, rounded up to 10k).
 - **Not upgradeable, no owner, holds no funds.**
 
-### MandateRegistry (testnet) details
+### MandateRegistry v2 (testnet) details
+
+- **Constructor arguments:** the canonical testnet Identity Registry `0x8004A818BFB912233c491871b3d84c89A494BD9e`, and
+  `rpIdHash = sha256("attest8004.vercel.app")` = `0x73edb32eef76e2327e40680c9f5362a608f5f8b49eae73c45df6af46fd904cbf`
+  (both immutable; read back from the chain after the deploy).
+- **What it does:** every mandate change (`setMandate`), passkey rotation and inbox-key change needs **two factors**: a
+  transaction from the agent's current owner and a WebAuthn assertion from the passkey bound to the agent, verified with
+  OpenZeppelin 5.7's `WebAuthn`/`P256` through the `0x0100` precompile, over
+  `challengeFor(agentId, changeHash, nonce)`. `setPasskey` is owner-only and works once; `revokeMandate` is owner-only
+  (the panic button) and also bumps the nonce. SPEC §4.2, ARCHITECTURE §4.1, §7, §9.
+- **How it was deployed:** `contracts/script/DeployMandateRegistry.s.sol` via `script/deploy-testnet.sh MandateRegistry`
+  (the dry run first), through the CREATE2 factory with salt `keccak256("attest8004.MandateRegistry.v2")`, from commit
+  `dda8e5e` (the contract source is unchanged since `8541b37`). The broadcast record is
+  `contracts/broadcast/DeployMandateRegistry.s.sol/10143/run-latest.json` (P4's record at that path is in git history,
+  commit `6e08223`).
+- **Gas:** explicit limit 2,690,000 (Monad `eth_estimateGas` was 2,241,334; limit = ×1.2, rounded up to 10k); the
+  receipt's `gasUsed` is the limit (Monad charges the limit).
+- **The registry history.** The SDK's `DEPLOYMENTS[10143].mandateRegistries` lists P4's registry from block 67,842,487
+  and v2 from block 68,196,462. `mandate-v1`, `risk-v1` and `verify` read the registry valid at each verdict's pinned
+  block, so every P4/P5 verdict still re-verifies against P4's registry (checked live: all ten recorded verdicts
+  `match`, exit 0, after the history gained v2).
+- **Not upgradeable, no owner, holds no funds.** A lost passkey has no recovery (a timelocked owner reset is on the
+  roadmap); rotate to the buyer's passkey before selling an agent.
+
+### MandateRegistry (P4, testnet) details — superseded for new mandates
 
 - **Constructor argument:** the canonical testnet Identity Registry `0x8004A818BFB912233c491871b3d84c89A494BD9e`.
 - **What it does:** holds a per-agent spending mandate (SPEC §4.2) — allowed targets, allowed selectors, a per-tx and
