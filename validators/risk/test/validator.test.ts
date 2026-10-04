@@ -148,6 +148,21 @@ describe("RiskValidator: options", () => {
   });
 });
 
+describe("RiskValidator: caught up", () => {
+  it("logs once each time it catches up with the head (the service's smoke test looks for it)", async () => {
+    const { validator } = makeValidator();
+    await validator.pollOnce();
+    await validator.pollOnce();
+    expect(logs.filter((entry) => entry.msg === "caught up")).toEqual([expect.objectContaining({ level: "info", validator: "risk-v1", block: 1_004n })]);
+
+    chain.headBlock = { number: 1_250n, timestamp: tsOf(1_250n) };
+    await validator.pollOnce(); // 1,005-1,104
+    await validator.pollOnce(); // 1,105-1,204
+    await validator.pollOnce(); // 1,205-1,250
+    expect(logs.filter((entry) => entry.msg === "caught up").map((entry) => entry.block)).toEqual([1_004n, 1_250n]);
+  });
+});
+
 describe("RiskValidator: accepts()", () => {
   it("GATE_NOT_SERVED: declined before any read or model call, and before admission", async () => {
     addAction({ gate: OTHER_GATE });

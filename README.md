@@ -135,6 +135,19 @@ allowlisted (gate, agent) pairs (by default the demo vault with agent 1984, the 
 with an unexpired mandate set by their current owner, with a per-agent rate limit and a validator-wide daily gas
 budget; a restart resets both.
 
+To run validator B as a long-lived `risk-v1` service (it needs `VALIDATOR_B_PRIVATE_KEY`, which must be the recorded
+validator B address, `MONAD_TESTNET_RPC_URL`, and `LLM_BASE_URL`/`LLM_API_KEY`/`LLM_MODEL` for an OpenAI-compatible
+endpoint, Groq today; `NANSEN_API_KEY` is optional, and the `RISK_V1_*` settings are in `.env.example`):
+
+```bash
+pnpm --filter @attest8004/validator-risk start   # polls until Ctrl-C; JSON-line logs carry the LLM host and model, never a key or URL
+```
+
+It answers a request only after `mandate-v1` has answered the same action, so run the `mandate-v1` service too. Like
+validator A it serves only its allowlisted (gate, agent) pairs (`RISK_V1_GATES`, by default the demo vault with agent
+1984), with the same per-agent rate limit and daily gas budget. It paces its LLM calls to Groq's free tier (30 requests
+and 8,000 tokens a minute for the main model; Prompt Guard has its own budget), so one check takes a few minutes.
+
 ## Deployments
 
 | Chain | Contract | Address |

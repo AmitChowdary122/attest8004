@@ -11,6 +11,7 @@
     }
   },
   "scripts": {
+    "start": "node --conditions=@attest8004/source --env-file=../../.env src/main.ts",
     "typecheck": "tsc --noEmit",
     "test": "vitest run --passWithNoTests",
     "record-fixtures": "node --conditions=@attest8004/source --env-file=../../.env scripts/record-fixtures.ts"

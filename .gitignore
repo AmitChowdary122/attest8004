@@ -20,6 +20,7 @@ contracts/cache/
 
 # Validator state (block cursors)
 validators/mandate/.state/
+validators/risk/.state/
 
 # Envio HyperIndex
 indexer/generated/

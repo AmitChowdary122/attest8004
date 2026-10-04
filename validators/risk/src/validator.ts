@@ -5,6 +5,7 @@ import {
   ValidatorBase,
   type Admission,
   type CheckResult,
+  type CursorStore,
   type ValidatorOptions,
   type VerifiedRequest,
 } from "@attest8004/sdk";
@@ -69,6 +70,8 @@ export type RiskValidatorOptions = Omit<ValidatorOptions, "tag" | "maxDeadlineAh
  *   up to `maxFailedCycles`, then gives up with no response). This assumes one process per key.
  * - **`onResponded()`** records the response's block for the pin and settles the admission
  *   reservation to the gas limit actually sent. It never throws.
+ * - **`pollOnce()`** is the base's, plus one `info` line (`caught up`, with the cursor's block) each
+ *   time it catches up with the head, as `mandate-v1` logs.
  *
  * The tag is always `risk-v1`, the deadline horizon always 3,600 s and the request size limit always
  * the SDK's 16,384 bytes, whatever the options say. Defaults: `retryDelayMs` 15,000 and
@@ -89,6 +92,8 @@ export class RiskValidator extends ValidatorBase {
   private readonly pinTimeoutMs: number;
   private readonly pinPollMs: number;
   private readonly emit: (entry: Record<string, unknown>) => void;
+  private readonly cursorStore: CursorStore;
+  private caughtUp = false;
   /** The highest block one of this process's responses landed in. */
   private lastResponseBlock: bigint | undefined;
   /** The latest `P`'s timestamp: the clock `admission.settle` runs on. */
@@ -126,6 +131,18 @@ export class RiskValidator extends ValidatorBase {
     this.pinTimeoutMs = pinTimeoutMs ?? DEFAULT_RISK_PIN_TIMEOUT_MS;
     this.pinPollMs = pinPollMs ?? DEFAULT_RISK_PIN_POLL_MS;
     this.emit = log;
+    this.cursorStore = options.cursor;
+  }
+
+  /** The base's poll, plus one `info` line each time it catches up with the head. */
+  override async pollOnce(): ReturnType<ValidatorBase["pollOnce"]> {
+    const result = await super.pollOnce();
+    if (result.caughtUp && !this.caughtUp) {
+      const block = await this.cursorStore.load().catch(() => undefined);
+      this.logLine("info", "caught up", { block });
+    }
+    this.caughtUp = result.caughtUp;
+    return result;
   }
 
   protected override async accepts(request: VerifiedRequest): Promise<boolean | { decline: string }> {
