@@ -9,6 +9,7 @@ import {MockIdentityRegistry} from "./mocks/MockIdentityRegistry.sol";
 contract DeployMandateRegistryTest is Test {
     address internal constant FACTORY = 0x4e59b44847b379578588920cA78FbF26c0B4956C;
     address internal constant IDENTITY_REGISTRY_TESTNET = 0x8004A818BFB912233c491871b3d84c89A494BD9e;
+    bytes32 internal constant RP_ID_HASH = sha256("attest8004.vercel.app");
 
     DeployMandateRegistry internal script;
     MockIdentityRegistry internal identity;
@@ -21,7 +22,7 @@ contract DeployMandateRegistryTest is Test {
     function test_Deploy_AtPredictedCreate2Address() public {
         address predicted = script.predictedAddress(address(identity));
         bytes32 initCodeHash =
-            keccak256(abi.encodePacked(type(MandateRegistry).creationCode, abi.encode(address(identity))));
+            keccak256(abi.encodePacked(type(MandateRegistry).creationCode, abi.encode(address(identity), RP_ID_HASH)));
         assertEq(predicted, vm.computeCreate2Address(script.SALT(), initCodeHash, FACTORY));
         assertEq(predicted.code.length, 0);
 
@@ -40,10 +41,18 @@ contract DeployMandateRegistryTest is Test {
         assertEq(address(second), address(first));
     }
 
-    function test_Deploy_WiresIdentityRegistry() public {
+    function test_Deploy_WiresBothImmutables() public {
         MandateRegistry deployed = script.deploy(address(identity));
 
         assertEq(address(deployed.identityRegistry()), address(identity));
+        assertEq(deployed.rpIdHash(), RP_ID_HASH);
+    }
+
+    /// v2 is a new deployment: its own salt, and the rpId the passkeys are created on.
+    function test_Constants_SaltV2AndRpId() public view {
+        assertEq(script.SALT(), keccak256("attest8004.MandateRegistry.v2"));
+        assertEq(script.RP_ID(), "attest8004.vercel.app");
+        assertEq(script.RP_ID_HASH(), RP_ID_HASH);
     }
 
     /// deploy-testnet.sh compares Monad's eth_estimateGas for exactly this call with the limit
@@ -53,7 +62,9 @@ contract DeployMandateRegistryTest is Test {
         assertEq(to, FACTORY);
         assertEq(
             data,
-            abi.encodePacked(script.SALT(), type(MandateRegistry).creationCode, abi.encode(IDENTITY_REGISTRY_TESTNET))
+            abi.encodePacked(
+                script.SALT(), type(MandateRegistry).creationCode, abi.encode(IDENTITY_REGISTRY_TESTNET, RP_ID_HASH)
+            )
         );
         assertEq(gasLimit, script.DEPLOY_GAS());
         assertEq(predicted, script.predictedAddress(IDENTITY_REGISTRY_TESTNET));

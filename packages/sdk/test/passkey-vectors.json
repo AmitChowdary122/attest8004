@@ -1,0 +1,213 @@
+{
+  "schema": "attest8004.passkey-vectors.v1",
+  "description": "Shared test vectors for MandateRegistry v2's passkey approvals (SPEC §4.2, ARCHITECTURE §9): the WebAuthn challenge, the tagged change hashes, the e2e mandate's hash, selectors and event topics. Checked by contracts/test/MandateRegistry.t.sol (Solidity) and the TypeScript SDK. The expected values come from cast and sha256sum (packages/sdk/test/passkey-vectors.sh), independent of both. Integers are decimal strings.",
+  "challenge": "sha256(abi.encode(uint256 chainId, address registry, uint256 agentId, bytes32 changeHash, uint256 nonce)); the WebAuthn challenge is its 32 raw bytes (43 base64url characters, unpadded)",
+  "rpId": "attest8004.vercel.app",
+  "rpIdHash": "0x73edb32eef76e2327e40680c9f5362a608f5f8b49eae73c45df6af46fd904cbf",
+  "challenges": [
+    {
+      "name": "testnet-agent-1984-nonce-0",
+      "chainId": "10143",
+      "registry": "0xb60aDb7d3cFB303DD501FEf6aE136131E655E231",
+      "agentId": "1984",
+      "changeHash": "0x8fc7de61e1149f4f4f5ff14ffe9119d9e273b4aea7150263033cf3d3d6cec46e",
+      "nonce": "0",
+      "expected": "0x140c610ff8f0b7d6e45c8eff7c07989a9ce3264c7aa9c977d224c7b7a10376bb"
+    },
+    {
+      "name": "testnet-agent-1984-nonce-1",
+      "chainId": "10143",
+      "registry": "0xb60aDb7d3cFB303DD501FEf6aE136131E655E231",
+      "agentId": "1984",
+      "changeHash": "0x8fc7de61e1149f4f4f5ff14ffe9119d9e273b4aea7150263033cf3d3d6cec46e",
+      "nonce": "1",
+      "expected": "0xc7dc6b72d6aeb36385bfd155f3473b16b6a6343d8bd6196538e5d729ee52e5c4"
+    },
+    {
+      "name": "testnet-agent-1984-nonce-2^64",
+      "chainId": "10143",
+      "registry": "0xb60aDb7d3cFB303DD501FEf6aE136131E655E231",
+      "agentId": "1984",
+      "changeHash": "0x8fc7de61e1149f4f4f5ff14ffe9119d9e273b4aea7150263033cf3d3d6cec46e",
+      "nonce": "18446744073709551616",
+      "expected": "0xc87655b66e8dcda6adb60ad329dd770ee7baffc2f886603f49b5978eb188ca09"
+    },
+    {
+      "name": "mainnet-agent-1-nonce-0",
+      "chainId": "143",
+      "registry": "0xb60aDb7d3cFB303DD501FEf6aE136131E655E231",
+      "agentId": "1",
+      "changeHash": "0xaec431fe3581470868623ea4a242234a233df4db3c6188038d693f414f104a59",
+      "nonce": "0",
+      "expected": "0x1738feda3f6892a04e333896958c90bc5c4b128b9a84766ed9489cbec52e76b5"
+    },
+    {
+      "name": "other-registry-max-agent-id",
+      "chainId": "10143",
+      "registry": "0x67843a6538C959B20D8d2D9e768609e89dD826A8",
+      "agentId": "115792089237316195423570985008687907853269984665640564039457584007913129639935",
+      "changeHash": "0x8fc7de61e1149f4f4f5ff14ffe9119d9e273b4aea7150263033cf3d3d6cec46e",
+      "nonce": "7",
+      "expected": "0x160dc3be6bc42d6c5fd96618c2519ecfeaff38e93ecc8bd1d1b74d78f9e7b142"
+    }
+  ],
+  "rotateChangeHash": {
+    "formula": "keccak256(abi.encode(ROTATE_PASSKEY, qx, qy)), ROTATE_PASSKEY = keccak256(tagPreimage); the sample key is the P-256 generator",
+    "tagPreimage": "attest8004.MandateRegistry.rotatePasskey",
+    "tag": "0x2f4937820b2424e588dd6f8174faa27c901001a6db07491a03e7fddfba0d0b99",
+    "qx": "0x6b17d1f2e12c4247f8bce6e563a440f277037d812deb33a0f4a13945d898c296",
+    "qy": "0x4fe342e2fe1a7f9b8ee7eb4a7c0f9e162bce33576b315ececbb6406837bf51f5",
+    "expected": "0x1ebf06440326aa4ce2074b7c88e3d24cf5424a3d74131433a0ba179b13758015"
+  },
+  "inboxKeyChangeHash": {
+    "formula": "keccak256(abi.encode(SET_INBOX_KEY, x25519Pub)), SET_INBOX_KEY = keccak256(tagPreimage); the sample key is RFC 7748 §6.1's Alice public key",
+    "tagPreimage": "attest8004.MandateRegistry.setInboxKey",
+    "tag": "0xabecc8838d805b4b60d6fc4f7f30636ad5bc168c66fac4264bd1d990c74e265b",
+    "x25519Pub": "0x8520f0098930a754748b7ddcb43ef75a0dbf3a0d26381af4eba4a98eaa9b4e6a",
+    "expected": "0xf4df1cae25a5e14f6c994c4c6aad8961534fc15b7b7a731adc9cac6e02683fb0"
+  },
+  "e2eMandate": {
+    "description": "The P6 end-to-end mandate: allowedTargets = [owner, demoPassThrough], in that order; mandateHash = keccak256(abi.encode(Mandate))",
+    "owner": "0x3EFEB3Cf2FB54A7D99abE90AaB786cE5A831a8CF",
+    "demoPassThrough": "0xEEEBBa55620afC42E9c88b5d962476367b8da338",
+    "allowedSelectors": [
+      "0x00000000"
+    ],
+    "maxValuePerTx": "2000000000000000",
+    "maxValuePerDay": "5000000000000000",
+    "validUntil": "1793404800",
+    "mandateHash": "0xf935d1625a09661cd7ac71eeaac67de09df9a9a96be76c3f68b37cec44bc7601"
+  },
+  "selectors": {
+    "setPasskey": {
+      "signature": "setPasskey(uint256,bytes32,bytes32)",
+      "selector": "0xb92710cb"
+    },
+    "rotatePasskey": {
+      "signature": "rotatePasskey(uint256,bytes32,bytes32,(bytes32,bytes32,uint256,uint256,bytes,string))",
+      "selector": "0xa4104c9f"
+    },
+    "setMandate": {
+      "signature": "setMandate(uint256,(address[],bytes4[],uint256,uint256,uint64),(bytes32,bytes32,uint256,uint256,bytes,string))",
+      "selector": "0x2431d335"
+    },
+    "revokeMandate": {
+      "signature": "revokeMandate(uint256)",
+      "selector": "0x20e00cf7"
+    },
+    "setInboxKey": {
+      "signature": "setInboxKey(uint256,bytes32,(bytes32,bytes32,uint256,uint256,bytes,string))",
+      "selector": "0x77a602bc"
+    },
+    "getMandate": {
+      "signature": "getMandate(uint256)",
+      "selector": "0xa8e64c8a"
+    },
+    "mandateHashOf": {
+      "signature": "mandateHashOf((address[],bytes4[],uint256,uint256,uint64))",
+      "selector": "0x763d2c8d"
+    },
+    "passkeyOf": {
+      "signature": "passkeyOf(uint256)",
+      "selector": "0x13dd493d"
+    },
+    "nonceOf": {
+      "signature": "nonceOf(uint256)",
+      "selector": "0x6ccbae5f"
+    },
+    "inboxKeyOf": {
+      "signature": "inboxKeyOf(uint256)",
+      "selector": "0x49e08429"
+    },
+    "challengeFor": {
+      "signature": "challengeFor(uint256,bytes32,uint256)",
+      "selector": "0xd49c6188"
+    },
+    "rpIdHash": {
+      "signature": "rpIdHash()",
+      "selector": "0x2c4d11fc"
+    },
+    "NotAgentOwner": {
+      "signature": "NotAgentOwner(uint256,address)",
+      "selector": "0x13feb4c4"
+    },
+    "NoPasskey": {
+      "signature": "NoPasskey(uint256)",
+      "selector": "0xf27819a5"
+    },
+    "PasskeyAlreadySet": {
+      "signature": "PasskeyAlreadySet(uint256)",
+      "selector": "0x5a3d8b5d"
+    },
+    "InvalidPasskey": {
+      "signature": "InvalidPasskey(bytes32,bytes32)",
+      "selector": "0x79508ecb"
+    },
+    "WrongRpIdHash": {
+      "signature": "WrongRpIdHash(bytes32,bytes32)",
+      "selector": "0x1e052c66"
+    },
+    "InvalidAssertion": {
+      "signature": "InvalidAssertion(uint256)",
+      "selector": "0x8abfdd5c"
+    },
+    "ZeroInboxKey": {
+      "signature": "ZeroInboxKey()",
+      "selector": "0xc56e47fb"
+    },
+    "ZeroRpIdHash": {
+      "signature": "ZeroRpIdHash()",
+      "selector": "0x4f521c87"
+    },
+    "ZeroIdentityRegistry": {
+      "signature": "ZeroIdentityRegistry()",
+      "selector": "0x214af0b8"
+    },
+    "NoMandate": {
+      "signature": "NoMandate(uint256)",
+      "selector": "0x1a135133"
+    },
+    "MandateAlreadyExpired": {
+      "signature": "MandateAlreadyExpired(uint64,uint256)",
+      "selector": "0xd666124a"
+    },
+    "TooManyTargets": {
+      "signature": "TooManyTargets(uint256)",
+      "selector": "0x14a45d92"
+    },
+    "TooManySelectors": {
+      "signature": "TooManySelectors(uint256)",
+      "selector": "0x6e94c1ab"
+    },
+    "ZeroTarget": {
+      "signature": "ZeroTarget()",
+      "selector": "0x46c2cca1"
+    },
+    "TxCapAboveDailyCap": {
+      "signature": "TxCapAboveDailyCap(uint256,uint256)",
+      "selector": "0xf1901e3e"
+    }
+  },
+  "topics": {
+    "MandateSet": {
+      "signature": "MandateSet(uint256,bytes32,address,address[],bytes4[],uint256,uint256,uint64,uint64)",
+      "topic0": "0x256e3cfacfe1a1fc284200507a9ea651ee6faa07b250dcd6aba3dd154c9edc8d"
+    },
+    "MandateRevoked": {
+      "signature": "MandateRevoked(uint256,bytes32,address)",
+      "topic0": "0x4693206c5b7b2f873b23975c6c47ab6456f17cb2e3797f34bc9407152ee5d3e7"
+    },
+    "PasskeySet": {
+      "signature": "PasskeySet(uint256,address,bytes32,bytes32)",
+      "topic0": "0x2a0507250c899bd79738661ac65a4da8dd6145db644b4a3ee784392ca7b169dd"
+    },
+    "PasskeyRotated": {
+      "signature": "PasskeyRotated(uint256,address,bytes32,bytes32,bytes32,bytes32)",
+      "topic0": "0x406738867ed58a2cf1c7c18985ce47076353c8d91f50aaa54e02084d3350ec88"
+    },
+    "InboxKeySet": {
+      "signature": "InboxKeySet(uint256,address,bytes32)",
+      "topic0": "0x866a7b0d6ba3479889f4ed44184d8341c9d7c3c321bc541829e8369fe9b0b710"
+    }
+  }
+}

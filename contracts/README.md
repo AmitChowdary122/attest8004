@@ -7,7 +7,7 @@ Foundry project for the Attest8004 contracts (SPEC §4.1–4.4; `DemoPassThrough
 | `ValidationRegistry` | **live on Monad testnet** at `0xc4A4D0cEB3971cbE7a2536494aC106f2Cd9F9a8f` (P1; see [docs/deployments.md](../docs/deployments.md)) |
 | `AttestGate` + `DemoAgentVault` | **live on Monad testnet**: `DemoAgentVault` at `0x12fAb3E3cA810Cc44bD9f537613a230a2be8D614`, for demo agent 1984, requiring both `mandate-v1` and `risk-v1` (the P2 vault for agent 1982 and the single-validator P3 vault for agent 1984 are superseded; see [docs/deployments.md](../docs/deployments.md)) |
 | `AgentRequestForwarder` | **live on Monad testnet** at `0x1451F3C36545b191d3642f759D59f21DcFD657B2` (P3; see [docs/deployments.md](../docs/deployments.md)) |
-| `MandateRegistry` | **live on Monad testnet** at `0x2523197373ef813E19b5b14Ef2984130868cD17c`, owner-set mandates (P4; passkey approval is a new deployment in P6; see [docs/deployments.md](../docs/deployments.md)) |
+| `MandateRegistry` | **v2 (P6, owner + passkey) built and tested, not yet deployed.** The live testnet registry is still P4's owner-set one, at `0x2523197373ef813E19b5b14Ef2984130868cD17c` (source at commit `6e08223`; see [docs/deployments.md](../docs/deployments.md)) |
 | `DemoPassThrough` | demo-only, **live on Monad testnet** at `0xEEEBBa55620afC42E9c88b5d962476367b8da338`: the P5 risky-but-mandated target (SPEC §4.6) that forwards every payment to a fixed sink nobody controls; now allowlisted in demo agent 1984's mandate, next to the deployer (see [docs/deployments.md](../docs/deployments.md)) |
 
 ```bash
@@ -52,22 +52,37 @@ Immutable, no admin, no funds. The trade-off between the two approvals is in ARC
 
 ## MandateRegistry
 
-`src/MandateRegistry.sol` holds each agent's current spending mandate (SPEC §4.2): allowed targets and selectors
-(at most 16 of each), a per-transaction and a per-day cap in native MON, and an expiry. `mandate-v1` reads it at its
-pinned block. In P4 only the agent's current `ownerOf` may call `setMandate(agentId, mandate)` or
-`revokeMandate(agentId)`; an operator or a token-approved address is refused. The record stores that owner and
-`setAtBlock`, so a mandate goes stale once the agent is transferred (`mandate-v1` then fails `MANDATE_OWNER_CHANGED`).
-It rejects a zero target, an expiry at or before now, and a per-transaction cap above the daily cap. Every change goes
-through one internal hook, `_authorize(agentId, changeHash)`, before any write. P6 puts a WebAuthn assertion (P256 at
-`0x0100`) in that hook; the hook is internal and the contract immutable, so that is a new deployment. No admin, no
-funds, no fallback.
+`src/MandateRegistry.sol` (v2, P6) holds each agent's current spending mandate (SPEC §4.2): allowed targets and
+selectors (at most 16 of each), a per-transaction and a per-day cap in native MON, and an expiry; plus the agent's
+passkey public key and its X25519 inbox public key. `mandate-v1` reads the mandate at its pinned block.
+
+Every change needs **two factors**: a transaction from the agent's current `ownerOf` (an operator or a token-approved
+address is refused) **and** a WebAuthn assertion from the passkey bound to the agent, verified with OpenZeppelin 5.7's
+`WebAuthn` (UP and UV required, low-s) through the P256 precompile at `0x0100`. The owner sets the passkey once
+(`setPasskey`, on-curve check only); it stays with the agent across a transfer, so rotate to the buyer's passkey
+(`rotatePasskey`, owner + current passkey) before selling. `setMandate`, `rotatePasskey` and `setInboxKey` all go
+through one internal hook, `_authorize(agentId, changeHash, auth)`, before any write: owner, passkey set,
+`authenticatorData` starting with the immutable `rpIdHash` (`sha256("attest8004.vercel.app")`; OpenZeppelin doesn't
+check it), then the assertion over `challengeFor(agentId, changeHash, nonce) = sha256(abi.encode(chainid, registry,
+agentId, changeHash, nonce))`; success increments the nonce. `revokeMandate` is the panic button: owner only, no
+passkey, and it also increments the nonce, cancelling approvals signed but not yet submitted. There is no passkey
+recovery. `MandateSet`/`MandateRevoked` keep P4's exact signatures. The record stores the setting owner and
+`setAtBlock`, so a mandate goes stale once the agent is transferred (`mandate-v1` then fails
+`MANDATE_OWNER_CHANGED`). It rejects a zero target, an expiry at or before now, and a per-transaction cap above the
+daily cap. Immutable, no admin, no funds, no fallback. P4's owner-only source (the live deployment) is at commit
+`6e08223`.
 
 | Test file | What it covers |
 |---|---|
-| `test/MandateRegistry.t.sol` | Authorisation (owner; operator, token-approved address and stranger refused; a nonexistent agent), every validation rule (17 targets or selectors, a zero target, an expired `validUntil`, a per-tx cap above the daily cap) and the passing boundaries for expiry (one second ahead) and caps (equal), an overwrite replaces both arrays, behaviour across a transfer (the old record keeps the old owner, who can no longer change it; the new owner can set a fresh one), revoke, fuzz that `mandateHash` binds every field, no ether and no unknown calldata accepted |
-| `test/mocks/MandateRegistryHookHarness.sol` | A subclass that records and can veto `_authorize`, used to prove every change goes through the hook before any write |
-| `test/fork/MandateRegistry.fork.t.sol` | A fresh registry on a fork of Monad testnet: the live owner of agent 1984 sets a mandate and reads it back; a stranger is refused |
-| `test/DeployMandateRegistry.t.sol` | The CREATE2 deploy script: predicted address, idempotence, wiring, the exact broadcast transaction, the testnet configuration, unsupported chains |
+| `test/MandateRegistry.t.sol` | Real `vm.signP256` assertions against the real precompile. Two factors (owner; operator, token-approved address, stranger and a nonexistent agent refused; no passkey; another key, garbage `r`/`s`, an empty struct, short `authenticatorData`); the challenge (each of changeHash, agentId, nonce, chain id and registry wrong), replay, UV or UP missing, another site's rpIdHash, high-s (low-s passes), Chrome's extra clientDataJSON key; the precompile mocked to always answer empty (never success) and to answer only OpenZeppelin's probe; `setPasskey` (owner, once, on curve), rotation, the passkey across a transfer, revoke (owner only, bumps the nonce, kills a pending approval), the inbox key; an approval can't cross operations or agents; fuzz (nonce binding, challenge binding, indices never panic or run out of gas, `mandateHash` binds every field); every P4 rule and boundary, overwrite, the record after a transfer; P4's event topics; the constructor; `passkey-vectors.json`; and a gas record (`test_Gas_Record`) |
+| `test/helpers/WebAuthnFixture.sol` | Builds real assertions: a P-256 key from `vm.publicKeyP256`, Chrome-shaped `clientDataJSON` (optionally with its extra key), `authenticatorData` with flags `0x1D` and our rpIdHash, low-s (or high-s on request), indices found in the JSON |
+| `test/mocks/MandateRegistryHookHarness.sol` | A subclass that records and can veto `_authorize`, used to prove every passkey-approved change goes through the hook, with its own `changeHash`, before any write |
+| `test/fork/MandateRegistry.fork.t.sol` | A fresh v2 registry on a fork of Monad testnet (deployed by the deploy script): the live owner of agent 1984 sets a passkey and a mandate with a real assertion; a stranger, and the owner with another key's assertion, are refused |
+| `test/DeployMandateRegistry.t.sol` | The CREATE2 deploy script: predicted address, idempotence, both immutables, the v2 salt and rpId, the exact broadcast transaction, the testnet configuration, unsupported chains |
+
+The expected challenge, change hashes, e2e mandate hash, selectors and topics in
+`packages/sdk/test/passkey-vectors.json` come from `cast` and `sha256sum` (`passkey-vectors.sh`; CI runs it with
+`--check`).
 
 ## AttestGate and DemoAgentVault
 
@@ -132,7 +147,7 @@ CI runs them in a separate `contracts-fork` job that may fail without turning th
 factory `0x4e59…956C` with a **literal gas limit** (`DEPLOY_GAS`), because Monad charges for the gas limit, not
 the gas used. The address depends on the init code, which includes the constructor arguments: the
 ValidationRegistry's and the MandateRegistry's addresses depend on the Identity Registry (so testnet and mainnet
-differ), the forwarder's on its ValidationRegistry, the vault's on its registry, agent and validator requirements,
+differ; the MandateRegistry's also on its `rpIdHash`), the forwarder's on its ValidationRegistry, the vault's on its registry, agent and validator requirements,
 and the pass-through's on its `sink`. Re-running is a no-op once the contract exists.
 
 ```bash

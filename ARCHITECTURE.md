@@ -1,6 +1,6 @@
 # Attest8004 — Architecture
 
-> **Status:** design reference v0.1 (2 Oct 2026), kept in sync with the code as it is built (P4, 3 Oct 2026: the owner-set MandateRegistry, the `mandate-v1` validator and `verify`, and per-agent forwarder approvals in the demo; P5, 4 Oct 2026: `risk-v1` is built (§5.6, its evidence in §6) and tested against fakes and recorded Groq runs; the gate's tag requirement (§4.1, §4.4), the two-validator vault and the demo "risky but mandated" target `DemoPassThrough` are **deployed**; the `verify` CLI now lives in `packages/cli` and re-checks both validators' tags (§5.5); agent 1984's mandate now allowlists `DemoPassThrough` next to the deployer. **The live end-to-end run with both validators passed** on 4 Oct 2026: `risk-v1`'s first testnet verdicts, and all six verdicts `match` under `verify` (docs/deployments.md)). Passkey (WebAuthn) approval of mandates, the inbox and the indexer are still design.
+> **Status:** design reference v0.1 (2 Oct 2026), kept in sync with the code as it is built (P4, 3 Oct 2026: the owner-set MandateRegistry, the `mandate-v1` validator and `verify`, and per-agent forwarder approvals in the demo; P5, 4 Oct 2026: `risk-v1` is built (§5.6, its evidence in §6) and tested against fakes and recorded Groq runs; the gate's tag requirement (§4.1, §4.4), the two-validator vault and the demo "risky but mandated" target `DemoPassThrough` are **deployed**; the `verify` CLI now lives in `packages/cli` and re-checks both validators' tags (§5.5); agent 1984's mandate now allowlists `DemoPassThrough` next to the deployer. **The live end-to-end run with both validators passed** on 4 Oct 2026: `risk-v1`'s first testnet verdicts, and all six verdicts `match` under `verify` (docs/deployments.md)). P6, in progress: MandateRegistry v2 (every mandate, passkey and inbox-key change needs the owner's transaction **and** a passkey assertion verified through `0x0100`, §4.1, §7, §9) is built and tested, **not yet deployed**; the live registry is still P4's. The `/approve` page, the inbox and the indexer are still design.
 > **Rule:** any change to an interface, flow, data format or trust assumption updates this file **in the same commit**.
 > Build scope and acceptance criteria live in [`SPEC.md`](./SPEC.md). This file explains *how the system works and why*.
 
@@ -72,7 +72,7 @@ flowchart LR
 |---|---|---|---|
 | Onchain | `ValidationRegistry` | `contracts/src/` | Stores validation requests and responses. EIP-8004 interface. Authorises requesters via the canonical Identity Registry. No admin, not upgradeable. |
 | Onchain | `AgentRequestForwarder` | `contracts/src/` | The agent owner's ERC-721 operator for validation requests only. Forwards `validationRequest` for the hot key the agent's owner registered, while that owner still owns the agent. No admin, not upgradeable, holds no funds. |
-| Onchain | `MandateRegistry` | `contracts/src/` | The current spending mandate per agent (targets, selectors, value caps, expiry). P4: owner-set, via `setMandate`/`revokeMandate`, both routed through an internal `_authorize` hook. P6 replaces that hook's body with a WebAuthn assertion verified via `0x0100`, and adds the passkey public key and the inbox public key. |
+| Onchain | `MandateRegistry` | `contracts/src/` | The current spending mandate per agent (targets, selectors, value caps, expiry), the agent's passkey public key and its inbox public key. v2 (P6): every change needs the owner's transaction and a WebAuthn assertion from the agent's passkey, verified via `0x0100`; revoking needs the owner only. (P4's live deployment is owner-set.) |
 | Onchain | `AttestGate` (abstract contract with the `onlyValidated` modifier) | `contracts/src/` | For each required validator, recomputes that validator's `requestHash` from the call and checks its verdict: the named validator, the agentId and the minimum score. Every requirement must pass, and each action runs once. |
 | Onchain | `DemoAgentVault` | `contracts/src/` | Example consumer, bound to one agentId: holds that agent's test funds; `execute(Action)` is gated. |
 | Offchain | `@attest8004/sdk` client | `packages/sdk/` | Builds actions, computes `requestHash`, submits requests, waits for verdicts, reads trust summaries. |
@@ -95,20 +95,22 @@ flowchart TB
   ID["ERC-8004 IdentityRegistry (canonical)<br/>ownerOf · isApprovedForAll · getApproved"]
   VR["ValidationRegistry<br/>validationRequest · validationResponse<br/>getValidationStatus · getSummary<br/>getAgentValidations · getValidatorRequests"]
   FW["AgentRequestForwarder<br/>setAgentKey · request"]
-  MR["MandateRegistry<br/>setMandate · revokeMandate<br/>(P4: owner-set · P6: WebAuthn → P256 @ 0x0100)"]
+  MR["MandateRegistry (v2)<br/>setPasskey · rotatePasskey · setMandate<br/>revokeMandate · setInboxKey<br/>(owner tx + WebAuthn assertion)"]
+  P256["P256VERIFY precompile @ 0x0100"]
   G["AttestGate<br/>onlyValidated(action)<br/>immutable (validator, minScore, tagHash)[]"]
   V["DemoAgentVault<br/>execute(action)"]
   ID --> VR
   ID --> FW
   FW -->|validationRequest| VR
   ID --> MR
+  MR -->|"verify (via OpenZeppelin WebAuthn/P256)"| P256
   VR --> G
   G --> V
 ```
 
 - **ValidationRegistry** reads the Identity Registry only to check that `msg.sender` is the owner or approved operator of `agentId` (`ownerOf`, `isApprovedForAll`, `getApproved`). It never trusts its own callers for this. The Identity Registry address is a **constructor argument** stored as an `immutable`. The EIP describes an `initialize(address)` instead, as used by the reference's upgradeable proxy; we have no proxy, owner or `initialize`, and `getIdentityRegistry()` returns the address. Because the Identity Registry address is part of the init code, the registry's CREATE2 address depends on it: testnet and mainnet use different Identity Registries, so their addresses differ. All differences from the EIP are in [`docs/spec-notes.md`](./docs/spec-notes.md).
 - **AgentRequestForwarder** takes the ValidationRegistry as its only constructor argument and reads that registry's Identity Registry (`getIdentityRegistry()`), so the two can't disagree about who owns an agent. The owner approves it as an ERC-721 operator. Its `request` checks the caller is the agent's registered key and that the owner who registered it still owns the agent, then makes exactly one call, `validationRequest`, which the registry accepts because the forwarder is the owner's operator (§7).
-- **MandateRegistry** reads the Identity Registry to authorize every mandate change. P4: `setMandate`/`revokeMandate` route through an internal `_authorize(agentId, changeHash)` hook, called before any write, that requires `msg.sender == identityRegistry.ownerOf(agentId)` — the record stores that owner, so a mandate goes stale the moment the agent is transferred, even to an owner who already approved other operators. P6 replaces `_authorize`'s body with a WebAuthn assertion over the agent's passkey; because the hook is internal, that is a new deployment, not an upgrade, and after P6 every mandate or inbox-key change requires the passkey.
+- **MandateRegistry** (v2, P6) reads the Identity Registry to authorize every change, and calls the P256 precompile (through OpenZeppelin's `WebAuthn`/`P256`) for the passkey-approved ones. Its constructor takes the Identity Registry and `rpIdHash` (`sha256("attest8004.vercel.app")`), both immutable. The owner binds a passkey to the agent once (`setPasskey`, owner only, the key must be on the curve). After that, `setMandate`, `rotatePasskey` and `setInboxKey` each need **two factors**, checked by one internal hook, `_authorize(agentId, changeHash, auth)`, before any write: `msg.sender == identityRegistry.ownerOf(agentId)` (an operator or approved address is not enough), then a WebAuthn assertion from the agent's passkey over `challengeFor(agentId, changeHash, nonce)` (§9). Success increments the agent's nonce. `revokeMandate` needs the owner only and also increments the nonce (§7). The mandate record still stores the owner who set it, so a mandate goes stale the moment the agent is transferred, even to an owner who already approved other operators. `MandateSet` and `MandateRevoked` keep P4's exact signatures, so one ABI decodes both registries. v2 replaced P4's source in place (P4's deployed source is at commit `6e08223`); it is a new deployment, not an upgrade.
 - **AttestGate** reads the ValidationRegistry. It holds an **immutable list of `(validator, minScore, tagHash)` requirements** (1 to 4), chosen by whoever deploys the consumer contract, not by Attest8004, and fixed at deployment. Every requirement must pass, including the tag: `requestHash` already binds one validator to one exact action, but not to any particular check that validator ran for it, so the gate also requires the stored tag to hash to the requirement's `tagHash` — a verdict from some other check that same validator happens to run for the same action doesn't satisfy it. The constructor rejects a zero `tagHash`, because no real tag hashes to the zero value, so it would be a requirement nothing could ever satisfy.
 
 ### 4.2 Canonical addresses used
@@ -193,19 +195,22 @@ sequenceDiagram
   Op->>ID: approve(AgentRequestForwarder, agentId)  [per agent; the demo's choice, §7]
   Op->>F: setAgentKey(agentId, agent hot key)  [owner wallet tx]
   Op->>W: create passkey (Google Password Manager / iCloud)
-  W->>MR: setPasskey(agentId, qx, qy)  [owner wallet tx]
+  W->>MR: setPasskey(agentId, qx, qy)  [owner wallet tx; once; key on the P-256 curve]
   MR->>ID: ownerOf(agentId) == msg.sender?
   Op->>W: approve mandate (targets, selectors, caps, expiry)
-  W->>W: WebAuthn assertion over challenge = H(chainId, MR, agentId, mandateHash, nonce)
-  W->>MR: setMandate(agentId, mandate, webauthnAuth)
+  W->>W: WebAuthn assertion over challenge = sha256(abi.encode(chainId, MR, agentId, mandateHash, nonceOf(agentId)))
+  W->>MR: setMandate(agentId, mandate, webauthnAuth)  [owner wallet tx]
+  MR->>ID: ownerOf(agentId) == msg.sender?
+  MR->>MR: passkey set? authenticatorData starts with rpIdHash?
+  MR->>MR: type "webauthn.get", challenge, UP + UV flags, low-s (OpenZeppelin WebAuthn)
   MR->>P: verify(sha256(authData ‖ sha256(clientDataJSON)), r, s, qx, qy)
   P-->>MR: 32 bytes ...01 (or empty = invalid)
-  MR-->>Op: MandateSet event
+  MR-->>Op: MandateSet event; nonce + 1
   Op->>W: open /inbox → passkey PRF → X25519 public key
-  W->>MR: setInboxKey(agentId, x25519Pub, webauthnAuth)
+  W->>MR: setInboxKey(agentId, x25519Pub, webauthnAuth)  [owner wallet tx; same two factors]
 ```
 
-> **P4 vs. P6.** This diagram is the P6 target. As built in P4, there is no passkey yet: the owner sets the mandate directly, in this phase — the operator's own wallet calls `setMandate(agentId, mandate)` and `revokeMandate(agentId)` on `MandateRegistry`, authorized by `_authorize` requiring `msg.sender == IdentityRegistry.ownerOf(agentId)`. The `setPasskey`, WebAuthn-assertion and `setInboxKey` steps above (and `/inbox`) arrive in P6, which replaces `_authorize`'s owner check with WebAuthn verification.
+> **P4 vs. P6.** The `MandateRegistry` steps above are MandateRegistry v2 as built in P6 (`contracts/src/MandateRegistry.sol`), built and tested but **not yet deployed**. Until it is, the live registry is P4's: the owner's wallet alone calls `setMandate(agentId, mandate)` and `revokeMandate(agentId)`, with no passkey. In v2, `revokeMandate(agentId)` stays owner-only (no passkey) and also increments the nonce (§7). The web steps (`/approve`, `/inbox`) are still design.
 >
 > **Per-token approval in the demo.** The diagram's `approve(forwarder, agentId)` is a per-token ERC-721 approval, scoped to one agent, which is what the demo uses for both demo agents (§7 has the trade-off against the alternative, a blanket `setApprovalForAll`). An owner with many agents can still choose the blanket approval instead; either way the forwarder only ever calls `validationRequest`.
 
@@ -514,7 +519,8 @@ Encodings are `mandate-v1`'s: every `bigint` (block numbers, timestamps, wei, ga
 | ValidationRegistry | Faithfully storing requests and responses | Judging anything | Open source, no admin, test suite |
 | AgentRequestForwarder | Forwarding `validationRequest` for an agent only from the key its current owner registered | Any other action on the agents it operates for | Open source, immutable, no admin, no funds. Tests pin that `request` makes exactly one call (`validationRequest` on the fixed registry), that the compiled ABI has nothing else, and that ERC-721 calls sent to it fail |
 | Canonical Identity Registry | Who owns or operates an `agentId` | — | Canonical ERC-8004 deployment. **It is an upgradeable (UUPS) proxy with an owner**, so its owner can change ownership and approval logic. Our ValidationRegistry pins its address as an `immutable` and inherits that trust. |
-| P256 precompile `0x0100` | Raw ECDSA P-256 verification | WebAuthn semantics, low-s | Our contract checks the challenge, flags, rpIdHash and low-s, and checks the return length |
+| MandateRegistry (v2) | Storing each agent's mandate, passkey public key and inbox public key, and changing them only with both factors (owner transaction + passkey assertion); revoking with the owner alone | Recovering a lost passkey (there is no recovery, below) | Open source, immutable, no admin, no funds. Tests use real `vm.signP256` assertions against the real precompile: wrong challenge (each field), replay, UV/UP missing, another site's rpIdHash, high-s, a mocked empty precompile return, non-owner, no passkey, rotation, transfer, revoke, cross-operation and cross-agent replay, fuzzed nonces, challenges and indices |
+| P256 precompile `0x0100` | Raw ECDSA P-256 verification | WebAuthn semantics, low-s | OpenZeppelin's `WebAuthn`/`P256` check the challenge, type, flags and low-s, and never treat an empty return as valid; MandateRegistry checks the rpIdHash itself (§9) |
 | `mandate-v1` | A deterministic verdict | — | **Anyone can re-execute it** (§5.5) |
 | `risk-v1` | Advisory risk score and explanation; and its operator, for the claim that the recorded model output is what the model returned | Being "correct". LLMs can be wrong or manipulated | Evidence hash committed onchain and the full trace in public evidence. Re-checking that evidence (`pnpm attest8004 verify`, §5.5) proves three things: **the score follows from the recorded findings; every onchain fact shown to the model was true at `P`; the injection rule was applied.** It does **not** prove that the recorded output came from the model: trusting `risk-v1` means trusting validator B's operator, which is why the gate also requires `mandate-v1`, which anyone can fully reproduce. Never the only gate |
 | Validator storage (HTTP) | Availability | Integrity | `responseHash` onchain |
@@ -528,6 +534,13 @@ Encodings are `mandate-v1`'s: every `bigint` (block numbers, timestamps, wei, ga
 
 **An owner who'd rather not manage one approval per agent can still choose a blanket `setApprovalForAll(forwarder, true)` instead (trade-off, not what the demo does).** It's the only ERC-721 approval that lets a contract act for an agent without a per-token `approve`, but it makes the forwarder an operator for **every** agent that owner holds, now and later, with the power to transfer them. The forwarder never uses that power: its only functions are `setAgentKey` (current owner only) and `request`, which makes one call, `validationRequest`, on a registry fixed at deployment. It has no admin, no upgrade path, no `delegatecall` and no payable function. What's specific to that choice, beyond the two risks above:
 - **A bug in the forwarder** would expose every agent of every owner who approved it that way. That is why it is about 30 lines and pinned by tests (one call per request, the ABI, ERC-721 calls refused, fuzzed calldata). Under per-token approval the same bug is scoped to just the one agent that approved it — which is why the demo uses per-token approval.
+
+**Passkey-approved changes (MandateRegistry v2, P6; not yet deployed):**
+- **Two factors.** Changing a mandate, rotating the passkey or setting the inbox key needs a transaction from the agent's current owner **and** a WebAuthn assertion (user present and user verified) from the passkey bound to the agent. A stolen owner key alone can't widen a mandate, and neither can a phished assertion alone: the assertion only works when the owner's wallet submits it.
+- **The rpId binding.** Every assertion's `authenticatorData` must start with `sha256("attest8004.vercel.app")`, fixed at deployment. Browsers let only that domain (and its subdomains) use that rpId, so a passkey assertion made for any other site is refused (`WrongRpIdHash`). `origin` isn't checked onchain: the browser enforces it. `vercel.app` is a public suffix and Vercel's preview URLs are siblings, not subdomains, so they can't use this rpId.
+- **The passkey is bound to the agent**, not to its owner. It survives a transfer: a new owner can't replace it with `setPasskey`, and needs it for every change; the old owner, who may still hold it, can't use it without being the owner. **Rotate to the buyer's passkey before selling an agent** (`rotatePasskey` needs the owner and the current passkey).
+- **Revoke is the panic button.** `revokeMandate` needs only the owner, because it can only take permissions away, and it increments the nonce. That cancels every approval that is signed but not yet submitted — approval files are public and don't expire, so without it a stolen owner key plus an old approval could reinstall a revoked mandate.
+- **No recovery.** A lost passkey locks the agent's mandate, passkey and inbox-key changes (revoke still works). `setPasskey` checks only that the key is on the curve, not that anyone can sign with it. A timelocked owner reset is on the roadmap (§12).
 
 **Two trust modes:**
 - **Verifiable** (`mandate-v1`): anyone can reproduce the verdict.
@@ -557,10 +570,10 @@ The LLM never sees or holds any private key. Validators sign; the model only pro
 
 ## 9. Security design decisions
 
-- **The P256 return check:** `0x0100` returns *empty bytes* for an invalid signature. We require `returndata.length == 32 && uint256(returndata) == 1`.
-- **Low-s enforced** (the precompile doesn't), so a passkey signature can't be altered into a second valid form.
-- **WebAuthn binding:** the challenge commits to the chain, the contract, the agent, the payload hash and a nonce. Checks cover `type == "webauthn.get"`, the UP and UV flags, and the rpIdHash.
-- **Replay:** a per-agent nonce on mandate and inbox changes. At the gate, each `actionHash` is single use, marked before the external call, under a reentrancy guard.
+- **The P256 return check:** `0x0100` returns *empty bytes* for an invalid signature. MandateRegistry verifies through OpenZeppelin 5.7's `P256.verify` (never a hand-rolled verifier), which reads the answer into zeroed scratch space, so empty is never success. On an empty answer it asks `0x0100` once more with a known-valid probe vector: if the probe answers, the precompile is there and the signature is invalid; if the probe is empty too, the precompile counts as absent and the Solidity verifier decides (a valid signature still passes, at about 250K gas). Both cases are tested with a mocked precompile.
+- **Low-s enforced** (the precompile doesn't): `P256.verify` rejects `s > n/2`, so a passkey signature can't be altered into a second valid form. Real authenticators return a high-s signature about half the time, so clients must flip it to `n − s` before submitting.
+- **WebAuthn binding:** the challenge is `sha256(abi.encode(block.chainid, address(this), agentId, changeHash, nonce))` (`challengeFor`), signed as its 32 raw bytes (43 base64url characters), so an approval is good for one chain, one registry, one agent, one change and one nonce. `changeHash` is the `mandateHash` for `setMandate` (so `MandateSet.mandateHash` is exactly what the passkey approved), `keccak256(abi.encode(ROTATE_PASSKEY, qx, qy))` for `rotatePasskey` and `keccak256(abi.encode(SET_INBOX_KEY, x25519Pub))` for `setInboxKey`; the tags and the encoding lengths keep one operation's approval from being replayed as another (tested). OpenZeppelin's `WebAuthn.verify` checks `type == "webauthn.get"` and the challenge at the given indices, the UP and UV flags (UV required), BE/BS consistency and the signature. **It doesn't check the rpIdHash, so the registry does**: `authenticatorData` must be at least 37 bytes and start with the immutable `rpIdHash`. The origin and the signature counter aren't checked onchain (synced passkeys report a zero counter). A malformed assertion (short `authenticatorData`, an index past the JSON, an empty struct) reverts `InvalidAssertion`, never a panic or an out-of-gas. The expected challenge and change hashes are pinned by `packages/sdk/test/passkey-vectors.json`, computed with `cast` and `sha256sum`.
+- **Replay:** a per-agent nonce on every passkey-approved change (mandate, passkey rotation, inbox key), incremented only on success, and also by `revokeMandate`. At the gate, each `actionHash` is single use, marked before the external call, under a reentrancy guard.
 - **Verdict reuse** across actions, gates, chains or validators is impossible: the gate recomputes each validator's `requestHash` from the call. It also checks the stored validator and `agentId`, so a hash that another agent claimed first doesn't pass. Execution is permissionless, so a validator's withdrawn pass can be front-run (§4.4).
 - **Agent requests:** an agent's hot key never becomes an ERC-721 operator. The owner approves `AgentRequestForwarder`, which forwards only `validationRequest`, only from the key the current owner registered (§5.2, §7).
 - **Gas:** Monad charges on the *gas limit*, so every transaction sets an explicit, tight limit. `mandate-v1`'s response evidence varies in size, so its limit is the estimate plus 20 %, capped at 400,000 (SPEC §4.5). `risk-v1`'s evidence is larger (typically about 8 KB) and capped at 24,576 bytes: anything larger is declined before sending (`EVIDENCE_TOO_LARGE`), and that size was chosen to stay under its planned response cap of 1,000,000 gas (SPEC §4.6) — by calculation, about 0.9M gas for a maximal 24,576-byte document. That is a calculation, not a measurement: the first live response's actual gas will be recorded once the e2e runs.
@@ -607,6 +620,7 @@ The web app is deployed early to a **fixed domain**, because passkeys are bound 
 ## 12. Extension points and roadmap
 
 - **Canonical registry migration:** the same EIP-8004 interface, so offchain clients only switch the address when the official Validation Registry ships. An `AttestGate` consumer has the registry as an immutable and no owner, so it is redeployed pointing at the new registry.
+- **Passkey recovery:** a timelocked owner reset for a lost passkey. P6 has none: a lost passkey locks the agent's mandate, passkey and inbox-key changes (revoke still works), and because the passkey stays with the agent across a transfer, a seller must `rotatePasskey` to the buyer's passkey before transferring the agent (§7).
 - **Economic security:** validator staking and slashing for provably wrong `mandate-v1` verdicts (proved by re-execution).
 - **More validator types:** TEE-attested validators and zk proofs of model inference, using the ERC-8004 `supportedTrust` modes.
 - **Paid validations:** validators charge per request via x402 (Monad facilitator).

@@ -43,6 +43,11 @@ jobs:
         # packages/sdk/test/vectors.json with cast (jq is preinstalled on the runner).
         run: ../packages/sdk/test/vectors.sh --check
 
+      - name: Check passkey vectors against cast
+        # The independent oracle for MandateRegistry v2's challenge, change hashes, selectors and
+        # topics (SPEC §4.2): recomputes packages/sdk/test/passkey-vectors.json with cast and sha256sum.
+        run: ../packages/sdk/test/passkey-vectors.sh --check
+
       - name: Test (unit + fuzz)
         run: forge test -vvv --no-match-path 'test/fork/*'
         env:

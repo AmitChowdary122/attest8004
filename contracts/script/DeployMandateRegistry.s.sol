@@ -8,16 +8,21 @@ import {MandateRegistry} from "../src/MandateRegistry.sol";
 /// (Monad charges for the gas limit, not the gas used). Re-running is a no-op once the contract
 /// exists. Run it with `script/deploy-testnet.sh MandateRegistry`, which first checks Monad's
 /// eth_estimateGas for this call against DEPLOY_GAS (see deployPlan).
-/// The only constructor argument is the Identity Registry. The address depends on it, so another
-/// registry gets another address.
+/// v2 (P6, passkey-approved changes). The constructor arguments are the Identity Registry and
+/// `RP_ID_HASH`; the address depends on both, so another Identity Registry gets another address.
 contract DeployMandateRegistry is Script {
     // CREATE2_FACTORY (0x4e59b448…956C) is inherited from forge-std's CommonBase.
-    bytes32 public constant SALT = keccak256("attest8004.MandateRegistry.v1");
-    /// Literal gas limit for the deploy transaction. Monad testnet eth_estimateGas for this
-    /// call on 3 Oct 2026 was 834,877; the limit is that x 1.2, rounded up to 10k.
-    uint256 public constant DEPLOY_GAS = 1_010_000;
+    bytes32 public constant SALT = keccak256("attest8004.MandateRegistry.v2");
+    /// Literal gas limit for the deploy transaction. Forge's gas for this exact transaction (run
+    /// isolated, so intrinsic and calldata gas are included) was 2,204,014 on 4 Oct 2026; the limit
+    /// is that x 1.2, rounded up to 10k. (For P4, the same measurement was 819,533 against a live
+    /// Monad estimate of 834,877.) Replace it with the live eth_estimateGas x 1.2 before broadcasting.
+    uint256 public constant DEPLOY_GAS = 2_650_000;
 
     address public constant IDENTITY_REGISTRY_TESTNET = 0x8004A818BFB912233c491871b3d84c89A494BD9e;
+    /// The WebAuthn relying party: the fixed web domain the passkeys are created on.
+    string public constant RP_ID = "attest8004.vercel.app";
+    bytes32 public constant RP_ID_HASH = sha256(bytes(RP_ID));
 
     error UnsupportedChain(uint256 chainId);
     error DeployFailed(address predicted);
@@ -30,8 +35,10 @@ contract DeployMandateRegistry is Script {
         vm.stopBroadcast();
 
         require(address(registry.identityRegistry()) == identity, "identity registry mismatch");
+        require(registry.rpIdHash() == RP_ID_HASH, "rpIdHash mismatch");
         console2.log("chainId          ", block.chainid);
         console2.log("IdentityRegistry ", identity);
+        console2.log("rpId             ", RP_ID);
         console2.log("MandateRegistry  ", address(registry));
     }
 
@@ -68,7 +75,7 @@ contract DeployMandateRegistry is Script {
     }
 
     function initCode(address identity) public pure returns (bytes memory) {
-        return abi.encodePacked(type(MandateRegistry).creationCode, abi.encode(identity));
+        return abi.encodePacked(type(MandateRegistry).creationCode, abi.encode(identity, RP_ID_HASH));
     }
 
     function _deployCalldata(address identity) internal pure returns (bytes memory) {
