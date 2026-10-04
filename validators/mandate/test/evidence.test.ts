@@ -9,7 +9,7 @@ import {
 import { getAddress, keccak256, toHex, type Hex } from "viem";
 import { describe, expect, it } from "vitest";
 import { parseApprovalParts } from "../src/collect.ts";
-import { mandateEvidence } from "../src/evidence.ts";
+import { mandateEvidence, requestEvidence } from "../src/evidence.ts";
 import { MANDATE_V1 } from "../src/params.ts";
 import type { MandateAddresses } from "../src/reader.ts";
 import type { MandateInputs, PinnedBlock } from "../src/types.ts";
@@ -204,6 +204,15 @@ describe("mandateEvidence", () => {
       ],
     });
     expect(doc.simulation).toEqual({ ok: true });
+  });
+
+  it("builds `request` with requestEvidence, exported so risk-v1's evidence carries the identical object", () => {
+    const i = inputs({ data: "0xa9059cbb0000000000000000000000000000000000000000000000000000000000000001" });
+    const evidence = mandateEvidence(i, ADDRESSES) as { request: unknown };
+    expect(canonicalJson(requestEvidence(i.request))).toBe(canonicalJson(evidence.request));
+    // Letter case of the input never changes it.
+    const lower = { ...i.request, gate: i.request.gate.toLowerCase() as Hex, target: i.request.target.toLowerCase() as Hex, salt: i.request.salt.toUpperCase().replace("0X", "0x") as Hex };
+    expect(canonicalJson(requestEvidence(lower))).toBe(canonicalJson(evidence.request));
   });
 
   it("records the current owner next to the mandate's own, and null for a missing mandate and spend", () => {

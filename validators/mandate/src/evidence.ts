@@ -1,4 +1,4 @@
-import { getAddress, keccak256, type Hex } from "viem";
+import { getAddress, keccak256, type Address, type Hex } from "viem";
 import { MANDATE_V1 } from "./params.ts";
 import type { MandateAddresses } from "./reader.ts";
 import { selectorOf } from "./rules.ts";
@@ -40,18 +40,7 @@ export function mandateEvidence(inputs: MandateInputs, addresses: MandateAddress
   const { pinned, owner, request, mandate, spend, permissions, simulation } = inputs;
   return {
     block: { number: pinned.number, hash: lower(pinned.hash), timestamp: pinned.timestamp },
-    request: {
-      block: request.block,
-      chainId: request.chainId,
-      gate: getAddress(request.gate),
-      agentId: request.agentId,
-      target: getAddress(request.target),
-      value: request.value,
-      dataHash: keccak256(request.data),
-      selector: selectorOf(request.data),
-      deadline: request.deadline,
-      salt: lower(request.salt),
-    },
+    request: requestEvidence(request),
     params: {
       permissionWindowBlocks: MANDATE_V1.permissionWindowBlocks,
       spendWindowSeconds: MANDATE_V1.spendWindowSeconds,
@@ -108,6 +97,40 @@ export function mandateEvidence(inputs: MandateInputs, addresses: MandateAddress
     simulation: simulation.ok
       ? { ok: true }
       : { ok: false, error: simulation.error, revertSelector: simulation.revertSelector === null ? null : lower(simulation.revertSelector) },
+  };
+}
+
+/** The evidence's `request` object: the action as its `requestHash` commits to it (see {@link mandateEvidence}). */
+export interface EvidenceRequest {
+  block: bigint;
+  chainId: number;
+  gate: Address;
+  agentId: bigint;
+  target: Address;
+  value: bigint;
+  dataHash: Hex;
+  selector: Hex | null;
+  deadline: bigint;
+  salt: Hex;
+}
+
+/**
+ * The `request` object of a `mandate-v1` evidence document (see {@link mandateEvidence}): the
+ * request's block and committed fields, `dataHash` instead of the raw `data`, and its `selector`.
+ * Exported so `risk-v1`'s evidence carries exactly the same object, built by the same code.
+ */
+export function requestEvidence(request: MandateInputs["request"]): EvidenceRequest {
+  return {
+    block: request.block,
+    chainId: request.chainId,
+    gate: getAddress(request.gate),
+    agentId: request.agentId,
+    target: getAddress(request.target),
+    value: request.value,
+    dataHash: keccak256(request.data),
+    selector: selectorOf(request.data),
+    deadline: request.deadline,
+    salt: lower(request.salt),
   };
 }
 

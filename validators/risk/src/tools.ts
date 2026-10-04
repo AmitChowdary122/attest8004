@@ -170,7 +170,7 @@ function collectAddresses(value: JsonValue, out: Set<string>): void {
 }
 
 /** `wei` as a decimal MON string with no floats (e.g. `1_000_000_000_000_000n` -> `"0.001"`). */
-function weiToMon(wei: bigint): string {
+export function weiToMon(wei: bigint): string {
   const negative = wei < 0n;
   const abs = negative ? -wei : wei;
   const whole = abs / 1_000_000_000_000_000_000n;

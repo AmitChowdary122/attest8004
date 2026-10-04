@@ -1,7 +1,7 @@
 import type { Address, Hex } from "viem";
 import { describe, expect, it } from "vitest";
 import { MANDATE_V1 } from "../src/params.ts";
-import { evaluate, selectorOf, type MandateReason } from "../src/rules.ts";
+import { evaluate, MANDATE_REASONS, selectorOf, type MandateReason } from "../src/rules.ts";
 import type { MandateInputs, PermissionEvent } from "../src/types.ts";
 
 const OWNER = "0x1111111111111111111111111111111111111111" as Address;
@@ -354,6 +354,32 @@ describe("evaluate: everything that can go wrong at once, in the exact reason or
       "SIMULATION_FAILED",
     ];
     expect(evaluate(inputs)).toEqual({ score: 0, reasons: expectedOrder });
+  });
+
+  it("MANDATE_REASONS lists all 12 reasons in evaluate()'s order (risk-v1 keeps only these from A's evidence)", () => {
+    expect(MANDATE_REASONS).toEqual([
+      "MANDATE_MISSING",
+      "MANDATE_OWNER_CHANGED",
+      "MANDATE_EXPIRED",
+      "ACTION_EXPIRED",
+      "DEADLINE_AFTER_MANDATE",
+      "TARGET_NOT_ALLOWED",
+      "SELECTOR_NOT_ALLOWED",
+      "VALUE_OVER_TX_CAP",
+      "DAILY_CAP_EXCEEDED",
+      "SPEND_HISTORY_UNREADABLE",
+      "PERMISSION_CHANGED_AFTER_MANDATE",
+      "SIMULATION_FAILED",
+    ]);
+    // evaluate() with no mandate reports MANDATE_MISSING plus the mandate-independent reasons, in this order.
+    const none = baseInputs();
+    none.mandate = null;
+    none.spend = null;
+    none.permissions.events = [afterMandateEvent()];
+    none.simulation = { ok: false, error: "REVERTED", revertSelector: null };
+    const reported = evaluate(none).reasons;
+    expect(reported).toEqual(MANDATE_REASONS.filter((reason) => reported.includes(reason)));
+    expect(reported).toEqual(["MANDATE_MISSING", "PERMISSION_CHANGED_AFTER_MANDATE", "SIMULATION_FAILED"]);
   });
 });
 

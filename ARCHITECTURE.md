@@ -1,6 +1,6 @@
 # Attest8004 — Architecture
 
-> **Status:** design reference v0.1 (2 Oct 2026), kept in sync with the code as it is built (P4, 3 Oct 2026: the owner-set MandateRegistry, the `mandate-v1` validator and `verify`, and per-agent forwarder approvals in the demo). Passkey (WebAuthn) approval of mandates, `risk-v1`, the inbox and the indexer are still design.
+> **Status:** design reference v0.1 (2 Oct 2026), kept in sync with the code as it is built (P4, 3 Oct 2026: the owner-set MandateRegistry, the `mandate-v1` validator and `verify`, and per-agent forwarder approvals in the demo; P5, 4 Oct 2026: the two-validator vault is deployed, and the `risk-v1` validator is built and tested against fakes (§5.6, its evidence in §6), but **not yet live on testnet**: its service, its `verify` and the e2e run come next). Passkey (WebAuthn) approval of mandates, the inbox and the indexer are still design.
 > **Rule:** any change to an interface, flow, data format or trust assumption updates this file **in the same commit**.
 > Build scope and acceptance criteria live in [`SPEC.md`](./SPEC.md). This file explains *how the system works and why*.
 
@@ -226,8 +226,9 @@ sequenceDiagram
   VR-->>VB: ValidationRequest event (rhB)
   VA->>VA: load request JSON, recompute rhA, check mandate + permissions, simulate at block N
   VA->>VR: validationResponse(rhA, 100, evidenceURI, evidenceHash, "mandate-v1")
-  VB->>VB: LLM plans → tools (simulate, Nansen, reputation) → JSON findings → code scores
-  VB->>VR: validationResponse(rhB, 92, evidenceURI, evidenceHash, "risk-v1")
+  VB->>VR: getValidationStatus(rhA) at its pinned block: waits until VA has answered (§5.6)
+  VB->>VB: LLM plans → read-only tools (simulate, Nansen, reputation) → JSON findings → code scores
+  VB->>VR: validationResponse(rhB, 100, evidenceURI, evidenceHash, "risk-v1")
   A->>G: execute(action)
   G->>VR: getValidationStatus(rhA), getValidationStatus(rhB)
   G->>G: check validator, agentId and score for each; consume actionHash
@@ -298,6 +299,53 @@ The output starts with the verdict (`match`, `MISMATCH` or `could not verify`), 
 
 **History.** Every input is re-read from state at `P`, so the RPC must still serve that block. The public testnet RPC serves about 51 days of history (measured 3 Oct 2026); older blocks fail with `-32602`. Older verdicts need an archive RPC: `MONAD_TESTNET_RPC_URL=<archive url> pnpm attest8004 verify <requestHash>`.
 
+### 5.6 Agentic verdict (`risk-v1`)
+
+Built and tested against fakes; not yet live on testnet. The code is `RiskValidator` (`validators/risk/src/validator.ts`) on the SDK's `ValidatorBase`, `runRiskV1` and `readPrerequisite` (`src/run.ts`), the agent loop `runAgent` (`src/agent.ts`) and the evidence (`src/evidence.ts`).
+
+```mermaid
+sequenceDiagram
+  autonumber
+  participant VR as ValidationRegistry
+  participant VB as risk-v1
+  participant C as Chain reads at P
+  participant PG as Prompt Guard
+  participant L as LLM endpoint
+  VR-->>VB: ValidationRequest (rhB)
+  VB->>VB: accepts() — (gate, agent) served, then admission
+  loop every 500 ms, at most 120 s, then throw (the base retries)
+    VB->>C: P = finalized head − 5, never below the request block or the last response block, P.time ≥ deadline − 3,600
+    VB->>C: getValidationStatus(rhA) at P
+  end
+  VB->>C: A's ValidationResponse log and evidence (keccak = responseHash, known reasons kept)
+  Note over VB: another validator or tag → decline MANDATE_V1_VERDICT_INVALID, no model call
+  VB->>PG: screen the calldata's text
+  loop tool loop — at most 8 calls, every request ≤ 7,000 tokens
+    VB->>L: messages + 7 read-only tools, tool_choice auto
+    L-->>VB: tool calls
+    VB->>C: run each tool at P (the two Nansen tools are offchain)
+    VB->>PG: screen tool text (revert reason, Nansen labels) before the model sees it
+  end
+  VB->>L: final call — no tools, strict json_schema
+  L-->>VB: findings JSON
+  VB->>VB: zod, then + PROMPT_INJECTION_SUSPECTED if any field was flagged, score = scoreOf(findings)
+  VB->>VR: validationResponse(rhB, score, data URI ≤ 24,576 bytes, keccak256, "risk-v1")
+```
+
+1. **`accepts()`**, before any RPC: a gate it isn't listed to serve (`GATE_NOT_SERVED`) or a listed gate named for another agent (`GATE_NOT_FOR_AGENT`), in the same `gate:agentId,…` form as `mandate-v1`; then an `Admission` with `mandate-v1`'s limits. A decline is one `warn` line and no response.
+2. **The pin and the prerequisite.** `rhA` is `computeRequestHash` of the same action for validator A (`DEPLOYMENTS[chainId].validators.mandateV1`). `P` is 5 blocks (`PIN_LAG_BLOCKS`) below the finalized head, never below the request's block or the block this process's last response landed in, and `P`'s time must be no more than 3,600 s before the deadline (§6, `block`). At `P`, `readPrerequisite` reads A's status: no request yet (`UnknownRequest`) or no response is *pending*, and `check()` keeps polling; after 120 s it throws and the base retries. **No guard or model call happens before A has answered at `P`.** An answer from another validator, a tag other than `mandate-v1`, or A's evidence not being an inline `data:` URI, not hashing to its `responseHash`, not parsing as `mandate-v1` evidence or naming another request, declines `MANDATE_V1_VERDICT_INVALID: <reason>`. A missing response log is lag: it throws, and the base retries. **A score of 0 from A still runs B**, which explains it. A's reasons are read from A's own evidence, keeping only the 12 known `mandate-v1` codes (`MANDATE_REASONS`). `readPrerequisite` is exported so that `risk-v1`'s `verify` (being built) reads the prerequisite exactly the same way.
+3. **Screening** (§9): the calldata's printable text is one field, `calldata_text`, screened before the first model call; a tool's free text (the simulation's revert reason, Nansen label strings) is screened before its answer goes back to the model. No untrusted text means no guard call.
+4. **The tool loop and the final call**: at most 8 tool calls, every one read-only at `P`; a call past the cap, or one the token budget refuses, is answered `{error: "TOOL_CALL_LIMIT"}`. Then one tool-free call with a strict `json_schema` response format, re-checked by zod. Three notes on what the records mean:
+   - **The trace is complete even where the model didn't see something.** The agent keeps the record of a turn it left out of the final call (nothing ran and it didn't fit) and of an answer it discarded after running (recorded as `TOOL_CALL_LIMIT`, which is what the model saw).
+   - **The 36,000-token per-check cap gates only the tool loop.** The worst case is therefore about 36,000 tokens, plus one more turn, plus 3 final attempts of about 7,000 each: roughly 60,000.
+   - **Failed 400 generations aren't counted in `usage`** (`tool_use_failed`, `json_validate_failed`): the provider reports no usage for them.
+5. **Findings and score**: the model's findings (`origin: "model"`), then code's one `PROMPT_INJECTION_SUSPECTED` (medium) when any screened field scored at least 0.5 (`origin: "code"`). The score is code's alone: 100 with no findings, 80 if all are low, 40 if any is medium, 0 if any is high; `reasons` are the codes in that order.
+6. **Declines from `check()`** (no response, no retry, one `warn` line): `MANDATE_V1_VERDICT_INVALID: <reason>`; `MODEL_OUTPUT_INVALID: <last error>` when the model's output still fails after its shared budget of 2 retries (`tool_use_failed`, `json_validate_failed`, or `parseModelOutput`'s own error text); `EVIDENCE_TOO_LARGE: <n> bytes` when the canonical document is over 24,576 bytes, measured exactly as the base will publish it, so the response's gas cap can never fail a send after the model ran.
+7. **Failures are never verdicts.** A provider failure (429, timeout, 5xx, an unparseable guard answer), an RPC error or the pin timing out makes `check()` throw, with no partial result. The base retries the request from scratch after 15 s, doubling, and gives up after 6 failed cycles (about 8 minutes), logged, with no response. The status is checked again before every send, so a `requestHash` is never answered twice, also after a restart.
+8. **`onResponded()`** records the block the response landed in (the next pin's floor) and settles the admission reservation to the gas limit actually sent; it never throws.
+
+The tag is always `risk-v1`, the request limit the SDK's 16 KB and the deadline horizon 3,600 s, whatever the options say. Logs are JSON lines through the base's logger; they never carry the LLM key, its URL or its host.
+
 ---
 
 ## 6. Data formats
@@ -323,7 +371,7 @@ Validators **must** recompute `requestHash` from this JSON (§4.3) and reject it
 1. It finds requests by polling `eth_getLogs` for `ValidationRequest` with its own `validatorAddress`, from a saved block cursor (the last block it fully processed), at most 100 blocks per query, up to the `finalized` head. A crash at any point re-reads blocks rather than skipping them.
 2. If `getValidationStatus` shows a response already (a non-zero `responseHash` or a tag; its own responses always have both), it does nothing more: `ALREADY_RESPONDED`.
 3. It **doesn't respond at all**, and logs one of these reasons, when the URI isn't an acceptable `data:` URI (`URI_NOT_DATA`, `URI_TOO_LARGE`, `URI_MALFORMED`), the JSON is invalid (`JSON_INVALID`, `SCHEMA_INVALID`), the JSON hashes to another `requestHash` (`HASH_MISMATCH`), names another validator (`WRONG_VALIDATOR`), another agent than the event (`AGENT_MISMATCH`) or another chain (`WRONG_CHAIN`), or the deadline is before the head block's time (`DEADLINE_PASSED`) or more than `maxDeadlineAheadSeconds` (default 3,600) after it (`DEADLINE_TOO_FAR`).
-4. A subclass may turn a valid request away without responding, either before `check()` runs (`accepts()`) or from inside `check()` itself, by returning `{ decline: "<reason>" }` instead of a `CheckResult`. `accepts()` returning `false` declines silently: no response, no retries, logged as `DECLINED` with no detail. `accepts()` or `check()` returning `{ decline: "<reason>" }` does the same but carries that reason: it becomes the outcome's `detail` and is logged once at `warn` (e.g. a per-agent rate limit, a daily gas budget exhausted, or — from `check()` — model output that never passed validation after its retry budget). Either way, the cursor moves past the request: it is not retried in a later cycle. `mandate-v1` declines this way (from `accepts()`) for a gate it doesn't serve, a served gate named for an agent it isn't listed with, a missing, expired or stale mandate, and its admission limits; `risk-v1` (P5) declines from `check()` when the model's output still fails validation after its retries.
+4. A subclass may turn a valid request away without responding, either before `check()` runs (`accepts()`) or from inside `check()` itself, by returning `{ decline: "<reason>" }` instead of a `CheckResult`. `accepts()` returning `false` declines silently: no response, no retries, logged as `DECLINED` with no detail. `accepts()` or `check()` returning `{ decline: "<reason>" }` does the same but carries that reason: it becomes the outcome's `detail` and is logged once at `warn` (e.g. a per-agent rate limit, a daily gas budget exhausted, or — from `check()` — model output that never passed validation after its retry budget). Either way, the cursor moves past the request: it is not retried in a later cycle. `mandate-v1` declines this way (from `accepts()`) for a gate it doesn't serve, a served gate named for an agent it isn't listed with, a missing, expired or stale mandate, and its admission limits; `risk-v1` declines from `accepts()` for an unserved (gate, agent) pair and its admission limits, and from `check()` when validator A's verdict is one it must not run on (`MANDATE_V1_VERDICT_INVALID`), when the model's output still fails validation after its retries (`MODEL_OUTPUT_INVALID`), or when its evidence would be over 24,576 bytes (`EVIDENCE_TOO_LARGE`) (§5.6).
 5. Otherwise it runs the subclass's `check()` and builds the evidence JSON v1 with `buildEvidence()` (the base's fields, then the subclass's own), publishes it as **canonical JSON** so `responseHash = keccak256` of those exact bytes, checks the status again, and sends `validationResponse` with a gas limit resolved from either a literal or an evidence-sized headroom policy (`writeWithGasGuard`), after the estimate guard. Once the send lands, it calls the subclass's `onResponded()` once with the block the response landed in and the gas limit that was sent. It never calls it when a status check found the request already answered, and that includes a send of its own that landed but whose call failed (for example a dropped connection), which the retry then finds answered. So a subclass must not rely on the hook alone: `Admission` reserves each response's gas cap up front, so a missed settle over-counts, never under-counts, and `mandate-v1` records its last approval when it checks, not in the hook, and waits for it before pinning. A subclass can use the hook to record spend or update a rate-limit counter; a throw from it is logged and swallowed, because the response already landed and retrying would double-post. A failed send is retried, after checking that it didn't land. A request that keeps failing stops the cursor just before its block, and the next cycle retries it after a wait that doubles each time (2 s, 4 s, 8 s, … by default); after 5 failed cycles it is logged as given up and skipped. Errors are logged with viem's short message, never the full one, which can contain the RPC URL and its API key.
 
 **Evidence JSON v1.** Referenced by `responseURI`, as **canonical JSON** (the "Reproducibility" constraint: sorted keys, no whitespace, integers above 2^53 as decimal strings — `packages/sdk/src/canonical.ts`; in practice every `bigint` in code, such as a block number, a timestamp, a wei amount or a gas figure, is written as a decimal string, while `chainId` and `logIndex` are JSON numbers). `responseHash = keccak256` of those exact bytes, so a `verify` command can recompute a `CheckResult`, rebuild the document byte for byte with the same `buildEvidence()` the base used, and get the same hash. Every validator's document starts with the base's keys (`schema`, `validator`, `requestHash`, `score`, `reasons`); the validator adds its own after them and may not reuse those. `mandate-v1`'s document (`mandateEvidence()` in `validators/mandate/src/evidence.ts`) is shown here with whitespace for readability; the real bytes have none, and sort these keys alphabetically.
@@ -368,6 +416,60 @@ Validators **must** recompute `requestHash` from this JSON (§4.3) and reject it
 
 Because spend accounting and `verify` read it, `mandate-v1`'s evidence stays public plaintext at `responseURI`.
 
+**`risk-v1`'s document** (`riskEvidence()` in `validators/risk/src/evidence.ts`) is public plaintext too, in the same canonical-JSON `data:` URI form, and at most **24,576 bytes**: a larger one is declined before sending (`EVIDENCE_TOO_LARGE`). A typical run (four tool calls, two findings) is about 8 KB. Abridged, with whitespace:
+```json
+{
+  "schema": "attest8004.evidence.v1",
+  "validator": "risk-v1",
+  "requestHash": "0x…",
+  "score": 0,
+  "reasons": ["FUNDS_FORWARDED", "NEW_CONTRACT"],
+  "block": { "number": "67957232", "hash": "0x…", "timestamp": "1790000000" },
+  "request": {
+    "block": "67957229", "chainId": 10143, "gate": "0x…", "agentId": "1984", "target": "0x…",
+    "value": "1000000000000000", "dataHash": "0x…", "selector": "0x00000000", "deadline": "1790001800", "salt": "0x…"
+  },
+  "params": {
+    "maxToolCalls": 8, "invalidOutputRetries": 2, "reasoningEffort": "low", "temperature": "0.2", "seed": 8004,
+    "guardThreshold": "0.5", "toolOutputMaxBytes": 1536, "maxEvidenceBytes": 24576, "simulationGas": "1000000",
+    "ageProbeBlocks": ["1000", "10000", "100000", "1000000", "2000000"], "scores": { "none": 100, "low": 80, "medium": 40, "high": 0 },
+    "…": "every other RISK_V1 constant",
+    "contracts": { "identityRegistry": "0x…", "reputationRegistry": "0x…", "validationRegistry": "0x…", "mandateRegistry": "0x…", "forwarder": "0x…" },
+    "mandateValidator": "0x…"
+  },
+  "prerequisite": { "validator": "0x…", "requestHash": "0x…", "score": 100, "responseHash": "0x…", "tag": "mandate-v1", "reasons": [] },
+  "llm": {
+    "host": "api.groq.com", "model": "openai/gpt-oss-120b", "servedModels": ["openai/gpt-oss-120b"], "systemFingerprints": ["fp_…"],
+    "promptVersion": "risk-v1/1", "promptHash": "0x…", "usage": { "prompt": 22900, "completion": 300, "total": 23200 }
+  },
+  "classifier": { "model": "meta-llama/llama-prompt-guard-2-86m", "threshold": "0.5", "results": [] },
+  "tools": { "nansen": { "available": false, "reason": "NANSEN_API_KEY is not set" } },
+  "toolCalls": [{ "id": "call_1", "name": "simulate_action", "arguments": {}, "output": { "ok": true, "calls": ["…"], "valueFlows": ["…"] }, "onchain": true }],
+  "modelOutputs": [{ "content": null, "toolCalls": [{ "id": "call_1", "name": "simulate_action", "arguments": "{}" }],
+                     "finishReason": "tool_calls", "servedModel": "openai/gpt-oss-120b", "systemFingerprint": "fp_…",
+                     "usage": { "prompt": 2350, "completion": 50, "total": 2400 } }],
+  "finalOutput": { "raw": "{\"findings\":[…]}", "attempts": 1 },
+  "findings": [{ "code": "FUNDS_FORWARDED", "severity": "high", "explanation": "The target forwards all 0.001 MON to 0x…, which is not in the mandate.",
+                 "sources": ["simulate_action", "get_mandate"], "origin": "model" }]
+}
+```
+
+| Key | Contents |
+|---|---|
+| `block` | `P`: `{number, hash, timestamp}`, as `mandate-v1`'s. |
+| `request` | **Exactly `mandate-v1`'s request object**, built by the same function (`requestEvidence`): `{block, chainId, gate, agentId, target, value, dataHash, selector, deadline, salt}`. |
+| `params` | **Every `RISK_V1` constant** except `tag` (it is `validator`), `promptVersion` (in `llm`) and `guardModel` (`classifier.model`), plus the five contracts the tools read and validator A's address. `verify` is to compare the whole object with the constants (`riskParams`). |
+| `prerequisite` | Validator A's verdict at `P` (§5.6, step 2): its address, `rhA`, its score and `responseHash` from the status at `P`, the tag, and the known reason codes from A's own evidence. |
+| `llm` | The endpoint's **host only** (never the URL or the key), the model requested, the distinct models the provider says it served and the distinct `system_fingerprint`s (first-seen order), `promptVersion`, `promptHash` (keccak256 of the canonical JSON of the initial messages, the tool definitions and the model parameters) and the summed usage. |
+| `classifier` | The guard model, the threshold and every screened field: `{source, text, score, flagged}`, `text` being the highest-scoring chunk and `score` the guard's answer exactly as it returned it (a string). |
+| `tools` | Whether the Nansen tools could answer, and why not. |
+| `toolCalls` | Every answered call in order: `{id, name, arguments, output, onchain}`. `arguments` is the parsed JSON the model sent (or its raw string when that didn't parse), `output` the capped answer. `onchain` is `false` exactly for the two Nansen tools. An `output` of exactly `{"error": "TOOL_CALL_LIMIT"}` is an answer the model never saw. |
+| `modelOutputs` | Every model response, tool turns and final attempts alike: content, raw tool-call arguments, finish reason, served model, fingerprint and usage. Never reasoning text: it is neither requested nor recorded. |
+| `finalOutput` | The last final answer's raw text and how many final calls were made (1-3). |
+| `findings` | The model's findings, then code's, each with `origin: "model" \| "code"`. |
+
+Encodings are `mandate-v1`'s: every `bigint` (block numbers, timestamps, wei, gas) is a decimal string; addresses are EIP-55 and hashes lower-case; the two non-integer constants are decimal strings, `"temperature": "0.2"` and `"guardThreshold": "0.5"`, because canonical JSON has no floats; every other number is a safe integer. `parseRiskEvidence` reads it back strictly: every key is required, an unknown key anywhere outside a tool's `arguments` and `output` is invalid, any float is invalid, every value must have exactly the encoding above, and a tool call must be `onchain` exactly when it isn't a Nansen tool (so a verifier can't be told to skip re-running an onchain one). A parsed document passed back through `riskEvidence` and `buildEvidence` gives the same bytes. **The format freezes once the first live verdict exists**, as `mandate-v1`'s did: the tag, the keys, the encodings and every constant `verify` uses. Only the prompt can still change, under a new `promptVersion`.
+
 **Findings envelope.** Encrypted to the operator's inbox key, served at a URI of its own — **never `responseURI`**, which stays each validator's public plaintext evidence (`mandate-v1`'s and `risk-v1`'s alike; `verify` and spend accounting depend on it, so P7 must not replace it). How that URI is announced (a field inside the evidence, a separate event, or the indexer) is P7's decision, not yet made.
 ```json
 { "schema": "attest8004.findings.v1", "epk": "<x25519 ephemeral pub>", "nonce": "…", "ct": "…" }
@@ -386,7 +488,7 @@ Because spend accounting and `verify` read it, `mandate-v1`'s evidence stays pub
 | Canonical Identity Registry | Who owns or operates an `agentId` | — | Canonical ERC-8004 deployment. **It is an upgradeable (UUPS) proxy with an owner**, so its owner can change ownership and approval logic. Our ValidationRegistry pins its address as an `immutable` and inherits that trust. |
 | P256 precompile `0x0100` | Raw ECDSA P-256 verification | WebAuthn semantics, low-s | Our contract checks the challenge, flags, rpIdHash and low-s, and checks the return length |
 | `mandate-v1` | A deterministic verdict | — | **Anyone can re-execute it** (§5.5) |
-| `risk-v1` | Advisory risk score and explanation | Being "correct". LLMs can be wrong or manipulated | Evidence hash committed onchain, full trace in the evidence, never the only gate |
+| `risk-v1` | Advisory risk score and explanation; and its operator, for the claim that the recorded model output is what the model returned | Being "correct". LLMs can be wrong or manipulated | Evidence hash committed onchain and the full trace in public evidence. Re-checking that evidence (its `verify` is being built) proves three things: **the score follows from the recorded findings; every onchain fact shown to the model was true at `P`; the injection rule was applied.** It does **not** prove that the recorded output came from the model: trusting `risk-v1` means trusting validator B's operator, which is why the gate also requires `mandate-v1`, which anyone can fully reproduce. Never the only gate |
 | Validator storage (HTTP) | Availability | Integrity | `responseHash` onchain |
 | Consumer (gate deployer) | Choosing which validators to require and each one's minimum score | — | Fixed at deployment in immutables, readable with `requirements()` |
 
@@ -401,7 +503,7 @@ Because spend accounting and `verify` read it, `mandate-v1`'s evidence stays pub
 
 **Two trust modes:**
 - **Verifiable** (`mandate-v1`): anyone can reproduce the verdict.
-- **Advisory** (`risk-v1`): adds context but must never be the only check.
+- **Advisory** (`risk-v1`): adds context but must never be the only check. Its score, its onchain facts and its injection rule can be re-checked, but not that the model produced the recorded output.
 
 The recommended gate policy is *require `mandate-v1` = 100 **and** `risk-v1` ≥ threshold*.
 
@@ -431,7 +533,7 @@ The LLM never sees or holds any private key. Validators sign; the model only pro
 - **Replay:** a per-agent nonce on mandate and inbox changes. At the gate, each `actionHash` is single use, marked before the external call, under a reentrancy guard.
 - **Verdict reuse** across actions, gates, chains or validators is impossible: the gate recomputes each validator's `requestHash` from the call. It also checks the stored validator and `agentId`, so a hash that another agent claimed first doesn't pass. Execution is permissionless, so a validator's withdrawn pass can be front-run (§4.4).
 - **Agent requests:** an agent's hot key never becomes an ERC-721 operator. The owner approves `AgentRequestForwarder`, which forwards only `validationRequest`, only from the key the current owner registered (§5.2, §7).
-- **Gas:** Monad charges on the *gas limit*, so every transaction sets an explicit, tight limit. `mandate-v1`'s response evidence varies in size, so its limit is the estimate plus 20 %, capped at 400,000 (SPEC §4.5).
+- **Gas:** Monad charges on the *gas limit*, so every transaction sets an explicit, tight limit. `mandate-v1`'s response evidence varies in size, so its limit is the estimate plus 20 %, capped at 400,000 (SPEC §4.5). `risk-v1`'s evidence is larger (typically about 8 KB) and capped at 24,576 bytes: anything larger is declined before sending, so its planned response cap of 1,000,000 gas (SPEC §4.6) can never fail a send after the model ran.
 - **`mandate-v1`'s daily cap** (SPEC §4.5):
   - **The window is 25 h on approval time** (`lastUpdate > P.timestamp − 90,000`). The registry records when an action was approved, not when it ran. `mandate-v1` fixes the deadline horizon at 1 h, so an approved action runs within an hour, and 25 h of approvals covers every execution in the last 24 h. It can over-count by up to an hour, never under-count.
   - **Spend is this validator's own `mandate-v1` approvals** (score 100) of the agent. An approval counts if the gate consumed it, if it is unconsumed and its deadline hasn't passed at `P`, or if its `consumed()` read gives no answer at `P` (it reverts, runs out of gas, or returns no data, as from a gate with no code): unknown counts, fail closed. One that expired unconsumed never counts, because it can never run.
@@ -439,7 +541,13 @@ The LLM never sees or holds any private key. Validators sign; the model only pro
   - **Caps cover native MON only.** `maxValuePerTx` and `maxValuePerDay` bound the action's `value`. A mandate that allowlists a token-moving selector (`transfer`, `approve`, `transferFrom`, …) doesn't cap the token amount: the agent can move any amount of that token to the allowed targets. Allowlist such selectors only with targets you'd trust with the whole balance; this is on the P10 threat-model list.
 - **A validator key signs only its own validator's verdicts, and the gate enforces it.** Spend counts only `mandate-v1`-tagged approvals, and validator A's key signs nothing but `mandate-v1` (the P3 stub validator, which signed with it, is deleted). This is now also a **contract rule**, not just key discipline: each `AttestGate` requirement carries its own `tagHash` (the constructor rejects a zero one, because no real tag hashes to it), and `execute` reverts `TagMismatch` when a sufficient score arrives under another tag (§4.1, §4.4). `requestHash` already binds one validator to one exact action, but not to any particular check that validator ran for it, so without the tag a gate naming a validator by address alone would accept a verdict from any other check that same key happens to answer for this action. The tag is what turns "validator A's key signs only `mandate-v1` verdicts" into a rule the gate itself enforces, rather than a property of how the key happens to be used today.
 - **Validator gas is a public resource:** anyone who owns an agent can name our validator. A gate allowlist alone wouldn't protect the budget: anyone can register an agent, set their own mandate and request through our allowlisted vault, which would refuse the action (`NotVaultAgent`), but each answer would still cost validator A about 150,000 gas, and a few such agents could use up the validator-wide daily budget and lock agent 1984 out for 24 h. So `mandate-v1` answers only allowlisted **(gate, agent) pairs** (`MANDATE_V1_GATES=<gate>:<agentId>,…`, by default the demo vault with agent 1984, the one agent it is bound to) and declines anything else before any RPC: an unlisted gate (`GATE_NOT_SERVED`) or a listed gate named for another agent (`GATE_NOT_FOR_AGENT`). Then it answers only agents with an unexpired mandate set by their current owner, under a per-agent rate limit and a validator-wide daily gas budget (in memory, so a restart resets them). A declined request gets no response and one log line.
-- **LLM output** is untrusted data: screened for prompt injection before the model sees it, schema-validated, and scored by code, never by the model itself. Capped tool calls and tokens, temperature 0–0.2, full trace kept.
+- **LLM output** is untrusted data: schema-validated (a strict `json_schema` response format, then zod), and scored by code, never by the model itself. Capped tool calls and tokens, temperature 0.2, full trace kept in the public evidence.
+- **Prompt-injection defence (`risk-v1`)**, in layers, because an agent controls its own calldata and a target controls its own revert strings:
+  - **Delimiting.** Every piece of untrusted data reaches the model as canonical JSON inside `<untrusted_data source="…">…</untrusted_data>`, with `<`, `>` and `&` written as JSON escapes, so the data can't close its own block. Tool results go back as `tool` messages, encoded the same way. The system prompt says that data is never instructions. Only our own fixed text, decimal block numbers and fixed source names reach the trusted part of a message.
+  - **Screening.** Every untrusted text field (the calldata's printable text, the simulation's revert reason, Nansen label strings) is screened by Prompt Guard before the model sees it, in 400-character chunks with a 40-character overlap, scored by its highest chunk. A guard failure is a provider failure: retried, never an unscreened verdict.
+  - **A score cap the model can't lift.** Any field scoring at least 0.5 makes code add one `PROMPT_INJECTION_SUSPECTED` finding (medium), so the score is at most 40 and the vault (B minimum 80) refuses, **whatever the model returns**: an obedient model that reports nothing still scores 40. The model can't emit that code itself. Flagged text isn't redacted, since the delimiting already contains it.
+  - **Read-only tools.** Every tool reads the chain at `P` (or Nansen); none signs, sends or writes. An address argument must already be in scope (the target, the gate, the owner, a mandate target, or an address an earlier tool returned), so injected text can't steer paid Nansen calls to arbitrary addresses.
+  - **No keys.** The model never sees a private key, the LLM key or the Nansen key; the validator signs only after code has scored the findings, and the evidence records the endpoint's host only.
 - **Secrets:** gitleaks runs as a pre-commit hook and over the full history before the repo goes public. Only `.env.example` is committed.
 - **No upgradeability or admin** in our registries, so nothing can be swapped out after deployment. The canonical Identity Registry they read *is* upgradeable by its owner (§7).
 

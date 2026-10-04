@@ -17,6 +17,26 @@ export type MandateReason =
   | "PERMISSION_CHANGED_AFTER_MANDATE"
   | "SIMULATION_FAILED";
 
+/**
+ * Every {@link MandateReason}, in the order `evaluate()` reports them. `risk-v1` keeps only these
+ * codes when it reads validator A's reasons back from A's own evidence (the P5 plan's Decision 22a),
+ * so nothing else that evidence might carry ever reaches its model as one of A's reasons.
+ */
+export const MANDATE_REASONS: readonly MandateReason[] = [
+  "MANDATE_MISSING",
+  "MANDATE_OWNER_CHANGED",
+  "MANDATE_EXPIRED",
+  "ACTION_EXPIRED",
+  "DEADLINE_AFTER_MANDATE",
+  "TARGET_NOT_ALLOWED",
+  "SELECTOR_NOT_ALLOWED",
+  "VALUE_OVER_TX_CAP",
+  "DAILY_CAP_EXCEEDED",
+  "SPEND_HISTORY_UNREADABLE",
+  "PERMISSION_CHANGED_AFTER_MANDATE",
+  "SIMULATION_FAILED",
+];
+
 const EVEN_HEX = /^0x([0-9a-fA-F]{2})*$/;
 
 /**
