@@ -14,7 +14,7 @@ import { realpathSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { deploymentsFor } from "@attest8004/sdk";
 import { MANDATE_V1, statusOrUnknown, verifyContextFor, verifyRequest, type VerifyReport, type VerifyVerdict } from "@attest8004/validator-mandate";
-import { RISK_V1, riskAddressesFor, verifyRiskRequest, viemRiskReader, type RiskReader, type RiskVerifyReport } from "@attest8004/validator-risk";
+import { RISK_V1, riskContractsFor, verifyRiskRequest, viemRiskReader, type RiskReader, type RiskVerifyReport } from "@attest8004/validator-risk";
 import { BaseError, createPublicClient, http, type Hex } from "viem";
 import { jsonText, mandateText, printable, riskJson, riskText, unknownTagJson, unknownTagText } from "./text.ts";
 
@@ -133,9 +133,11 @@ export async function main(argv: readonly string[], env: Record<string, string |
 /**
  * The real verifiers over one `RiskReader` (a `risk-v1` reader is also everything `mandate-v1`'s
  * `verify` reads), checking against the SDK's recorded deployment for `chainId` (`DEPLOYMENTS`):
- * `mandate-v1` with `verifyContextFor(chainId)`; `risk-v1` with the same deploy blocks, the contracts
- * `risk-v1` reads (`riskAddressesFor`) and validator A (`validators.mandateV1`). Throws for a chain with
- * no recorded deployment. The two verify functions can be replaced, for tests.
+ * `mandate-v1` with `verifyContextFor(chainId)` (its contracts from `mandateContractsFor`); `risk-v1`
+ * with the same ValidationRegistry deploy block, the contracts `risk-v1` reads (`riskContractsFor`) and
+ * validator A (`validators.mandateV1`). Both carry the whole MandateRegistry history, so each verdict is
+ * re-checked against the registry valid at its own pin. Throws for a chain with no recorded deployment.
+ * The two verify functions can be replaced, for tests.
  */
 export function chainVerifiers(o: {
   reader: RiskReader;
@@ -145,7 +147,7 @@ export function chainVerifiers(o: {
 }): Verifiers {
   const { reader, chainId } = o;
   const mandateContext = verifyContextFor(chainId);
-  const riskContext = { ...mandateContext, addresses: riskAddressesFor(chainId), mandateValidator: deploymentsFor(chainId).validators.mandateV1 };
+  const riskContext = { ...mandateContext, contracts: riskContractsFor(chainId), mandateValidator: deploymentsFor(chainId).validators.mandateV1 };
   const verifyMandate = o.verifyMandate ?? verifyRequest;
   const verifyRisk = o.verifyRisk ?? verifyRiskRequest;
   return {
@@ -165,7 +167,7 @@ export function nodeCliDeps(): CliDeps {
     async connect(rpcUrl) {
       const publicClient = createPublicClient({ transport: http(rpcUrl) });
       const chainId = await publicClient.getChainId();
-      return chainVerifiers({ reader: viemRiskReader({ publicClient, addresses: riskAddressesFor(chainId) }), chainId });
+      return chainVerifiers({ reader: viemRiskReader({ publicClient, contracts: riskContractsFor(chainId) }), chainId });
     },
     stdout: (text) => process.stdout.write(`${text}\n`),
     stderr: (text) => process.stderr.write(`${text}\n`),

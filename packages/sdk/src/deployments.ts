@@ -1,5 +1,14 @@
 import type { Address } from "viem";
 
+/**
+ * One MandateRegistry in a chain's history (ARCHITECTURE §6): valid from `fromBlock`, its deployment
+ * block, until the block before the next entry's `fromBlock`, or for good when it is the last entry.
+ */
+export interface MandateRegistryEpoch {
+  address: Address;
+  fromBlock: bigint;
+}
+
 /** One chain's recorded Attest8004 addresses and demo-agent data. */
 export interface Deployment {
   identityRegistry: Address;
@@ -13,12 +22,16 @@ export interface Deployment {
    */
   validationRegistryDeployBlock: bigint;
   agentRequestForwarder: Address;
-  mandateRegistry: Address;
   /**
-   * The block the MandateRegistry was deployed in. `mandate-v1` reads the mandate at its pinned block,
-   * so it never pins before this, and `verify` rejects evidence pinned before it without reading there.
+   * Every MandateRegistry the chain has had, ascending by `fromBlock`; a redeploy appends an entry and
+   * never edits an earlier one. A read at block `b` goes to the registry valid at `b`
+   * ({@link mandateRegistryAt}): `mandate-v1` and `risk-v1` read the mandate there and record that
+   * registry in their evidence, so a verdict pinned on an older registry still re-verifies after a
+   * redeploy. The first entry's `fromBlock` is the earliest block they ever pin (before it there is no
+   * mandate to read, and `verify` rejects such a pin without reading there). New transactions go to
+   * the last entry ({@link currentMandateRegistry}).
    */
-  mandateRegistryDeployBlock: bigint;
+  mandateRegistries: readonly MandateRegistryEpoch[];
   /** The two reference validators (SPEC §4.5 `mandate-v1`; §4.6 `risk-v1`, built, funded and tested). */
   validators: {
     mandateV1: Address;
@@ -58,10 +71,11 @@ export const DEPLOYMENTS = {
     validationRegistryDeployBlock: 67_604_893n,
     /** Forwards validationRequest for an agent's registered hot key (SPEC §4.4). */
     agentRequestForwarder: "0x1451F3C36545b191d3642f759D59f21DcFD657B2",
-    /** Per-agent spending mandate (SPEC §4.2): owner-set until P6 adds the WebAuthn hook. */
-    mandateRegistry: "0x2523197373ef813E19b5b14Ef2984130868cD17c",
-    /** Deploy tx 0x1222b700…3ca0b84 (docs/deployments.md). */
-    mandateRegistryDeployBlock: 67_842_487n,
+    /**
+     * The per-agent spending mandate's registries (SPEC §4.2). P4's, owner-set: deploy tx 0x1222b700…3ca0b84
+     * (docs/deployments.md). P6's v2 (owner + passkey) is appended once it is deployed.
+     */
+    mandateRegistries: [{ address: "0x2523197373ef813E19b5b14Ef2984130868cD17c", fromBlock: 67_842_487n }],
     validators: {
       /** `mandate-v1`, deterministic. */
       mandateV1: "0xa62DaB21E0C0F57e94B3ed6e675F214199989e92",
@@ -85,4 +99,43 @@ export function deploymentsFor(chainId: number): Deployment {
   const deployment = (DEPLOYMENTS as Record<number, Deployment>)[chainId];
   if (!deployment) throw new Error(`no Attest8004 deployment recorded for chain ${chainId}`);
   return deployment;
+}
+
+/** A block before a chain's first MandateRegistry: there is no mandate to read there, nor a registry to record. */
+export class MandateRegistryNotDeployedError extends Error {
+  /** The block asked about. */
+  readonly block: bigint;
+  /** The first block any MandateRegistry is valid at: the history's first `fromBlock`. */
+  readonly firstBlock: bigint;
+
+  constructor(block: bigint, firstBlock: bigint) {
+    super(`no MandateRegistry is recorded at block ${block}: the first one is valid from block ${firstBlock}`);
+    this.name = "MandateRegistryNotDeployedError";
+    this.block = block;
+    this.firstBlock = firstBlock;
+  }
+}
+
+/**
+ * The MandateRegistry valid at `block`: the last entry of the (ascending) history whose `fromBlock` is
+ * at or before it, so the switch block itself already belongs to the new registry. Throws
+ * {@link MandateRegistryNotDeployedError} before the first entry, and an `Error` for an empty history.
+ * Takes a `Deployment`, or anything else carrying a history (the validators' contracts).
+ */
+export function mandateRegistryAt(deployment: Pick<Deployment, "mandateRegistries">, block: bigint): MandateRegistryEpoch {
+  const history = deployment.mandateRegistries;
+  for (let i = history.length - 1; i >= 0; i--) {
+    const entry = history[i] as MandateRegistryEpoch;
+    if (entry.fromBlock <= block) return entry;
+  }
+  const first = history[0];
+  if (first === undefined) throw new Error("no MandateRegistry recorded: the history is empty");
+  throw new MandateRegistryNotDeployedError(block, first.fromBlock);
+}
+
+/** The MandateRegistry new transactions go to: the history's last entry. Throws for an empty history. */
+export function currentMandateRegistry(deployment: Pick<Deployment, "mandateRegistries">): MandateRegistryEpoch {
+  const current = deployment.mandateRegistries.at(-1);
+  if (current === undefined) throw new Error("no MandateRegistry recorded: the history is empty");
+  return current;
 }

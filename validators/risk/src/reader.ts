@@ -1,27 +1,48 @@
 import { deploymentsFor, identityRegistryAbi, reputationRegistryAbi } from "@attest8004/sdk";
 import {
   concurrencyLimit,
-  mandateAddressesFor,
+  mandateAddressesAt,
+  mandateContractsFor,
   viemMandateReader,
   type MandateAddresses,
+  type MandateContracts,
   type VerifyReader,
 } from "@attest8004/validator-mandate";
 import { decodeFunctionResult, encodeFunctionData, getAddress, toHex, zeroAddress, type Address, type Hex, type PublicClient } from "viem";
 import type { CallFrame, TraceResult } from "./trace.ts";
 
-/** The contracts `risk-v1` reads: `mandate-v1`'s four, plus the canonical ERC-8004 ReputationRegistry. */
+/**
+ * The contracts `risk-v1` reads: `mandate-v1`'s, with the MandateRegistry history, plus the canonical
+ * ERC-8004 ReputationRegistry.
+ */
+export type RiskContracts = MandateContracts & { reputationRegistry: Address };
+
+/**
+ * The contracts `risk-v1` reads at one block: `mandate-v1`'s four (the MandateRegistry valid there),
+ * plus the ReputationRegistry. Its evidence records these (`params.contracts`).
+ */
 export interface RiskAddresses extends MandateAddresses {
   reputationRegistry: Address;
 }
 
 /**
- * The contracts `risk-v1` reads on `chainId` (the SDK's `DEPLOYMENTS`): `mandate-v1`'s four addresses
- * plus `reputationRegistry`. Throws for a chain with none (same as {@link mandateAddressesFor}).
+ * The contracts `risk-v1` reads on `chainId` (the SDK's `DEPLOYMENTS`): `mandate-v1`'s, the whole
+ * MandateRegistry history included, plus `reputationRegistry`. Throws for a chain with none (same as
+ * `mandateContractsFor`).
  */
-export function riskAddressesFor(chainId: number): RiskAddresses {
-  const mandate = mandateAddressesFor(chainId);
+export function riskContractsFor(chainId: number): RiskContracts {
+  const mandate = mandateContractsFor(chainId);
   const { reputationRegistry } = deploymentsFor(chainId);
   return { ...mandate, reputationRegistry };
+}
+
+/**
+ * The addresses at block `block` (`mandate-v1`'s `mandateAddressesAt`, plus the ReputationRegistry):
+ * what a verdict pinned there records. Throws `MandateRegistryNotDeployedError` before the first
+ * MandateRegistry.
+ */
+export function riskAddressesAt(contracts: RiskContracts, block: bigint): RiskAddresses {
+  return { ...mandateAddressesAt(contracts, block), reputationRegistry: contracts.reputationRegistry };
 }
 
 /**
@@ -101,7 +122,8 @@ function hasRpcErrorCode(error: unknown, wanted: number): boolean {
 
 /**
  * A `RiskReader` over viem: `mandate-v1`'s own reader (`viemMandateReader`, so `risk-v1` reuses its
- * state reads, logs and `responseLog` unchanged) plus the reads `risk-v1`'s tools need. **One RPC
+ * state reads, logs and `responseLog` unchanged, the MandateRegistry resolved by block from
+ * `contracts`' history) plus the reads `risk-v1`'s tools need. **One RPC
  * budget**: both share one limiter of `concurrency` requests (default 8), so the two together never
  * send more than that many requests to the RPC at once (`mandate-v1`'s own "one RPC budget" doc
  * applies here unchanged). **Raw requests only**: `trace`/`code`/`balance`/`nonce` and the ERC-8004
@@ -110,12 +132,12 @@ function hasRpcErrorCode(error: unknown, wanted: number): boolean {
  * failure or a malformed answer (`result: null`, an odd-length `eth_call`/`eth_getCode` answer, a
  * `debug_traceCall` answer with no callTracer frame) always throws instead of becoming a tool output.
  */
-export function viemRiskReader(options: { publicClient: PublicClient; addresses: RiskAddresses; concurrency?: number }): RiskReader {
-  const { publicClient, addresses, concurrency = 8 } = options;
+export function viemRiskReader(options: { publicClient: PublicClient; contracts: RiskContracts; concurrency?: number }): RiskReader {
+  const { publicClient, contracts, concurrency = 8 } = options;
   const limited = concurrencyLimit(concurrency);
-  const mandateReader = viemMandateReader({ publicClient, addresses, limit: limited });
-  const identityRegistry = getAddress(addresses.identityRegistry);
-  const reputationRegistry = getAddress(addresses.reputationRegistry);
+  const mandateReader = viemMandateReader({ publicClient, contracts, limit: limited });
+  const identityRegistry = getAddress(contracts.identityRegistry);
+  const reputationRegistry = getAddress(contracts.reputationRegistry);
 
   /** One raw `eth_call` at block `at` (never viem's `call`/`readContract`; see the module doc). */
   const ethCall = async (call: { to: Address; data: Hex; from?: Address; value?: bigint; gas?: bigint }, at: bigint): Promise<Hex> => {

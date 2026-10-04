@@ -34,13 +34,25 @@ import type { PromptGuard } from "../../src/guard.ts";
 import { ProviderError, type ChatClient, type ChatRequest, type ChatResponse } from "../../src/llm.ts";
 import { NANSEN_NO_KEY_REASON, type NansenClient } from "../../src/nansen.ts";
 import { RISK_V1 } from "../../src/params.ts";
-import { riskAddressesFor, type RiskAddresses, type RiskReader } from "../../src/reader.ts";
+import { riskAddressesAt, riskContractsFor, type RiskAddresses, type RiskContracts, type RiskReader } from "../../src/reader.ts";
 import type { CallFrame, TraceResult } from "../../src/trace.ts";
 
 export const CHAIN_ID = 10_143;
 export const MODEL = "openai/gpt-oss-120b";
 const deployment = DEPLOYMENTS[10143];
-export const ADDRESSES: RiskAddresses = riskAddressesFor(CHAIN_ID);
+/** The recorded testnet MandateRegistry (P4's). */
+export const P4_REGISTRY: Address = deployment.mandateRegistries[0].address;
+/** A second MandateRegistry for the history tests (P6's v2, appended after P4's). */
+export const V2_REGISTRY = getAddress("0xb60adb7d3cfb303dd501fef6ae136131e655e231");
+/** The fake chain's MandateRegistry "deployment": before every block these tests use (the real one is 67,842,487). */
+export const MANDATE_REGISTRY_FROM = 950n;
+/** The recorded testnet contracts, with this MandateRegistry history (default: P4's from {@link MANDATE_REGISTRY_FROM}). */
+export function contractsWith(mandateRegistries: RiskContracts["mandateRegistries"] = [{ address: P4_REGISTRY, fromBlock: MANDATE_REGISTRY_FROM }]): RiskContracts {
+  return { ...riskContractsFor(CHAIN_ID), mandateRegistries };
+}
+export const CONTRACTS: RiskContracts = contractsWith();
+/** The contracts at every block these tests use: the recorded ones, P4's MandateRegistry among them. */
+export const ADDRESSES: RiskAddresses = riskAddressesAt(CONTRACTS, MANDATE_REGISTRY_FROM);
 export const VALIDATOR_A: Address = deployment.validators.mandateV1;
 export const VALIDATOR_B: Address = deployment.validators.riskV1;
 export const GATE: Address = deployment.demoAgentVault;

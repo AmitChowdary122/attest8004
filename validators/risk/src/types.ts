@@ -102,7 +102,8 @@ export interface GuardResult {
 /**
  * The evidence's `params` (ARCHITECTURE §6): **every** `RISK_V1` constant except `tag` (it is the
  * document's `validator`), `promptVersion` (recorded in `llm`) and `guardModel` (recorded as
- * `classifier.model`), plus the contracts the tools read and validator A's address. Integers that may
+ * `classifier.model`), plus the contracts the tools read at the pinned block `P` (the MandateRegistry
+ * valid there, `riskAddressesAt`) and validator A's address. Integers that may
  * pass 2^53 are `bigint` (written as decimal strings), and the two non-integer constants,
  * `temperature` and `guardThreshold`, are decimal strings (`"0.2"`, `"0.5"`; Ruling R4: canonical JSON
  * has no floats). `verify` compares the whole object with `riskParams`, so a verdict reached under any

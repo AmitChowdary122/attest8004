@@ -14,6 +14,7 @@
  */
 import { buildEvidence, canonicalJson, computeRequestHash, decodeJsonDataUri } from "@attest8004/sdk";
 import {
+  firstMandateRegistryBlock,
   MAX_EVIDENCE_URI_BYTES,
   mandateRequestOf,
   requestAt,
@@ -29,7 +30,7 @@ import { injectionFinding, parseModelOutput, scoreOf } from "./findings.ts";
 import { chunkText, parseGuardScore } from "./guard.ts";
 import type { NansenClient } from "./nansen.ts";
 import { RISK_V1 } from "./params.ts";
-import type { RiskAddresses, RiskReader } from "./reader.ts";
+import { riskAddressesAt, type RiskContracts, type RiskReader } from "./reader.ts";
 import { calldataFields, readPrerequisite } from "./run.ts";
 import { collectAddresses, initialScope, runTool, untrustedFromFlows, untrustedFromProfile, type UntrustedField } from "./tools.ts";
 import type { GuardResult, JsonValue, RecordedFinding } from "./types.ts";
@@ -48,14 +49,15 @@ import type { GuardResult, JsonValue, RecordedFinding } from "./types.ts";
  *   canonical JSON of what it parses to (no honest run writes other bytes), or its tool-call records
  *   don't pair one to one with the tool calls in its recorded model responses (by id, in order, same
  *   name; Nansen and `TOOL_CALL_LIMIT` records included): the agent answers every call it is sent.
- * - `PIN_OUT_OF_RANGE`: `P` is before the request's block or the MandateRegistry's deployment, or
- *   after the block the response landed in.
+ * - `PIN_OUT_OF_RANGE`: `P` is before the request's block or the first MandateRegistry in the history,
+ *   or after the block the response landed in.
  * - `PIN_MISMATCH`: block `P`'s hash or timestamp on the chain isn't the evidence's `block`.
  * - `REQUEST_BLOCK_WRONG`, `REQUEST_INVALID`: as `mandate-v1`'s (`requestAt`): the request wasn't made
  *   in the block the evidence names, or its JSON must not be answered.
  * - `REQUEST_FIELDS_MISMATCH`: the evidence's `request` (or `requestHash`) isn't the request recomputed
  *   from the request JSON on the chain.
- * - `PARAMS_MISMATCH`: `params`, `classifier.model` or `classifier.threshold` isn't the constants'.
+ * - `PARAMS_MISMATCH`: `params` (with the contracts valid at `P`), `classifier.model` or
+ *   `classifier.threshold` isn't the constants'.
  * - `PREREQUISITE_MISMATCH`: validator A's verdict at `P`, read as validator B reads it
  *   (`readPrerequisite`), isn't the evidence's `prerequisite`, or wasn't answered (or valid) at `P`.
  * - `FINDINGS_MISMATCH`: the findings don't follow from the record: an untrusted text the model was
@@ -142,8 +144,11 @@ export interface RiskVerifyReport {
   findings: RecordedFinding[];
 }
 
-/** What `verifyRiskRequest` checks against besides the chain: `mandate-v1`'s context, the contracts `risk-v1` reads, and validator A. */
-export type RiskVerifyContext = VerifyContext & { addresses: RiskAddresses; mandateValidator: Address };
+/**
+ * What `verifyRiskRequest` checks against besides the chain: `mandate-v1`'s context, the contracts
+ * `risk-v1` reads (with the MandateRegistry history), and validator A.
+ */
+export type RiskVerifyContext = VerifyContext & { contracts: RiskContracts; mandateValidator: Address };
 
 /**
  * The response to the request isn't tagged `risk-v1`, so there is no `risk-v1` verdict to re-check. The
@@ -177,14 +182,14 @@ const TOOL_CALL_LIMIT = canonicalJson({ error: "TOOL_CALL_LIMIT" });
  *    (→ `EVIDENCE_NOT_DECODED`), hashing to `responseHash` (→ `EVIDENCE_HASH_MISMATCH`), parsed strictly
  *    and canonical, its tool-call records paired one to one with the recorded model tool calls
  *    (→ `EVIDENCE_INVALID`).
- * 2. `P` between the request's block (and the MandateRegistry's deployment) and the response's block
+ * 2. `P` between the request's block (and the first MandateRegistry's `fromBlock`) and the response's block
  *    (→ `PIN_OUT_OF_RANGE`, nothing read at `P`); the request log and JSON, as `mandate-v1`'s
  *    `requestAt` reads them (→ `REQUEST_BLOCK_WRONG`, `REQUEST_INVALID`, `REQUEST_NOT_FOUND`); block
  *    `P`'s hash and timestamp (→ `PIN_MISMATCH`).
  * 3. The evidence's `request` and `requestHash`, against the request recomputed from its JSON
  *    (→ `REQUEST_FIELDS_MISMATCH`).
- * 4. `params` (with `context`'s contracts and validator A), `classifier.model` and
- *    `classifier.threshold`, against the constants (→ `PARAMS_MISMATCH`).
+ * 4. `params` (with `context`'s contracts valid at `P`, `riskAddressesAt`, and validator A),
+ *    `classifier.model` and `classifier.threshold`, against the constants (→ `PARAMS_MISMATCH`).
  * 5. Validator A's verdict on the same action at `P`, read with `readPrerequisite`
  *    (→ `PREREQUISITE_MISMATCH`).
  * 6. Screening coverage for the calldata's text and every recorded Nansen label, and the classifier →
@@ -206,7 +211,7 @@ const TOOL_CALL_LIMIT = canonicalJson({ error: "TOOL_CALL_LIMIT" });
  */
 export async function verifyRiskRequest(o: { reader: RiskReader; requestHash: Hex; context: RiskVerifyContext }): Promise<RiskVerifyReport> {
   const { reader } = o;
-  const { addresses, mandateValidator, validationRegistryDeployBlock, mandateRegistryDeployBlock } = o.context;
+  const { contracts, mandateValidator, validationRegistryDeployBlock } = o.context;
   const requestHash = o.requestHash.toLowerCase() as Hex;
   const head = await reader.finalized();
 
@@ -247,7 +252,7 @@ export async function verifyRiskRequest(o: { reader: RiskReader; requestHash: He
   // 2. The pin range, the request log and JSON, and block P itself.
   const pinnedBlock = doc.block.number;
   const requestBlock = doc.request.block;
-  if (pinnedBlock < requestBlock || pinnedBlock > response.block || pinnedBlock < mandateRegistryDeployBlock) {
+  if (pinnedBlock < requestBlock || pinnedBlock > response.block || pinnedBlock < firstMandateRegistryBlock(contracts)) {
     return report(evidenceFields, ["PIN_OUT_OF_RANGE"]);
   }
   const pinned = await reader.block(pinnedBlock);
@@ -262,7 +267,7 @@ export async function verifyRiskRequest(o: { reader: RiskReader; requestHash: He
   if (doc.requestHash !== requestHash || !sameJson(written.request, rebuiltRequest)) return report(fields, ["REQUEST_FIELDS_MISMATCH"]);
 
   // 4. The params are the constants.
-  const rebuiltParams = riskEvidence(withRecord(doc, { params: riskParams(addresses, mandateValidator) })).params;
+  const rebuiltParams = riskEvidence(withRecord(doc, { params: riskParams(riskAddressesAt(contracts, pinnedBlock), mandateValidator) })).params;
   if (!sameJson(written.params, rebuiltParams) || doc.classifier.model !== RISK_V1.guardModel || doc.classifier.threshold !== String(RISK_V1.guardThreshold)) {
     return report(fields, ["PARAMS_MISMATCH"]);
   }

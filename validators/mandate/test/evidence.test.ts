@@ -28,7 +28,7 @@ const ADDRESSES: MandateAddresses = {
   validationRegistry: deployment.validationRegistry,
   identityRegistry: deployment.identityRegistry,
   forwarder: deployment.agentRequestForwarder,
-  mandateRegistry: deployment.mandateRegistry,
+  mandateRegistry: deployment.mandateRegistries[0].address,
 };
 
 function inputs(over: { value?: bigint; data?: Hex; salt?: Hex; agentId?: bigint } & Partial<MandateInputs> = {}): MandateInputs {
@@ -152,7 +152,7 @@ describe("mandateEvidence", () => {
       simulationGas: "1000000",
       identityRegistry: deployment.identityRegistry,
       agentRequestForwarder: deployment.agentRequestForwarder,
-      mandateRegistry: deployment.mandateRegistry,
+      mandateRegistry: deployment.mandateRegistries[0].address,
     });
     expect(doc.mandate).toEqual({
       allowedTargets: [TARGET, OWNER],
@@ -223,6 +223,26 @@ describe("mandateEvidence", () => {
     const none = mandateEvidence(inputs({ mandate: null, spend: null }), ADDRESSES);
     expect(none.mandate).toBeNull();
     expect(none.spend).toBeNull();
+  });
+
+  it("records the passkey permission events under their own names, from the MandateRegistry (same tag: only v2 emits them)", () => {
+    const i = inputs();
+    const passkeyEvent = (block: bigint, event: "PasskeySet" | "PasskeyRotated", afterMandate: boolean) => ({
+      block,
+      logIndex: 0,
+      txHash: keccak256(toHex(`${event} tx`)),
+      emitter: "MandateRegistry" as const,
+      event,
+      afterMandate,
+    });
+    const events = [passkeyEvent(P.number - 10_005n, "PasskeySet", false), passkeyEvent(P.number - 5n, "PasskeyRotated", true)];
+    const doc = JSON.parse(canonicalJson(mandateEvidence(inputs({ permissions: { ...i.permissions, events } }), ADDRESSES))) as {
+      permissions: { events: unknown[] };
+    };
+    expect(doc.permissions.events).toEqual([
+      { block: (P.number - 10_005n).toString(), logIndex: 0, txHash: keccak256(toHex("PasskeySet tx")), emitter: "MandateRegistry", event: "PasskeySet", afterMandate: false },
+      { block: (P.number - 5n).toString(), logIndex: 0, txHash: keccak256(toHex("PasskeyRotated tx")), emitter: "MandateRegistry", event: "PasskeyRotated", afterMandate: true },
+    ]);
   });
 
   it("records unreadable spend and a failed simulation as they are", () => {

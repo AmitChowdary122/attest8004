@@ -1,6 +1,6 @@
 import { DEPLOYMENTS, validationRegistryAbi, type ValidationStatus } from "@attest8004/sdk";
-import { mandateAddressesFor, SpendLogNotFoundError, verifyContextFor, type VerifyReport } from "@attest8004/validator-mandate";
-import { riskAddressesFor, type RiskReader, type RiskVerifyReport } from "@attest8004/validator-risk";
+import { mandateContractsFor, SpendLogNotFoundError, verifyContextFor, type VerifyReport } from "@attest8004/validator-mandate";
+import { riskContractsFor, type RiskReader, type RiskVerifyReport } from "@attest8004/validator-risk";
 import { encodeErrorResult, getAddress, HttpRequestError, InvalidParamsRpcError, keccak256, RpcRequestError, toHex, type Hex } from "viem";
 import { describe, expect, it } from "vitest";
 import { chainVerifiers, DEFAULT_RPC_URL, main, USAGE, type CliDeps, type Verifiers } from "../src/cli.ts";
@@ -737,7 +737,7 @@ describe("chainVerifiers: the real verifiers over one reader", () => {
     return { reader, reads };
   }
 
-  it("passes each verifier the reader and the chain's recorded deployment", async () => {
+  it("passes each verifier the reader and the chain's recorded deployment: both contexts are built from mandateContractsFor / riskContractsFor", async () => {
     const { reader } = statusReader(() => {
       throw new Error("not read");
     });
@@ -757,17 +757,20 @@ describe("chainVerifiers: the real verifiers over one reader", () => {
     await expect(verifiers.mandate(HASH)).resolves.toBe(matchReport);
     await expect(verifiers.risk(HASH)).resolves.toBe(riskMatchReport);
     expect(seen[0]).toEqual({ reader, requestHash: HASH, ...verifyContextFor(10_143) });
-    expect(seen[0]).toMatchObject({ addresses: mandateAddressesFor(10_143), validationRegistryDeployBlock: 67_604_893n, mandateRegistryDeployBlock: 67_842_487n });
+    expect(seen[0]).toEqual({ reader, requestHash: HASH, contracts: mandateContractsFor(10_143), validationRegistryDeployBlock: 67_604_893n });
     expect(seen[1]).toEqual({
       reader,
       requestHash: HASH,
       context: {
-        addresses: riskAddressesFor(10_143),
+        contracts: riskContractsFor(10_143),
         mandateValidator: DEPLOYMENTS[10143].validators.mandateV1,
         validationRegistryDeployBlock: 67_604_893n,
-        mandateRegistryDeployBlock: 67_842_487n,
       },
     });
+    // The whole MandateRegistry history, so a verdict re-runs against the registry valid at its pin.
+    expect((seen[1] as { context: { contracts: { mandateRegistries: unknown } } }).context.contracts.mandateRegistries).toEqual(
+      DEPLOYMENTS[10143].mandateRegistries,
+    );
   });
 
   it("status reads the tag at the finalized head: null when the registry has no such request, '' with no response", async () => {

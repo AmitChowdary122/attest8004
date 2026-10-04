@@ -30,7 +30,11 @@ function decimalString(value: number): string {
   return String(value);
 }
 
-/** The `params` every honest `risk-v1` verdict records on a chain (see {@link RiskParams}). */
+/**
+ * The `params` every honest `risk-v1` verdict records on a chain (see {@link RiskParams}), given the
+ * contracts valid at its pinned block `P` (`riskAddressesAt(contracts, P)`: the MandateRegistry valid
+ * there) and validator A.
+ */
 export function riskParams(addresses: RiskAddresses, mandateValidator: Address): RiskParams {
   return {
     maxToolCalls: RISK_V1.maxToolCalls,

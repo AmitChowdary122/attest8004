@@ -13,7 +13,7 @@ import {
 import { BaseError, keccak256, zeroHash, type Address, type Hash, type Hex } from "viem";
 import type { PreimageCache } from "./collect.ts";
 import { MANDATE_V1 } from "./params.ts";
-import type { MandateAddresses, MandateReader } from "./reader.ts";
+import { firstMandateRegistryBlock, mandateAddressesAt, type MandateContracts, type MandateReader } from "./reader.ts";
 import { mandateRequestOf, runMandateV1 } from "./run.ts";
 import type { PinnedBlock } from "./types.ts";
 
@@ -50,12 +50,12 @@ export type MandateValidatorOptions = Omit<ValidatorOptions, "tag" | "maxDeadlin
    */
   maxRequestBytes?: number;
   reader: MandateReader;
-  addresses: MandateAddresses;
   /**
-   * The block the MandateRegistry in `addresses` was deployed in (`deploymentsFor(chainId)`). `P` is
-   * never below it: the mandate can't be read before it, and `verify` rejects such a pin.
+   * The contracts, with the MandateRegistry history (`mandateContractsFor(chainId)`). A check pinned at
+   * `P` records the addresses valid at `P` (`mandateAddressesAt`). `P` is never below the first
+   * registry's `fromBlock`: the mandate can't be read before it, and `verify` rejects such a pin.
    */
-  mandateRegistryDeployBlock: bigint;
+  contracts: MandateContracts;
   /**
    * The (gate, agent) pairs whose requests this validator answers, e.g. a DemoAgentVault and the one
    * agent it is bound to. Gates are compared case-insensitively. A gate may be listed with several agents.
@@ -89,7 +89,7 @@ export type MandateValidatorOptions = Omit<ValidatorOptions, "tag" | "maxDeadlin
  *   every log read at `P` stays under the head of an RPC node that lags the one that answered
  *   `finalized` by fewer blocks than that (a log range past a node's head comes back short, silently).
  *   `P` is never below the request's own block, the block this process's last response landed in, or
- *   the MandateRegistry's deployment block: until the head is that far ahead, it waits. It also waits
+ *   the first MandateRegistry's `fromBlock`: until the head is that far ahead, it waits. It also waits
  *   until `P`'s time is no more than 3,600 s before the action's deadline: the base checked that horizon
  *   at the cycle head, which can be later than `P`, and `verify` checks it at `P`. And if this
  *   process's most recent approval is answered at `latest` but not yet at `P` (a send that landed but
@@ -109,8 +109,9 @@ export class MandateValidator extends ValidatorBase {
   private readonly chain: ValidatorChain;
   private readonly cursorStore: CursorStore;
   private readonly reader: MandateReader;
-  private readonly addresses: MandateAddresses;
-  private readonly mandateRegistryDeployBlock: bigint;
+  private readonly contracts: MandateContracts;
+  /** The first MandateRegistry's `fromBlock`: the pin's floor. */
+  private readonly firstRegistryBlock: bigint;
   /** The agents each served gate (lower-case) is answered for. */
   private readonly gates: ReadonlyMap<string, ReadonlySet<bigint>>;
   private readonly admission: Admission;
@@ -127,7 +128,7 @@ export class MandateValidator extends ValidatorBase {
   private caughtUp = false;
 
   constructor(options: MandateValidatorOptions) {
-    const { reader, addresses, mandateRegistryDeployBlock, gates, admission, pinTimeoutMs, pinPollMs, cache, ...base } = options;
+    const { reader, contracts, gates, admission, pinTimeoutMs, pinPollMs, cache, ...base } = options;
     const log = options.log ?? jsonLineLog;
     super({
       ...base,
@@ -137,11 +138,12 @@ export class MandateValidator extends ValidatorBase {
       maxRequestBytes: MAX_REQUEST_URI_BYTES,
     });
     if (gates.length === 0) throw new Error("a MandateValidator needs at least one gate to serve");
+    if (contracts.mandateRegistries.length === 0) throw new Error("a MandateValidator needs at least one MandateRegistry in its history");
     this.chain = options.chain;
     this.cursorStore = options.cursor;
     this.reader = reader;
-    this.addresses = addresses;
-    this.mandateRegistryDeployBlock = mandateRegistryDeployBlock;
+    this.contracts = contracts;
+    this.firstRegistryBlock = firstMandateRegistryBlock(contracts);
     const served = new Map<string, Set<bigint>>();
     for (const { gate, agentId } of gates) {
       const key = gate.toLowerCase();
@@ -211,7 +213,7 @@ export class MandateValidator extends ValidatorBase {
     const mandateRequest = mandateRequestOf(request.json, requestHash, blockNumber);
     const result = await runMandateV1({
       reader: this.reader,
-      addresses: this.addresses,
+      addresses: mandateAddressesAt(this.contracts, pinned.number),
       validator: this.chain.address,
       request: mandateRequest,
       pinned,
@@ -256,7 +258,7 @@ export class MandateValidator extends ValidatorBase {
   private async pin(requestHash: Hex, requestBlock: bigint, deadline: bigint): Promise<PinnedBlock> {
     let floor = requestBlock;
     if (this.lastResponseBlock !== undefined && this.lastResponseBlock > floor) floor = this.lastResponseBlock;
-    if (this.mandateRegistryDeployBlock > floor) floor = this.mandateRegistryDeployBlock;
+    if (this.firstRegistryBlock > floor) floor = this.firstRegistryBlock;
     const approval = this.pendingApproval;
     // Only an approval that landed can be waited for; one that never landed has nothing to show at P.
     const mustSee = approval !== undefined && answered(await this.chain.status(approval)) ? approval : undefined;

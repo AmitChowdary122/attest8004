@@ -3,7 +3,7 @@ import { HttpRequestError, getAddress, keccak256, toHex, zeroHash, type Hex } fr
 import { generatePrivateKey, privateKeyToAccount } from "viem/accounts";
 import { beforeEach, describe, expect, it } from "vitest";
 import { FakeRpc, RevertError, revert } from "../../../packages/sdk/test/helpers/fake-rpc.ts";
-import { checkRpcServesRiskV1, viemRiskReader, type RiskAddresses } from "../src/reader.ts";
+import { checkRpcServesRiskV1, viemRiskReader, type RiskAddresses, type RiskContracts } from "../src/reader.ts";
 
 const ADDRESSES: RiskAddresses = {
   validationRegistry: getAddress("0xc4a4d0ceb3971cbe7a2536494ac106f2cd9f9a8f"),
@@ -11,6 +11,14 @@ const ADDRESSES: RiskAddresses = {
   forwarder: getAddress("0x1451f3c36545b191d3642f759d59f21dcfd657b2"),
   mandateRegistry: getAddress("0x2523197373ef813e19b5b14ef2984130868cd17c"),
   reputationRegistry: getAddress("0x8004b663056a597dffe9eccc1965a193b7388713"),
+};
+/** The reader's contracts: `ADDRESSES`, with that one MandateRegistry valid at every block. */
+const CONTRACTS: RiskContracts = {
+  validationRegistry: ADDRESSES.validationRegistry,
+  identityRegistry: ADDRESSES.identityRegistry,
+  forwarder: ADDRESSES.forwarder,
+  reputationRegistry: ADDRESSES.reputationRegistry,
+  mandateRegistries: [{ address: ADDRESSES.mandateRegistry, fromBlock: 0n }],
 };
 const GATE = getAddress("0x23bfbd12545ccd1501dda1b65a54518fd6212a96");
 const TARGET = getAddress("0x00000000000000000000000000000000000000b2");
@@ -32,7 +40,7 @@ beforeEach(() => {
 /** `retryCount: 0` so a transient failure surfaces at once instead of after viem's backoff. */
 function reader(concurrency?: number) {
   const { publicClient } = rpc.clients(account, { retryCount: 0 });
-  return viemRiskReader({ publicClient, addresses: ADDRESSES, ...(concurrency ? { concurrency } : {}) });
+  return viemRiskReader({ publicClient, contracts: CONTRACTS, ...(concurrency ? { concurrency } : {}) });
 }
 
 function callsOf(method: string) {
@@ -238,6 +246,22 @@ describe("viemRiskReader: still a VerifyReader (mandate-v1's own methods pass th
     const r = reader();
     await expect(r.finalized()).resolves.toEqual({ number: P - 1n, hash: keccak256(toHex(P - 1n)), timestamp: expect.any(BigInt) });
     await expect(r.mandate(AGENT, P)).resolves.toBeNull(); // mandateHash zero: never set
+  });
+
+  it("mandate() reads the MandateRegistry valid at the block it is given, from the whole history", async () => {
+    const v2 = getAddress("0xb60adb7d3cfb303dd501fef6ae136131e655e231");
+    const unset = [
+      { allowedTargets: [], allowedSelectors: [], maxValuePerTx: 0n, maxValuePerDay: 0n, validUntil: 0n },
+      zeroHash,
+      "0x0000000000000000000000000000000000000000",
+      0n,
+    ];
+    rpc.onCall(ADDRESSES.mandateRegistry, mandateRegistryAbi, "getMandate", () => unset).onCall(v2, mandateRegistryAbi, "getMandate", () => unset);
+    const contracts: RiskContracts = { ...CONTRACTS, mandateRegistries: [...CONTRACTS.mandateRegistries, { address: v2, fromBlock: P }] };
+    const r = viemRiskReader({ publicClient: rpc.clients(account, { retryCount: 0 }).publicClient, contracts });
+    await r.mandate(AGENT, P - 1n);
+    await r.mandate(AGENT, P);
+    expect(callsOf("eth_call").map((c) => getAddress((c.params[0] as { to: Hex }).to))).toEqual([ADDRESSES.mandateRegistry, v2]);
   });
 });
 

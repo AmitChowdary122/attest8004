@@ -1,4 +1,5 @@
-// set-mandate's decisions (scripts/src/set-mandate.ts), kept free of env and RPC so they can be unit tested.
+// set-mandate's decisions, kept free of env and RPC so they can be unit tested. P4's owner-only script
+// (scripts/src/set-mandate.ts) was removed with MandateRegistry v2, which needs a passkey for every change.
 import type { Hex } from "viem";
 
 /**

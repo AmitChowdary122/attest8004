@@ -17,6 +17,8 @@ import {
   blockAt,
   calldataWith,
   chatResponse,
+  CONTRACTS,
+  contractsWith,
   FakeChain,
   fakeAction,
   fakeGuard,
@@ -27,6 +29,7 @@ import {
   landMandateVerdict,
   MODEL,
   NO_FINDINGS,
+  P4_REGISTRY,
   PASS_THROUGH,
   passThroughTrace,
   requestPair,
@@ -35,6 +38,7 @@ import {
   toolCall,
   tsOf,
   unavailableNansen,
+  V2_REGISTRY,
   VALIDATOR_A,
   VALIDATOR_B,
   type Step,
@@ -49,7 +53,7 @@ beforeEach(() => {
 });
 
 /** The fake chain's registries "deployed" before every block these tests use. */
-const CONTEXT = { addresses: ADDRESSES, mandateValidator: VALIDATOR_A, validationRegistryDeployBlock: 900n, mandateRegistryDeployBlock: 950n };
+const CONTEXT = { contracts: CONTRACTS, mandateValidator: VALIDATOR_A, validationRegistryDeployBlock: 900n };
 const REQUEST_BLOCK = 1_000n;
 const PIN = 1_004n;
 const RESPONSE_BLOCK = 1_010n;
@@ -683,7 +687,8 @@ describe("verifyRiskRequest: tampering is a mismatch", () => {
     post(rhB, doc);
     expect((await verify(rhB)).verdict).toBe("match");
     const reads = reader.calls.length;
-    expectProblem(await verifyRiskRequest({ reader, requestHash: rhB, context: { ...CONTEXT, mandateRegistryDeployBlock: PIN + 1n } }), "PIN_OUT_OF_RANGE");
+    const later = contractsWith([{ address: P4_REGISTRY, fromBlock: PIN + 1n }]);
+    expectProblem(await verifyRiskRequest({ reader, requestHash: rhB, context: { ...CONTEXT, contracts: later } }), "PIN_OUT_OF_RANGE");
     expect(reader.calls.slice(reads)).not.toContain("block"); // nothing read at P
   });
 
@@ -724,6 +729,30 @@ describe("verifyRiskRequest: tampering is a mismatch", () => {
     threshold.classifier.threshold = "0.9";
     post(rhB, threshold);
     expectProblem(await verify(rhB), "PARAMS_MISMATCH");
+  });
+
+  it("verify: a pre-switch verdict's params match with a two-entry history; params naming v2 for a pre-switch pin are PARAMS_MISMATCH", async () => {
+    // Recorded while the history held P4's registry alone (CONTEXT); v2 is appended later, from the block after P.
+    const { rhB, doc } = await honest({ steps: riskyRun() });
+    expect(doc.params.contracts).toMatchObject({ mandateRegistry: P4_REGISTRY });
+    const twoRegistries = contractsWith([
+      { address: P4_REGISTRY, fromBlock: 950n },
+      { address: V2_REGISTRY, fromBlock: PIN + 1n },
+    ]);
+    const withHistory = (requestHash: Hex) => verifyRiskRequest({ reader, requestHash, context: { ...CONTEXT, contracts: twoRegistries } });
+    expect(await withHistory(rhB)).toMatchObject({ verdict: "match", problems: [] });
+
+    const v2 = clone(doc);
+    (v2.params.contracts as Record<string, unknown>).mandateRegistry = V2_REGISTRY;
+    post(rhB, v2);
+    expectProblem(await withHistory(rhB), "PARAMS_MISMATCH");
+
+    // At v2's first block the same params are what an honest run records.
+    const atSwitch = contractsWith([
+      { address: P4_REGISTRY, fromBlock: 950n },
+      { address: V2_REGISTRY, fromBlock: PIN },
+    ]);
+    expect(await verifyRiskRequest({ reader, requestHash: rhB, context: { ...CONTEXT, contracts: atSwitch } })).toMatchObject({ verdict: "match" });
   });
 
   it("an edited request.value → REQUEST_FIELDS_MISMATCH", async () => {

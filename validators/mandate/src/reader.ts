@@ -5,10 +5,12 @@ import {
   deploymentsFor,
   identityRegistryAbi,
   mandateRegistryAbi,
+  mandateRegistryAt,
   MAX_LOG_BLOCK_RANGE,
   validationRegistryAbi,
   validationRequestEvent,
   validationResponseEvent,
+  type MandateRegistryEpoch,
   type ValidationStatus,
 } from "@attest8004/sdk";
 import {
@@ -27,7 +29,20 @@ import { concurrencyLimit, mapWithConcurrency, type Limiter } from "./concurrenc
 import { MANDATE_V1 } from "./params.ts";
 import type { MandateRecord, PermissionEvent, PinnedBlock, Simulation } from "./types.ts";
 
-/** The contracts `mandate-v1` reads. */
+/**
+ * The contracts `mandate-v1` reads, with the MandateRegistry's whole history (ARCHITECTURE §6): a read
+ * at block `b` goes to the registry valid at `b`, and {@link mandateAddressesAt} gives the addresses at
+ * one block.
+ */
+export interface MandateContracts {
+  validationRegistry: Address;
+  identityRegistry: Address;
+  forwarder: Address;
+  /** Ascending by `fromBlock`, as the SDK's `Deployment.mandateRegistries`. Never empty. */
+  mandateRegistries: readonly MandateRegistryEpoch[];
+}
+
+/** The contracts `mandate-v1` reads at one block: the one MandateRegistry valid there. Its evidence records these. */
 export interface MandateAddresses {
   validationRegistry: Address;
   identityRegistry: Address;
@@ -36,17 +51,43 @@ export interface MandateAddresses {
 }
 
 /**
- * The contracts `mandate-v1` reads on `chainId`, from the SDK's recorded deployment (`DEPLOYMENTS`):
- * what the service runs with and what `verify` recomputes with. Throws for a chain with none.
+ * The contracts `mandate-v1` reads on `chainId`, from the SDK's recorded deployment (`DEPLOYMENTS`),
+ * the whole MandateRegistry history included: what the service runs with and what `verify` recomputes
+ * with. Throws for a chain with none.
  */
-export function mandateAddressesFor(chainId: number): MandateAddresses {
+export function mandateContractsFor(chainId: number): MandateContracts {
   const deployment = deploymentsFor(chainId);
   return {
     validationRegistry: deployment.validationRegistry,
     identityRegistry: deployment.identityRegistry,
     forwarder: deployment.agentRequestForwarder,
-    mandateRegistry: deployment.mandateRegistry,
+    mandateRegistries: deployment.mandateRegistries,
   };
+}
+
+/**
+ * The addresses at block `block`: the MandateRegistry valid there (the SDK's `mandateRegistryAt`) and
+ * the other three. A verdict pinned at `P` reads and records `mandateAddressesAt(contracts, P)`. Throws
+ * `MandateRegistryNotDeployedError` before the first registry.
+ */
+export function mandateAddressesAt(contracts: MandateContracts, block: bigint): MandateAddresses {
+  return {
+    validationRegistry: contracts.validationRegistry,
+    identityRegistry: contracts.identityRegistry,
+    forwarder: contracts.forwarder,
+    mandateRegistry: mandateRegistryAt(contracts, block).address,
+  };
+}
+
+/**
+ * The first block any MandateRegistry in `contracts` is valid at: the earliest block `mandate-v1` ever
+ * pins (there is no mandate to read before it), and the floor `verify` checks a pin against. Throws for
+ * an empty history.
+ */
+export function firstMandateRegistryBlock(contracts: MandateContracts): bigint {
+  const first = contracts.mandateRegistries[0];
+  if (first === undefined) throw new Error("no MandateRegistry recorded: the history is empty");
+  return first.fromBlock;
 }
 
 /** A `ValidationResponse` log: its `responseURI`, and where it is. */
@@ -68,7 +109,10 @@ export interface MandateReader {
   /** The finalized head. */
   finalized(): Promise<PinnedBlock>;
   block(number: bigint): Promise<PinnedBlock>;
-  /** `MandateRegistry.getMandate(agentId)` at `at`; `null` when its `mandateHash` is zero (never set, or revoked). */
+  /**
+   * `MandateRegistry.getMandate(agentId)` at `at`, on the registry valid at `at`; `null` when its
+   * `mandateHash` is zero (never set, or revoked).
+   */
   mandate(agentId: bigint, at: bigint): Promise<MandateRecord | null>;
   ownerOf(agentId: bigint, at: bigint): Promise<Address>;
   /** `getAgentValidations(agentId)` at `at`, in the registry's order. */
@@ -85,8 +129,11 @@ export interface MandateReader {
   /**
    * The permission-change events in `[fromBlock, toBlock]`: the Identity Registry's `Transfer` and
    * `Approval` of token `agentId` and `ApprovalForAll` by `owner`, the forwarder's `AgentKeySet` for
-   * `agentId`, and the MandateRegistry's `MandateSet`/`MandateRevoked` for `agentId`, sorted by
-   * `(block, logIndex)`.
+   * `agentId`, and the MandateRegistry's `MandateSet`/`MandateRevoked`/`PasskeySet`/`PasskeyRotated`
+   * for `agentId`, sorted by `(block, logIndex)`. The MandateRegistry read is the one valid at
+   * `toBlock` only: a window straddling a registry switch reads the new registry alone (the current
+   * mandate on it was set after the switch, so the old registry's events, all before it, couldn't
+   * change a verdict; and whatever the old one emits after the switch governs nothing).
    */
   permissionLogs(
     fromBlock: bigint,
@@ -124,7 +171,14 @@ const approvalEvent = getAbiItem({ abi: identityRegistryAbi, name: "Approval" })
 const approvalForAllEvent = getAbiItem({ abi: identityRegistryAbi, name: "ApprovalForAll" });
 const mandateSetEvent = getAbiItem({ abi: mandateRegistryAbi, name: "MandateSet" });
 const mandateRevokedEvent = getAbiItem({ abi: mandateRegistryAbi, name: "MandateRevoked" });
+const passkeySetEvent = getAbiItem({ abi: mandateRegistryAbi, name: "PasskeySet" });
+const passkeyRotatedEvent = getAbiItem({ abi: mandateRegistryAbi, name: "PasskeyRotated" });
 
+/**
+ * Every event that changes who may act for an agent or what it may do. The MandateRegistry's
+ * `InboxKeySet` isn't one: it moves no funds and grants no rights. Only a v2 registry emits the passkey
+ * events, so they can appear only in evidence pinned on one, under the same `mandate-v1` tag.
+ */
 const PERMISSION_EVENTS = [
   transferEvent,
   approvalEvent,
@@ -132,12 +186,17 @@ const PERMISSION_EVENTS = [
   agentKeySetEvent,
   mandateSetEvent,
   mandateRevokedEvent,
+  passkeySetEvent,
+  passkeyRotatedEvent,
 ] as const;
 
 /**
  * A `MandateReader` over viem, reading the given contracts. It is also the `VerifyReader` `verify`
  * runs on: `responseEvidence` is `responseLog`'s URI.
  *
+ * - **The registry valid at the block.** `mandate()` reads the MandateRegistry valid at `at`, and
+ *   `permissionLogs()` the one valid at `toBlock` (`P`), from `contracts.mandateRegistries`. A block
+ *   before the first registry throws `MandateRegistryNotDeployedError` before any request.
  * - **One RPC budget.** Every JSON-RPC request this reader sends, from any method and any number of
  *   concurrent callers (the collector reads spend and permission logs side by side), goes through
  *   one first-in, first-out limiter of `concurrency` requests (default 8), so a rate-limited public
@@ -158,7 +217,7 @@ const PERMISSION_EVENTS = [
  */
 export function viemMandateReader(options: {
   publicClient: PublicClient;
-  addresses: MandateAddresses;
+  contracts: MandateContracts;
   /** The most JSON-RPC requests in flight at once, across every method (default 8). Ignored when `limit` is given. */
   concurrency?: number;
   /** A limiter to use instead of making one from `concurrency`, e.g. to share one RPC budget across several readers. */
@@ -166,12 +225,14 @@ export function viemMandateReader(options: {
 }): VerifyReader {
   const { publicClient, concurrency = 8 } = options;
   const limited = options.limit ?? concurrencyLimit(concurrency);
-  const validationRegistry = getAddress(options.addresses.validationRegistry);
-  const identityRegistry = getAddress(options.addresses.identityRegistry);
-  const forwarder = getAddress(options.addresses.forwarder);
-  const mandateRegistry = getAddress(options.addresses.mandateRegistry);
+  const { contracts } = options;
+  const validationRegistry = getAddress(contracts.validationRegistry);
+  const identityRegistry = getAddress(contracts.identityRegistry);
+  const forwarder = getAddress(contracts.forwarder);
+  /** The MandateRegistry valid at block `at` (throws before the first one). */
+  const mandateRegistryAtBlock = (at: bigint): Address => getAddress(mandateRegistryAt(contracts, at).address);
 
-  const emitterOf = (address: Address): PermissionEvent["emitter"] | null => {
+  const emitterOf = (address: Address, mandateRegistry: Address): PermissionEvent["emitter"] | null => {
     const normalized = getAddress(address);
     if (normalized === identityRegistry) return "IdentityRegistry";
     if (normalized === forwarder) return "AgentRequestForwarder";
@@ -247,7 +308,10 @@ export function viemMandateReader(options: {
 
     async mandate(agentId, at) {
       const data = await ethCall(
-        { to: mandateRegistry, data: encodeFunctionData({ abi: mandateRegistryAbi, functionName: "getMandate", args: [agentId] }) },
+        {
+          to: mandateRegistryAtBlock(at),
+          data: encodeFunctionData({ abi: mandateRegistryAbi, functionName: "getMandate", args: [agentId] }),
+        },
         at,
       );
       const [mandate, mandateHash, owner, setAtBlock] = decodeFunctionResult({
@@ -330,6 +394,7 @@ export function viemMandateReader(options: {
     },
 
     async permissionLogs(fromBlock, toBlock, filter) {
+      const mandateRegistry = mandateRegistryAtBlock(toBlock);
       const windows = blockWindows(fromBlock, toBlock, MAX_LOG_BLOCK_RANGE);
       // The limiter bounds the requests; mapping at the same width also stops new windows after a failure.
       const perWindow = await mapWithConcurrency(windows, concurrency, (window) =>
@@ -345,7 +410,7 @@ export function viemMandateReader(options: {
       const owner = getAddress(filter.owner);
       const events: Omit<PermissionEvent, "afterMandate">[] = [];
       for (const log of perWindow.flat()) {
-        const emitter = emitterOf(log.address);
+        const emitter = emitterOf(log.address, mandateRegistry);
         let relevant = false;
         switch (log.eventName) {
           case "Transfer":
@@ -360,6 +425,8 @@ export function viemMandateReader(options: {
             break;
           case "MandateSet":
           case "MandateRevoked":
+          case "PasskeySet":
+          case "PasskeyRotated":
             relevant = emitter === "MandateRegistry" && log.args.agentId === filter.agentId;
             break;
         }

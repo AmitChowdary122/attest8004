@@ -12,7 +12,7 @@ import {
 import { decodeErrorResult, keccak256, stringToBytes, zeroAddress, zeroHash, type Address, type Hex } from "viem";
 import { MAX_EVIDENCE_URI_BYTES, type PreimageCache } from "./collect.ts";
 import { MANDATE_V1 } from "./params.ts";
-import { mandateAddressesFor, type MandateAddresses, type VerifyReader } from "./reader.ts";
+import { firstMandateRegistryBlock, mandateAddressesAt, mandateContractsFor, type MandateContracts, type VerifyReader } from "./reader.ts";
 import { mandateRequestOf, runMandateV1 } from "./run.ts";
 import type { PermissionEvent, PinnedBlock, SpendEntry } from "./types.ts";
 
@@ -43,7 +43,7 @@ import type { PermissionEvent, PinnedBlock, SpendEntry } from "./types.ts";
  *   validator must not answer such a request (the SDK's base never does, and `MandateValidator` never
  *   pins where its deadline is that far ahead), so a mismatch.
  * - `PIN_OUT_OF_RANGE`: the evidence's pinned block is before the request's block, after the block
- *   the response landed in, or before the MandateRegistry was deployed. A mismatch: an honest
+ *   the response landed in, or before the first MandateRegistry in the history. A mismatch: an honest
  *   validator pins between the first two, and can't pin before the third (it reads the mandate there).
  * - `SCORE_MISMATCH`: the onchain score isn't the recomputed one. A mismatch.
  * - `RESPONSE_HASH_MISMATCH`: the onchain `responseHash` isn't the hash of the recomputed evidence,
@@ -106,20 +106,20 @@ export interface VerifyReport {
 }
 
 /**
- * What `verifyRequest` checks a verdict against besides the chain: the contracts to re-run with, and
- * the blocks the two registries were deployed in (before them their addresses have no code, so reads
- * there return no data instead of an answer).
+ * What `verifyRequest` checks a verdict against besides the chain: the contracts to re-run with, the
+ * MandateRegistry history among them (the re-run at `P` uses the registry valid at `P`, and a pin
+ * before the first one is out of range), and the block the ValidationRegistry was deployed in (before
+ * it its address has no code, so reads there return no data instead of an answer).
  */
 export interface VerifyContext {
-  addresses: MandateAddresses;
+  contracts: MandateContracts;
   validationRegistryDeployBlock: bigint;
-  mandateRegistryDeployBlock: bigint;
 }
 
 /** The {@link VerifyContext} for `chainId` from the SDK's recorded deployment (`DEPLOYMENTS`). Throws for a chain with none. */
 export function verifyContextFor(chainId: number): VerifyContext {
-  const { validationRegistryDeployBlock, mandateRegistryDeployBlock } = deploymentsFor(chainId);
-  return { addresses: mandateAddressesFor(chainId), validationRegistryDeployBlock, mandateRegistryDeployBlock };
+  const { validationRegistryDeployBlock } = deploymentsFor(chainId);
+  return { contracts: mandateContractsFor(chainId), validationRegistryDeployBlock };
 }
 
 const DECIMAL = /^(0|[1-9]\d*)$/;
@@ -135,8 +135,9 @@ const UINT64_LIMIT = 2n ** 64n;
  *    decodes the inline evidence (→ `EVIDENCE_NOT_DECODED`), checks that it hashes to the
  *    `responseHash` (→ `EVIDENCE_HASH_MISMATCH`) and names a pinned block `P` and the request's
  *    block (→ `RESPONSE_HASH_MISMATCH`).
- * 3. `P` must be at or after the evidence's request block and the MandateRegistry's deployment, and
- *    at or before the response's own block (→ `PIN_OUT_OF_RANGE`, with no read at `P`).
+ * 3. `P` must be at or after the evidence's request block and the first MandateRegistry's
+ *    `fromBlock`, and at or before the response's own block (→ `PIN_OUT_OF_RANGE`, with no read at
+ *    `P`).
  * 4. Reads block `P`'s header (its time). The evidence's request block must not be before
  *    `validationRegistryDeployBlock` (→ `REQUEST_BLOCK_WRONG`, with no state read). Reads the
  *    `ValidationRequest` log in that block. If none
@@ -145,8 +146,9 @@ const UINT64_LIMIT = 2n ** 64n;
  *    hash to `requestHash`, name the validator and agent the registry records and the chain the reader is
  *    on, and have a deadline at most 3,600 s after `P`'s time (→ `REQUEST_INVALID`).
  * 5. Runs `runMandateV1` at `P` as that validator, with an empty cache (so every past approval's
- *    amount is rebuilt from its own evidence) and `addresses`, rebuilds the evidence with
- *    `buildEvidence` and hashes its canonical JSON.
+ *    amount is rebuilt from its own evidence) and the addresses valid at `P` (`mandateAddressesAt`:
+ *    the MandateRegistry valid there), rebuilds the evidence with `buildEvidence` and hashes its
+ *    canonical JSON.
  * 6. Compares the score (→ `SCORE_MISMATCH`) and the `responseHash` (→ `RESPONSE_HASH_MISMATCH`),
  *    listing the top-level evidence keys that differ.
  *
@@ -156,7 +158,7 @@ const UINT64_LIMIT = 2n ** 64n;
  * turns a failed read into a verdict, let alone a mismatch; retry later or use another RPC.
  */
 export async function verifyRequest(o: { reader: VerifyReader; requestHash: Hex } & VerifyContext): Promise<VerifyReport> {
-  const { reader, addresses, validationRegistryDeployBlock, mandateRegistryDeployBlock } = o;
+  const { reader, contracts, validationRegistryDeployBlock } = o;
   const requestHash = o.requestHash.toLowerCase() as Hex;
   const head = await reader.finalized();
 
@@ -181,7 +183,7 @@ export async function verifyRequest(o: { reader: VerifyReader; requestHash: Hex 
   if (posted === null) return report(base, ["RESPONSE_HASH_MISMATCH"]);
 
   const { doc, pinnedBlock, requestBlock } = posted;
-  if (pinnedBlock < requestBlock || pinnedBlock > response.block || pinnedBlock < mandateRegistryDeployBlock) {
+  if (pinnedBlock < requestBlock || pinnedBlock > response.block || pinnedBlock < firstMandateRegistryBlock(contracts)) {
     return report({ ...base, pinnedBlock }, ["PIN_OUT_OF_RANGE"]);
   }
 
@@ -193,7 +195,7 @@ export async function verifyRequest(o: { reader: VerifyReader; requestHash: Hex 
   const cache: PreimageCache = new Map();
   const result = await runMandateV1({
     reader,
-    addresses,
+    addresses: mandateAddressesAt(contracts, pinnedBlock),
     validator: status.validator,
     request: mandateRequestOf(json, requestHash, requestBlock),
     pinned,

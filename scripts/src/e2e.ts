@@ -92,6 +92,7 @@ import {
   buildAction,
   buildRequestJson,
   computeActionHash,
+  currentMandateRegistry,
   decodeJsonDataUri,
   encodeJsonDataUri,
   identityRegistryAbi,
@@ -114,7 +115,7 @@ import {
   MAX_EVIDENCE_URI_BYTES,
   MandateValidator,
   collectSpend,
-  mandateAddressesFor,
+  mandateContractsFor,
   verifyContextFor,
   verifyRequest,
   viemMandateReader,
@@ -128,7 +129,7 @@ import {
   nansenClient,
   openAiCompatibleClient,
   parseRiskEvidence,
-  riskAddressesFor,
+  riskContractsFor,
   verifyRiskRequest,
   viemRiskReader,
   type ChatClient,
@@ -242,11 +243,13 @@ const vaultAbi = [
 const passThroughAbi = parseAbi(["function sink() view returns (address)"]);
 
 const deployment = DEPLOYMENTS[chain.id];
-const addresses = mandateAddressesFor(chain.id);
-const riskAddresses = riskAddressesFor(chain.id);
+/** The contracts the validators and verify read, the whole MandateRegistry history included (each read resolves its block's). */
+const contracts = mandateContractsFor(chain.id);
+const riskContracts = riskContractsFor(chain.id);
 const registry = getAddress(deployment.validationRegistry);
 const forwarder = getAddress(deployment.agentRequestForwarder);
-const mandateRegistry = getAddress(deployment.mandateRegistry);
+/** The current MandateRegistry: the one agent 1984's mandate is read from now (the validators resolve theirs at P). */
+const mandateRegistry = getAddress(currentMandateRegistry(deployment).address);
 const vault = getAddress(deployment.demoAgentVault);
 const passThrough = getAddress(deployment.demoPassThrough);
 const identityRegistry = getAddress(deployment.identityRegistry);
@@ -453,9 +456,8 @@ function mandateValidator(fromBlock: bigint, name: string): MandateValidator {
   return new MandateValidator({
     chain: measured(port, validatorA.address),
     cursor: new MemoryCursorStore(fromBlock - 1n),
-    reader: viemMandateReader({ publicClient, addresses, concurrency: READER_CONCURRENCY }),
-    addresses,
-    mandateRegistryDeployBlock: deployment.mandateRegistryDeployBlock,
+    reader: viemMandateReader({ publicClient, contracts, concurrency: READER_CONCURRENCY }),
+    contracts,
     gates: [{ gate: vault, agentId }],
     admission: new Admission(MANDATE_ADMISSION),
     log: logAs(name),
@@ -509,8 +511,8 @@ function riskValidator(fromBlock: bigint, name: string, clients: { llm: ChatClie
   return new RiskValidator({
     chain: measured(port, validatorB.address),
     cursor: new MemoryCursorStore(fromBlock - 1n),
-    reader: viemRiskReader({ publicClient, addresses: riskAddresses, concurrency: READER_CONCURRENCY }),
-    addresses: riskAddresses,
+    reader: viemRiskReader({ publicClient, contracts: riskContracts, concurrency: READER_CONCURRENCY }),
+    contracts: riskContracts,
     mandateValidator: getAddress(deployment.validators.mandateV1),
     gates: [{ gate: vault, agentId }],
     admission: new Admission(RISK_ADMISSION),
@@ -735,7 +737,7 @@ async function main(): Promise<void> {
   // The daily cap, before anything is sent: agent 1984's counted spend as mandate-v1 reads it (the same collector),
   // at the finalized head. S and R must both still fit under the cap (A checks R with S's approval counted), or
   // every later check would fail.
-  const spendReader = viemMandateReader({ publicClient, addresses, concurrency: READER_CONCURRENCY });
+  const spendReader = viemMandateReader({ publicClient, contracts, concurrency: READER_CONCURRENCY });
   const spendHead = await spendReader.finalized();
   const spend = await collectSpend({ reader: spendReader, validator: validatorA.address, agentId, pinned: spendHead, cache: new Map() });
   if ("unreadable" in spend) throw new Error(`check failed: agent ${agentId}'s spend is unreadable at block ${spendHead.number} (${spend.unreadable})`);
@@ -1111,7 +1113,7 @@ async function main(): Promise<void> {
   for (const label of LABELS) {
     const verdict = verdictOf(label, "A");
     const report = await verifyRequest({
-      reader: viemMandateReader({ publicClient, addresses, concurrency: READER_CONCURRENCY }),
+      reader: viemMandateReader({ publicClient, contracts, concurrency: READER_CONCURRENCY }),
       requestHash: hashOf(label, "A"),
       ...verifyContextFor(chain.id),
     });
@@ -1136,12 +1138,12 @@ async function main(): Promise<void> {
   );
 
   console.log(`\nverify ${RISK_V1.tag} (a fresh reader per verdict; model output: recorded, not re-run)`);
-  const riskContext = { ...verifyContextFor(chain.id), addresses: riskAddresses, mandateValidator: getAddress(deployment.validators.mandateV1) };
+  const riskContext = { ...verifyContextFor(chain.id), contracts: riskContracts, mandateValidator: getAddress(deployment.validators.mandateV1) };
   const reportsB: Partial<Record<Label, RiskVerifyReport>> = {};
   for (const label of LABELS) {
     const verdict = verdictOf(label, "B");
     const report = await verifyRiskRequest({
-      reader: viemRiskReader({ publicClient, addresses: riskAddresses, concurrency: READER_CONCURRENCY }),
+      reader: viemRiskReader({ publicClient, contracts: riskContracts, concurrency: READER_CONCURRENCY }),
       requestHash: hashOf(label, "B"),
       context: riskContext,
     });

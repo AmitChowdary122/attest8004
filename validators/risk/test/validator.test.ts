@@ -4,11 +4,13 @@ import { keccak256, stringToBytes, type Address } from "viem";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { parseRiskEvidence, type RiskEvidence } from "../src/evidence.ts";
 import { RISK_V1 } from "../src/params.ts";
+import type { RiskContracts } from "../src/reader.ts";
 import { RiskValidator } from "../src/validator.ts";
 import {
-  ADDRESSES,
   AGENT,
   chatResponse,
+  CONTRACTS,
+  contractsWith,
   FakeChain,
   fakeAction,
   fakeGuard,
@@ -19,6 +21,7 @@ import {
   MODEL,
   NO_FINDINGS,
   OTHER_GATE,
+  P4_REGISTRY,
   requestPair,
   scriptedLlm,
   SINK,
@@ -26,6 +29,7 @@ import {
   transient429,
   tsOf,
   unavailableNansen,
+  V2_REGISTRY,
   VALIDATOR_A,
   type Step,
 } from "./helpers/risk-fakes.ts";
@@ -62,6 +66,7 @@ function makeValidator(o: {
   pinTimeoutMs?: number;
   retryDelayMs?: number;
   cursor?: MemoryCursorStore;
+  contracts?: RiskContracts;
   /** Options a caller might pass that RiskValidator must ignore. */
   ignored?: Record<string, unknown>;
 } = {}) {
@@ -71,7 +76,7 @@ function makeValidator(o: {
     chain,
     cursor: o.cursor ?? new MemoryCursorStore(999n),
     reader,
-    addresses: ADDRESSES,
+    contracts: o.contracts ?? CONTRACTS,
     mandateValidator: VALIDATOR_A,
     gates: o.gates ?? [{ gate: GATE, agentId: AGENT }],
     admission: o.admission ?? new Admission({ maxRequestsPerAgent: 20, agentWindowSeconds: 3_600n, dailyGasBudget: 10_000_000n, maxGasPerResponse: 1_000_000n }),
@@ -323,6 +328,28 @@ describe("RiskValidator: waiting for mandate-v1", () => {
     // Once: a later cycle has nothing left to answer.
     await validator.pollOnce();
     expect(chain.sent).toHaveLength(1);
+  });
+
+  it("B's evidence records the MandateRegistry valid at its pin: P4's before the switch, v2's at it", async () => {
+    for (const [switchBlock, expected] of [
+      [1_005n, P4_REGISTRY],
+      [1_004n, V2_REGISTRY],
+    ] as const) {
+      chain = new FakeChain();
+      reader = new FakeRiskReader(chain);
+      answerA(addAction());
+      const contracts = contractsWith([
+        { address: P4_REGISTRY, fromBlock: 950n },
+        { address: V2_REGISTRY, fromBlock: switchBlock },
+      ]);
+      const { validator } = makeValidator({ contracts });
+
+      await validator.pollOnce();
+
+      const { doc } = sentEvidence();
+      expect(doc.block.number, `switch at ${switchBlock}`).toBe(1_004n);
+      expect(doc.params.contracts.mandateRegistry, `switch at ${switchBlock}`).toBe(expected);
+    }
   });
 
   it("A answered with another tag → decline MANDATE_V1_VERDICT_INVALID, no model call, no response, not retried", async () => {

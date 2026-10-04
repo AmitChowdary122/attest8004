@@ -5,6 +5,7 @@ import {
   computeRequestHashFromParts,
   encodeCanonicalJsonDataUri,
   identityRegistryAbi,
+  MandateRegistryNotDeployedError,
   mandateRegistryAbi,
   validationRegistryAbi,
   validationRequestEvent,
@@ -37,7 +38,8 @@ import { FakeRpc, RevertError, revert, type RpcLog } from "../../../packages/sdk
 import { collectInputs, type PreimageCache } from "../src/collect.ts";
 import { concurrencyLimit } from "../src/concurrency.ts";
 import { MANDATE_V1 } from "../src/params.ts";
-import { viemMandateReader, type MandateAddresses } from "../src/reader.ts";
+import { viemMandateReader, type MandateAddresses, type MandateContracts } from "../src/reader.ts";
+import { evaluate } from "../src/rules.ts";
 import type { MandateInputs } from "../src/types.ts";
 
 const ADDRESSES: MandateAddresses = {
@@ -45,6 +47,13 @@ const ADDRESSES: MandateAddresses = {
   identityRegistry: getAddress("0x8004a818bfb912233c491871b3d84c89a494bd9e"),
   forwarder: getAddress("0x1451f3c36545b191d3642f759d59f21dcfd657b2"),
   mandateRegistry: getAddress("0x2523197373ef813e19b5b14ef2984130868cd17c"),
+};
+/** The reader's contracts: `ADDRESSES`, with that one MandateRegistry valid at every block. */
+const CONTRACTS: MandateContracts = {
+  validationRegistry: ADDRESSES.validationRegistry,
+  identityRegistry: ADDRESSES.identityRegistry,
+  forwarder: ADDRESSES.forwarder,
+  mandateRegistries: [{ address: ADDRESSES.mandateRegistry, fromBlock: 0n }],
 };
 const GATE = getAddress("0x23bfbd12545ccd1501dda1b65a54518fd6212a96");
 const VALIDATOR = getAddress("0xa62dab21e0c0f57e94b3ed6e675f214199989e92");
@@ -65,6 +74,9 @@ const approvalEvent = getAbiItem({ abi: identityRegistryAbi, name: "Approval" })
 const approvalForAllEvent = getAbiItem({ abi: identityRegistryAbi, name: "ApprovalForAll" });
 const mandateSetEvent = getAbiItem({ abi: mandateRegistryAbi, name: "MandateSet" });
 const mandateRevokedEvent = getAbiItem({ abi: mandateRegistryAbi, name: "MandateRevoked" });
+const passkeySetEvent = getAbiItem({ abi: mandateRegistryAbi, name: "PasskeySet" });
+const passkeyRotatedEvent = getAbiItem({ abi: mandateRegistryAbi, name: "PasskeyRotated" });
+const inboxKeySetEvent = getAbiItem({ abi: mandateRegistryAbi, name: "InboxKeySet" });
 
 /** A log for `event` with `args`, indexed fields as topics and the rest ABI-encoded as data. */
 function eventLog(address: Address, event: AbiEvent, args: Record<string, unknown>, blockNumber: bigint, logIndex: number): RpcLog {
@@ -102,7 +114,7 @@ beforeEach(() => {
 /** `retryCount: 0` so a transient failure surfaces at once instead of after viem's backoff. */
 function reader(concurrency?: number) {
   const { publicClient } = rpc.clients(account, { retryCount: 0 });
-  return viemMandateReader({ publicClient, addresses: ADDRESSES, ...(concurrency ? { concurrency } : {}) });
+  return viemMandateReader({ publicClient, contracts: CONTRACTS, ...(concurrency ? { concurrency } : {}) });
 }
 
 function ethCalls() {
@@ -436,7 +448,7 @@ describe("viemMandateReader over viem's http transport: only a hex result is cha
 
   function httpReader() {
     const publicClient = createPublicClient({ transport: http(url, { retryCount: 0 }) });
-    return viemMandateReader({ publicClient, addresses: ADDRESSES });
+    return viemMandateReader({ publicClient, contracts: CONTRACTS });
   }
 
   it.each([
@@ -490,11 +502,18 @@ describe("viemMandateReader over viem's http transport: only a hex result is cha
 });
 
 describe("viemMandateReader: permission logs", () => {
-  const selectors = [transferEvent, approvalEvent, approvalForAllEvent, agentKeySetEvent, mandateSetEvent, mandateRevokedEvent].map(
-    (event) => toEventSelector(event),
-  );
+  const selectors = [
+    transferEvent,
+    approvalEvent,
+    approvalForAllEvent,
+    agentKeySetEvent,
+    mandateSetEvent,
+    mandateRevokedEvent,
+    passkeySetEvent,
+    passkeyRotatedEvent,
+  ].map((event) => toEventSelector(event));
 
-  it("queries windows of at most 100 blocks that cover (P - 6,000, P] exactly, across the three contracts and six events", async () => {
+  it("queries windows of at most 100 blocks that cover (P - 6,000, P] exactly, across the three contracts and eight events", async () => {
     await reader().permissionLogs(P - MANDATE_V1.permissionWindowBlocks + 1n, P, { agentId: AGENT, owner: OWNER });
     const filters = getLogsFilters().sort((a, b) => (BigInt(a.fromBlock) < BigInt(b.fromBlock) ? -1 : 1));
     expect(filters).toHaveLength(60);
@@ -557,6 +576,32 @@ describe("viemMandateReader: permission logs", () => {
     ]);
   });
 
+  it("PasskeySet and PasskeyRotated for the agent are MandateRegistry permission events; another agent's are not", async () => {
+    const mr = ADDRESSES.mandateRegistry;
+    const fwd = ADDRESSES.forwarder;
+    const key = (n: string) => keccak256(toHex(`passkey ${n}`));
+    const rotated = (agentId: bigint) => ({ agentId, owner: OWNER, oldQx: key("old x"), oldQy: key("old y"), qx: key("x"), qy: key("y") });
+    rpc.logs.push(
+      // kept
+      eventLog(mr, passkeySetEvent, { agentId: AGENT, owner: OWNER, qx: key("old x"), qy: key("old y") }, P - 30n, 0),
+      eventLog(mr, passkeyRotatedEvent, rotated(AGENT), P - 20n, 4),
+      // dropped: another agent
+      eventLog(mr, passkeySetEvent, { agentId: OTHER_AGENT, owner: OWNER, qx: key("x"), qy: key("y") }, P - 25n, 0),
+      eventLog(mr, passkeyRotatedEvent, rotated(OTHER_AGENT), P - 15n, 0),
+      // dropped: the right event and agent, but the wrong emitter
+      eventLog(fwd, passkeySetEvent, { agentId: AGENT, owner: OWNER, qx: key("x"), qy: key("y") }, P - 12n, 0),
+      eventLog(fwd, passkeyRotatedEvent, rotated(AGENT), P - 11n, 0),
+      // not a permission event (it moves no funds and grants no rights), so never asked for
+      eventLog(mr, inboxKeySetEvent, { agentId: AGENT, owner: OWNER, x25519Pub: key("inbox") }, P - 5n, 0),
+    );
+    const events = await reader().permissionLogs(P - 99n, P, { agentId: AGENT, owner: OWNER });
+    const tx = (block: bigint, logIndex: number) => keccak256(toHex(`${block}:${logIndex}`));
+    expect(events).toEqual([
+      { block: P - 30n, logIndex: 0, txHash: tx(P - 30n, 0), emitter: "MandateRegistry", event: "PasskeySet" },
+      { block: P - 20n, logIndex: 4, txHash: tx(P - 20n, 4), emitter: "MandateRegistry", event: "PasskeyRotated" },
+    ]);
+  });
+
   it("runs at most `concurrency` eth_getLogs at once (default 8)", async () => {
     for (const [limit, expected] of [
       [undefined, 8],
@@ -587,6 +632,143 @@ describe("viemMandateReader: permission logs", () => {
       return undefined;
     };
     await expect(reader().permissionLogs(P - 5_999n, P, { agentId: AGENT, owner: OWNER })).rejects.toThrow(/HTTP request failed/);
+  });
+});
+
+describe("viemMandateReader: the MandateRegistry history (the registry valid at the block read)", () => {
+  const V2_REGISTRY = getAddress("0xb60adb7d3cfb303dd501fef6ae136131e655e231");
+  const FIRST = P - 1_000_000n;
+  /** The first block v2 is valid at. */
+  const SWITCH = P - 50n;
+  const HISTORY: MandateContracts = {
+    ...CONTRACTS,
+    mandateRegistries: [
+      { address: ADDRESSES.mandateRegistry, fromBlock: FIRST },
+      { address: V2_REGISTRY, fromBlock: SWITCH },
+    ],
+  };
+
+  function historyReader() {
+    const { publicClient } = rpc.clients(account, { retryCount: 0 });
+    return viemMandateReader({ publicClient, contracts: HISTORY });
+  }
+
+  const record = (setAtBlock: bigint) => [
+    { allowedTargets: [TARGET], allowedSelectors: ["0x00000000"], maxValuePerTx: 2n, maxValuePerDay: 5n, validUntil: 1_800_000_000n },
+    MANDATE_HASH,
+    OWNER,
+    setAtBlock,
+  ];
+
+  it("reader.mandate() calls getMandate on the registry valid at `at`", async () => {
+    rpc
+      .onCall(ADDRESSES.mandateRegistry, mandateRegistryAbi, "getMandate", () => record(FIRST + 1n))
+      .onCall(V2_REGISTRY, mandateRegistryAbi, "getMandate", () => record(SWITCH));
+    const r = historyReader();
+
+    await expect(r.mandate(AGENT, SWITCH - 1n)).resolves.toMatchObject({ setAtBlock: FIRST + 1n });
+    await expect(r.mandate(AGENT, SWITCH)).resolves.toMatchObject({ setAtBlock: SWITCH });
+    await expect(r.mandate(AGENT, FIRST)).resolves.toMatchObject({ setAtBlock: FIRST + 1n });
+    expect(ethCalls().map((c) => [getAddress((c.params[0] as { to: Address }).to), c.params[1]])).toEqual([
+      [ADDRESSES.mandateRegistry, toHex(SWITCH - 1n)],
+      [V2_REGISTRY, toHex(SWITCH)],
+      [ADDRESSES.mandateRegistry, toHex(FIRST)],
+    ]);
+
+    // Before the first registry there is nothing to read: it throws, and asks the RPC nothing.
+    await expect(r.mandate(AGENT, FIRST - 1n)).rejects.toBeInstanceOf(MandateRegistryNotDeployedError);
+    expect(ethCalls()).toHaveLength(3);
+  });
+
+  it("reader.permissionLogs() asks eth_getLogs for the registry valid at toBlock only", async () => {
+    const revoked = { agentId: AGENT, mandateHash: MANDATE_HASH, owner: OWNER };
+    rpc.logs.push(
+      eventLog(ADDRESSES.mandateRegistry, mandateRevokedEvent, revoked, SWITCH - 10n, 0), // P4, before the switch
+      eventLog(ADDRESSES.mandateRegistry, mandateSetEvent, mandateSetArgs(AGENT), SWITCH + 5n, 0), // P4 after it: governs nothing
+      eventLog(V2_REGISTRY, mandateSetEvent, mandateSetArgs(AGENT), SWITCH + 10n, 1), // v2
+    );
+    const tx = (block: bigint, logIndex: number) => keccak256(toHex(`${block}:${logIndex}`));
+    const r = historyReader();
+
+    // A window straddling the switch, ending at or after it: v2 only (P4's events before the switch can't change a verdict).
+    const straddling = await r.permissionLogs(SWITCH - 99n, P, { agentId: AGENT, owner: OWNER });
+    expect(straddling).toEqual([{ block: SWITCH + 10n, logIndex: 1, txHash: tx(SWITCH + 10n, 1), emitter: "MandateRegistry", event: "MandateSet" }]);
+    const straddlingFilters = getLogsFilters();
+    expect(straddlingFilters).toHaveLength(2);
+    for (const filter of straddlingFilters) {
+      expect([filter.address].flat().map((a) => getAddress(a)).sort()).toEqual([ADDRESSES.identityRegistry, ADDRESSES.forwarder, V2_REGISTRY].sort());
+    }
+
+    // A window ending just before the switch: P4 only.
+    const before = await r.permissionLogs(SWITCH - 99n, SWITCH - 1n, { agentId: AGENT, owner: OWNER });
+    expect(before).toEqual([{ block: SWITCH - 10n, logIndex: 0, txHash: tx(SWITCH - 10n, 0), emitter: "MandateRegistry", event: "MandateRevoked" }]);
+    for (const filter of getLogsFilters().slice(straddlingFilters.length)) {
+      expect([filter.address].flat().map((a) => getAddress(a)).sort()).toEqual(
+        [ADDRESSES.identityRegistry, ADDRESSES.forwarder, ADDRESSES.mandateRegistry].sort(),
+      );
+    }
+  });
+});
+
+describe("viemMandateReader: passkey events in the permission window", () => {
+  /** The block the agent's current mandate was set in (its MandateSet log is at log index 1 there). */
+  const S = P - 100n;
+  const pinned = { number: P, hash: keccak256(toHex(P)), timestamp: 1_790_000_000n };
+  const key = (n: string) => keccak256(toHex(`passkey ${n}`));
+
+  /** collectInputs over the viem reader for a request inside its mandate, with `logs` in the window too. */
+  async function verdictWith(logs: RpcLog[]) {
+    rpc = new FakeRpc();
+    rpc.blockNumber = P;
+    rpc
+      .onCall(ADDRESSES.identityRegistry, identityRegistryAbi, "ownerOf", () => OWNER)
+      .onCall(ADDRESSES.mandateRegistry, mandateRegistryAbi, "getMandate", () => [
+        { allowedTargets: [TARGET], allowedSelectors: ["0x00000000"], maxValuePerTx: 100n, maxValuePerDay: 1_000n, validUntil: pinned.timestamp + 86_400n },
+        MANDATE_HASH,
+        OWNER,
+        S,
+      ])
+      .onCall(ADDRESSES.validationRegistry, validationRegistryAbi, "getAgentValidations", () => []);
+    answerRawCall(TARGET, () => "0x");
+    rpc.logs.push(eventLog(ADDRESSES.mandateRegistry, mandateSetEvent, { ...mandateSetArgs(AGENT), setAtBlock: S }, S, 1), ...logs);
+    const request = {
+      block: P - 3n,
+      requestHash: keccak256(toHex("the request being checked")),
+      chainId: 10_143,
+      gate: GATE,
+      agentId: AGENT,
+      target: TARGET,
+      value: 10n,
+      data: "0x" as Hex,
+      deadline: pinned.timestamp + 60n,
+      salt: keccak256(toHex("salt")),
+    };
+    const inputs = await collectInputs({ reader: reader(), validator: VALIDATOR, request, pinned, cache: new Map() });
+    return { events: inputs.permissions.events, reasons: evaluate(inputs).reasons };
+  }
+
+  it("a PasskeyRotated after the mandate's MandateSet fails PERMISSION_CHANGED_AFTER_MANDATE; a PasskeySet before it doesn't", async () => {
+    const set = await verdictWith([eventLog(ADDRESSES.mandateRegistry, passkeySetEvent, { agentId: AGENT, owner: OWNER, qx: key("x"), qy: key("y") }, S - 10n, 0)]);
+    expect(set.events).toEqual([
+      expect.objectContaining({ block: S - 10n, emitter: "MandateRegistry", event: "PasskeySet", afterMandate: false }),
+      expect.objectContaining({ block: S, emitter: "MandateRegistry", event: "MandateSet", afterMandate: false }),
+    ]);
+    expect(set.reasons).toEqual([]);
+
+    const rotated = await verdictWith([
+      eventLog(
+        ADDRESSES.mandateRegistry,
+        passkeyRotatedEvent,
+        { agentId: AGENT, owner: OWNER, oldQx: key("x"), oldQy: key("y"), qx: key("new x"), qy: key("new y") },
+        S,
+        2,
+      ),
+    ]);
+    expect(rotated.events).toEqual([
+      expect.objectContaining({ block: S, logIndex: 1, event: "MandateSet", afterMandate: false }),
+      expect.objectContaining({ block: S, logIndex: 2, emitter: "MandateRegistry", event: "PasskeyRotated", afterMandate: true }),
+    ]);
+    expect(rotated.reasons).toEqual(["PERMISSION_CHANGED_AFTER_MANDATE"]);
   });
 });
 
@@ -856,7 +1038,7 @@ describe("viemMandateReader: an approval through a gate with no code counts towa
     };
 
     const inputs = await collectInputs({
-      reader: viemMandateReader({ publicClient, addresses: ADDRESSES }),
+      reader: viemMandateReader({ publicClient, contracts: CONTRACTS }),
       validator: VALIDATOR,
       request,
       pinned,
@@ -946,7 +1128,7 @@ describe("viemMandateReader: one RPC budget across a whole collection", () => {
     answerRawCall(TARGET, () => "0x");
 
     const { publicClient } = rpc.clients(account, { retryCount: 0 });
-    const r = viemMandateReader({ publicClient, addresses: ADDRESSES, ...(concurrency ? { concurrency } : {}) });
+    const r = viemMandateReader({ publicClient, contracts: CONTRACTS, ...(concurrency ? { concurrency } : {}) });
     const request = {
       block: P - 3n,
       requestHash: keccak256(toHex("the request being checked")),
@@ -976,8 +1158,8 @@ describe("viemMandateReader: one RPC budget across a whole collection", () => {
     rpc.delayMs = 5;
     rpc.onCall(ADDRESSES.identityRegistry, identityRegistryAbi, "ownerOf", () => OWNER);
     const shared = concurrencyLimit(2);
-    const r1 = viemMandateReader({ publicClient: rpc.clients(account, { retryCount: 0 }).publicClient, addresses: ADDRESSES, limit: shared });
-    const r2 = viemMandateReader({ publicClient: rpc.clients(account, { retryCount: 0 }).publicClient, addresses: ADDRESSES, limit: shared });
+    const r1 = viemMandateReader({ publicClient: rpc.clients(account, { retryCount: 0 }).publicClient, contracts: CONTRACTS, limit: shared });
+    const r2 = viemMandateReader({ publicClient: rpc.clients(account, { retryCount: 0 }).publicClient, contracts: CONTRACTS, limit: shared });
 
     await Promise.all([
       r1.ownerOf(AGENT, P),

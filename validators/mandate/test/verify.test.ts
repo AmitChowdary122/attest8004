@@ -3,6 +3,7 @@ import {
   buildAction,
   buildRequestJson,
   decodeJsonDataUri,
+  DEPLOYMENTS,
   encodeCanonicalJsonDataUri,
   encodeJsonDataUri,
   MemoryCursorStore,
@@ -35,7 +36,7 @@ import { beforeEach, describe, expect, it } from "vitest";
 import { FakeRpc, revert } from "../../../packages/sdk/test/helpers/fake-rpc.ts";
 import { MAX_EVIDENCE_URI_BYTES, SpendLogNotFoundError } from "../src/collect.ts";
 import { MANDATE_V1 } from "../src/params.ts";
-import { mandateAddressesFor, viemMandateReader, type MandateAddresses, type ResponseLog, type VerifyReader } from "../src/reader.ts";
+import { mandateContractsFor, viemMandateReader, type MandateContracts, type ResponseLog, type VerifyReader } from "../src/reader.ts";
 import type { MandateRecord, PermissionEvent, PinnedBlock, Simulation } from "../src/types.ts";
 import { MandateValidator, PIN_LAG_BLOCKS } from "../src/validator.ts";
 import { verifyContextFor, verifyRequest, type VerifyReport } from "../src/verify.ts";
@@ -46,6 +47,8 @@ const GATE = getAddress("0x23bfbd12545ccd1501dda1b65a54518fd6212a96");
 const OWNER = getAddress("0x3efeb3cf2fb54a7d99abe90aab786ce5a831a8cf");
 const UNLISTED = getAddress("0x00000000000000000000000000000000000000b2");
 const OTHER_MANDATE_REGISTRY = getAddress("0x00000000000000000000000000000000000000c3");
+/** A second MandateRegistry for the history tests (P6's v2, appended after P4's). */
+const V2_REGISTRY = getAddress("0xb60adb7d3cfb303dd501fef6ae136131e655e231");
 /** An address with no code: a call to it succeeds with no data. */
 const CODELESS_GATE = getAddress("0x0000000000000000000000000000000000000e0a");
 const AGENT = 1_984n;
@@ -54,7 +57,9 @@ const BASE_TS = 1_790_000_000n;
 /** One second per block, so every block has its own timestamp. */
 const tsOf = (block: bigint): bigint => BASE_TS + block - 1_000n;
 /** The SDK's recorded testnet deployment: what `verify` recomputes with. */
-const ADDRESSES: MandateAddresses = mandateAddressesFor(CHAIN_ID);
+const RECORDED: MandateContracts = mandateContractsFor(CHAIN_ID);
+/** The recorded testnet MandateRegistry (P4's). */
+const P4_REGISTRY = DEPLOYMENTS[10143].mandateRegistries[0].address;
 
 function unknownRequest(requestHash: Hex): Error {
   // How a raw eth_call revert reaches the reader: JSON-RPC code 3 with the revert data.
@@ -300,17 +305,24 @@ function addRequest(json: RequestJsonV1, block = 1_000n): RequestEvent {
   return event;
 }
 
+/**
+ * The recorded contracts with a MandateRegistry history for the fake chain: by default the recorded one alone,
+ * "deployed" at `chain.mandateDeployBlock` (as the real one was at 67,842,487).
+ */
+function contracts(mandateRegistries?: MandateContracts["mandateRegistries"]): MandateContracts {
+  return { ...RECORDED, mandateRegistries: mandateRegistries ?? [{ address: P4_REGISTRY, fromBlock: chain.mandateDeployBlock }] };
+}
+
 /** Runs a real `MandateValidator` over the fakes for one poll cycle: every pending request is answered. */
 async function runValidator(
-  addresses: MandateAddresses = ADDRESSES,
+  validatorContracts: MandateContracts = contracts(),
   gates: Array<{ gate: Address; agentId: bigint }> = [{ gate: GATE, agentId: AGENT }],
 ): Promise<void> {
   const validator = new MandateValidator({
     chain,
     cursor: new MemoryCursorStore(999n),
     reader: validatorReader,
-    addresses,
-    mandateRegistryDeployBlock: chain.mandateDeployBlock,
+    contracts: validatorContracts,
     gates,
     admission: new Admission({ maxRequestsPerAgent: 20, agentWindowSeconds: 3_600n, dailyGasBudget: 10_000_000n, maxGasPerResponse: 400_000n }),
     retryDelayMs: 0,
@@ -361,13 +373,12 @@ function resign(requestHash: Hex, edit: (doc: Doc) => void): void {
   response.status = { ...response.status, responseHash: hash };
 }
 
-function verify(requestHash: Hex, reader: FakeReader = new FakeReader(chain)): Promise<VerifyReport> {
+function verify(requestHash: Hex, reader: FakeReader = new FakeReader(chain), verifyContracts: MandateContracts = contracts()): Promise<VerifyReport> {
   return verifyRequest({
     reader,
     requestHash,
-    addresses: ADDRESSES,
+    contracts: verifyContracts,
     validationRegistryDeployBlock: chain.deployBlock,
-    mandateRegistryDeployBlock: chain.mandateDeployBlock,
   });
 }
 
@@ -460,7 +471,7 @@ describe("verifyRequest: an honest verdict reproduces", () => {
     chain.codelessGates.add(CODELESS_GATE.toLowerCase());
     const first = addRequest(requestJson({ gate: CODELESS_GATE, value: 1_000n }));
     const second = addRequest(requestJson({ value: 1_000n }));
-    await runValidator(ADDRESSES, [
+    await runValidator(contracts(), [
       { gate: GATE, agentId: AGENT },
       { gate: CODELESS_GATE, agentId: AGENT },
     ]);
@@ -493,10 +504,10 @@ describe("verifyRequest: an honest verdict reproduces", () => {
 
   it("verifyContextFor reads the SDK's recorded deployment: the contracts and both registries' deployment blocks", () => {
     expect(verifyContextFor(CHAIN_ID)).toEqual({
-      addresses: mandateAddressesFor(CHAIN_ID),
+      contracts: mandateContractsFor(CHAIN_ID),
       validationRegistryDeployBlock: 67_604_893n,
-      mandateRegistryDeployBlock: 67_842_487n,
     });
+    expect(verifyContextFor(CHAIN_ID).contracts.mandateRegistries[0]).toEqual({ address: P4_REGISTRY, fromBlock: 67_842_487n });
     expect(() => verifyContextFor(1)).toThrow(/no Attest8004 deployment/);
   });
 
@@ -521,6 +532,51 @@ describe("verifyRequest: an honest verdict reproduces", () => {
       expect.objectContaining({ block: 500n, event: "MandateSet", afterMandate: false }),
       expect.objectContaining({ block: 600n, event: "AgentKeySet", afterMandate: true }),
     ]);
+  });
+});
+
+describe("verifyRequest: the MandateRegistry history (the registry valid at the pin)", () => {
+  it("verify: a pre-switch verdict matches with a two-entry history; PIN_OUT_OF_RANGE only before the first registry", async () => {
+    chain.mandateDeployBlock = 1_002n; // the request (block 1,000) predates the first registry
+    const e = addRequest(requestJson());
+    await runValidator(); // answered while the history held P4's registry alone; pins at 1,004
+    // v2 is appended later, valid from the block after that pin.
+    const twoRegistries = contracts([
+      { address: P4_REGISTRY, fromBlock: 1_002n },
+      { address: V2_REGISTRY, fromBlock: 1_005n },
+    ]);
+
+    const report = await verify(e.requestHash, new FakeReader(chain), twoRegistries);
+
+    expect(report).toMatchObject({ verdict: "match", pinnedBlock: 1_004n, problems: [], differingKeys: [] });
+
+    // The pin is out of range only before the first registry: a pin in either registry's range is re-run there.
+    for (const [pin, problems] of [
+      [1_001n, ["PIN_OUT_OF_RANGE"]],
+      [1_002n, ["RESPONSE_HASH_MISMATCH"]],
+      [1_005n, ["RESPONSE_HASH_MISMATCH"]],
+    ] as const) {
+      resign(e.requestHash, (doc) => {
+        doc.block.number = pin.toString();
+      });
+      const reader = new FakeReader(chain);
+      const moved = await verify(e.requestHash, reader, twoRegistries);
+      expect(moved, `pin ${pin}`).toMatchObject({ verdict: "mismatch", pinnedBlock: pin, problems });
+      expect(reader.mandateReads, `pin ${pin}`).toEqual(pin < 1_002n ? [] : [pin]);
+    }
+  });
+
+  it("a verdict pinned at the switch block records v2, and re-verifies only with v2 in the history", async () => {
+    const e = addRequest(requestJson());
+    const twoRegistries = contracts([
+      { address: P4_REGISTRY, fromBlock: chain.mandateDeployBlock },
+      { address: V2_REGISTRY, fromBlock: 1_004n },
+    ]);
+    await runValidator(twoRegistries); // pins at 1,004: v2's first block
+
+    expect((JSON.parse(evidenceText(e.requestHash)) as Doc).params.mandateRegistry).toBe(V2_REGISTRY);
+    await expect(verify(e.requestHash, new FakeReader(chain), twoRegistries)).resolves.toMatchObject({ verdict: "match", problems: [] });
+    await expect(verify(e.requestHash)).resolves.toMatchObject({ verdict: "mismatch", problems: ["RESPONSE_HASH_MISMATCH"], differingKeys: ["params"] });
   });
 });
 
@@ -568,7 +624,7 @@ describe("verifyRequest: a tampered or drifted verdict is a mismatch", () => {
 
   it("evidence naming another MandateRegistry than the SDK's deployment: RESPONSE_HASH_MISMATCH in params", async () => {
     const e = addRequest(requestJson());
-    await runValidator({ ...ADDRESSES, mandateRegistry: OTHER_MANDATE_REGISTRY });
+    await runValidator(contracts([{ address: OTHER_MANDATE_REGISTRY, fromBlock: chain.mandateDeployBlock }]));
 
     const report = await verify(e.requestHash);
 
@@ -822,17 +878,16 @@ describe("verifyRequest: what can't be found or re-run is never a mismatch", () 
     const rpc = new FakeRpc();
     rpc.blockNumber = 1_004n;
     const unknown = keccak256(toHex("no such request"));
-    rpc.onCall(ADDRESSES.validationRegistry, validationRegistryAbi, "getValidationStatus", () =>
+    rpc.onCall(RECORDED.validationRegistry, validationRegistryAbi, "getValidationStatus", () =>
       revert(validationRegistryAbi, "UnknownRequest", [unknown]),
     );
     const { publicClient } = rpc.clients(privateKeyToAccount(generatePrivateKey()), { retryCount: 0 });
 
     const report = await verifyRequest({
-      reader: viemMandateReader({ publicClient, addresses: ADDRESSES }),
+      reader: viemMandateReader({ publicClient, contracts: contracts([{ address: P4_REGISTRY, fromBlock: 950n }]) }),
       requestHash: unknown,
-      addresses: ADDRESSES,
+      contracts: contracts([{ address: P4_REGISTRY, fromBlock: 950n }]),
       validationRegistryDeployBlock: 900n,
-      mandateRegistryDeployBlock: 950n,
     });
 
     expect(report).toMatchObject({ verdict: "unverifiable", problems: ["REQUEST_NOT_FOUND"] });

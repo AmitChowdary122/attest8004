@@ -53,25 +53,49 @@ export const agentKeySetEvent = parseAbiItem(
 );
 
 /**
- * contracts/src/MandateRegistry.sol: an agent owner's per-agent spending mandate (SPEC §4.2) — the
- * targets and selectors an agent may act through, its per-tx/per-day MON caps, and its expiry.
- * `ERC721NonexistentToken` isn't declared here: it's the Identity Registry's own error, propagated
- * unchanged when `_authorize` calls `ownerOf` for an agent that was never registered.
+ * contracts/src/MandateRegistry.sol, v2 (P6): an agent owner's per-agent spending mandate (SPEC §4.2) —
+ * the targets and selectors an agent may act through, its per-tx/per-day MON caps, and its expiry —
+ * where every change to the mandate, the passkey or the inbox key needs the owner's transaction and a
+ * WebAuthn assertion (`WebAuthnAuth`) from the passkey bound to the agent; `revokeMandate` needs the
+ * owner only. `getMandate`, `mandateHashOf`, `identityRegistry`, `MandateSet` and `MandateRevoked` are
+ * exactly P4's, so this one ABI reads and decodes every registry in `Deployment.mandateRegistries`.
+ * `ERC721NonexistentToken` isn't the registry's own: it's the Identity Registry's error, propagated
+ * unchanged when the registry calls `ownerOf` for an agent that was never registered.
  */
 export const mandateRegistryAbi = parseAbi([
   "struct Mandate { address[] allowedTargets; bytes4[] allowedSelectors; uint256 maxValuePerTx; uint256 maxValuePerDay; uint64 validUntil; }",
-  "function setMandate(uint256 agentId, Mandate mandate)",
+  "struct WebAuthnAuth { bytes32 r; bytes32 s; uint256 challengeIndex; uint256 typeIndex; bytes authenticatorData; string clientDataJSON; }",
+  "function setPasskey(uint256 agentId, bytes32 qx, bytes32 qy)",
+  "function rotatePasskey(uint256 agentId, bytes32 qx, bytes32 qy, WebAuthnAuth auth)",
+  "function setMandate(uint256 agentId, Mandate mandate, WebAuthnAuth auth)",
   "function revokeMandate(uint256 agentId)",
+  "function setInboxKey(uint256 agentId, bytes32 x25519Pub, WebAuthnAuth auth)",
   "function getMandate(uint256 agentId) view returns (Mandate mandate, bytes32 mandateHash, address owner, uint64 setAtBlock)",
+  "function passkeyOf(uint256 agentId) view returns (bytes32 qx, bytes32 qy)",
+  "function nonceOf(uint256 agentId) view returns (uint256)",
+  "function inboxKeyOf(uint256 agentId) view returns (bytes32)",
   "function mandateHashOf(Mandate mandate) pure returns (bytes32)",
+  "function challengeFor(uint256 agentId, bytes32 changeHash, uint256 nonce) view returns (bytes32)",
   "function identityRegistry() view returns (address)",
+  "function rpIdHash() view returns (bytes32)",
   "function MAX_TARGETS() view returns (uint256)",
   "function MAX_SELECTORS() view returns (uint256)",
-  "function REVOKE() view returns (bytes32)",
+  "function ROTATE_PASSKEY() view returns (bytes32)",
+  "function SET_INBOX_KEY() view returns (bytes32)",
+  "event PasskeySet(uint256 indexed agentId, address indexed owner, bytes32 qx, bytes32 qy)",
+  "event PasskeyRotated(uint256 indexed agentId, address indexed owner, bytes32 oldQx, bytes32 oldQy, bytes32 qx, bytes32 qy)",
+  "event InboxKeySet(uint256 indexed agentId, address indexed owner, bytes32 x25519Pub)",
   "event MandateSet(uint256 indexed agentId, bytes32 indexed mandateHash, address indexed owner, address[] allowedTargets, bytes4[] allowedSelectors, uint256 maxValuePerTx, uint256 maxValuePerDay, uint64 validUntil, uint64 setAtBlock)",
   "event MandateRevoked(uint256 indexed agentId, bytes32 indexed mandateHash, address indexed owner)",
   "error ZeroIdentityRegistry()",
+  "error ZeroRpIdHash()",
   "error NotAgentOwner(uint256 agentId, address caller)",
+  "error NoPasskey(uint256 agentId)",
+  "error PasskeyAlreadySet(uint256 agentId)",
+  "error InvalidPasskey(bytes32 qx, bytes32 qy)",
+  "error WrongRpIdHash(bytes32 expected, bytes32 actual)",
+  "error InvalidAssertion(uint256 agentId)",
+  "error ZeroInboxKey()",
   "error MandateAlreadyExpired(uint64 validUntil, uint256 timestamp)",
   "error TooManyTargets(uint256 count)",
   "error TooManySelectors(uint256 count)",

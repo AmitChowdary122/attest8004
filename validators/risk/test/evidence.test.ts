@@ -4,24 +4,28 @@ import { keccak256, stringToBytes, toHex, type Hex } from "viem";
 import { describe, expect, it } from "vitest";
 import { parseRiskEvidence, riskEvidence, riskParams } from "../src/evidence.ts";
 import { RISK_V1 } from "../src/params.ts";
+import { riskAddressesAt } from "../src/reader.ts";
 import { runRiskV1 } from "../src/run.ts";
 import type { JsonValue, RiskRecord } from "../src/types.ts";
 import {
   ADDRESSES,
   blockAt,
   chatResponse,
+  contractsWith,
   FakeChain,
   fakeAction,
   fakeGuard,
   FakeRiskReader,
   findingsJson,
   MODEL,
+  P4_REGISTRY,
   PASS_THROUGH,
   requestPair,
   scriptedLlm,
   SINK,
   toolCall,
   unavailableNansen,
+  V2_REGISTRY,
   VALIDATOR_A,
 } from "./helpers/risk-fakes.ts";
 
@@ -132,6 +136,19 @@ describe("riskEvidence", () => {
     expect(params.mandateValidator).toBe(VALIDATOR_A);
   });
 
+  it("riskParams at P names the registry valid at P", () => {
+    const SWITCH = 68_500_000n;
+    const contracts = contractsWith([
+      { address: P4_REGISTRY, fromBlock: 67_842_487n },
+      { address: V2_REGISTRY, fromBlock: SWITCH },
+    ]);
+    const at = (block: bigint) => riskParams(riskAddressesAt(contracts, block), VALIDATOR_A).contracts;
+    expect(at(SWITCH - 1n)).toEqual({ ...ADDRESSES, mandateRegistry: P4_REGISTRY });
+    expect(at(SWITCH)).toEqual({ ...ADDRESSES, mandateRegistry: V2_REGISTRY });
+    expect(at(67_842_487n).mandateRegistry).toBe(P4_REGISTRY);
+    expect(() => at(67_842_486n)).toThrow(/no MandateRegistry/);
+  });
+
   it("is the same document whatever the letter case of the input addresses and hashes", () => {
     const record = sampleRecord();
     const lower = sampleRecord({
@@ -197,6 +214,45 @@ describe("parseRiskEvidence", () => {
       ["counterparty_onchain", true],
       ["nansen_counterparty_profile", false],
     ]);
+  });
+
+  it("a recent_permission_events answer with PasskeySet and PasskeyRotated parses and rebuilds the same bytes (same tag: only v2 emits them)", async () => {
+    const chain = new FakeChain();
+    const reader = new FakeRiskReader(chain);
+    const mandateSetBlock = reader.mandateRecord?.setAtBlock ?? 0n;
+    reader.permissionEvents.push(
+      { block: mandateSetBlock - 1n, logIndex: 0, txHash: keccak256(toHex("PasskeySet tx")), emitter: "MandateRegistry", event: "PasskeySet" },
+      { block: 1_003n, logIndex: 0, txHash: keccak256(toHex("PasskeyRotated tx")), emitter: "MandateRegistry", event: "PasskeyRotated" },
+    );
+    const { jsonB, rhB, rhA } = requestPair(fakeAction());
+    const llm = scriptedLlm([
+      chatResponse({ toolCalls: [toolCall("recent_permission_events")] }),
+      chatResponse({ content: "done" }),
+      chatResponse({ content: findingsJson([{ code: "PERMISSION_CHANGE", severity: "medium", explanation: "The passkey was rotated after the mandate.", sources: ["recent_permission_events"] }]) }),
+    ]);
+    const result = await runRiskV1({
+      reader,
+      llm: llm.client,
+      guard: fakeGuard(),
+      nansen: unavailableNansen(),
+      model: MODEL,
+      addresses: ADDRESSES,
+      mandateValidator: VALIDATOR_A,
+      request: mandateRequestOf(jsonB, rhB, 1_000n),
+      pinned: blockAt(1_004n),
+      prerequisite: { validator: VALIDATOR_A, requestHash: rhA, score: 100, responseHash: keccak256(toHex("A")), tag: "mandate-v1", reasons: [] },
+    });
+    if ("decline" in result) throw new Error(result.decline);
+    const text = canonicalJson(buildEvidence({ tag: RISK_V1.tag, requestHash: rhB, result }));
+    const parsed = parseRiskEvidence(text);
+    if (!parsed.ok) throw new Error(parsed.error);
+    const output = parsed.doc.toolCalls[0]?.output as { events: Array<{ event: string; afterMandate: boolean }> };
+    expect(output.events.map((e) => [e.event, e.afterMandate])).toEqual(expect.arrayContaining([
+      ["PasskeySet", false],
+      ["PasskeyRotated", true],
+    ]));
+    const { schema: _schema, validator: _validator, requestHash, score, reasons, ...rest } = parsed.doc;
+    expect(canonicalJson(buildEvidence({ tag: RISK_V1.tag, requestHash, result: { score, reasons, evidence: riskEvidence(rest) } }))).toBe(text);
   });
 
   it("not JSON, or not an object, has fixed error text", () => {

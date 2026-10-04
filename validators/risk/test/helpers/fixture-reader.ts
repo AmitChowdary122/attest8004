@@ -10,7 +10,7 @@ import { buildAction, buildRequestJson, computeRequestHash, DEPLOYMENTS, request
 import { mandateRequestOf, type MandateInputs, type MandateRecord, type PermissionEvent, type PinnedBlock } from "@attest8004/validator-mandate";
 import { readFileSync } from "node:fs";
 import { getAddress, keccak256, stringToBytes, type Address, type Hex } from "viem";
-import { riskAddressesFor, type RiskAddresses, type RiskReader } from "../../src/reader.ts";
+import { riskAddressesAt, riskContractsFor, type RiskAddresses, type RiskReader } from "../../src/reader.ts";
 import type { CallFrame, TraceResult } from "../../src/trace.ts";
 import type { Prerequisite } from "../../src/types.ts";
 
@@ -245,7 +245,7 @@ export function scenarioRun(name: ScenarioName, variant: string): ScenarioRun {
       tag: "mandate-v1",
       reasons: [...scenario.prerequisite.reasons],
     },
-    addresses: riskAddressesFor(scenario.chainId),
+    addresses: riskAddressesAt(riskContractsFor(scenario.chainId), BigInt(scenario.pinned.number)),
     mandateValidator: deployment.validators.mandateV1,
     memo: v.memo,
   };

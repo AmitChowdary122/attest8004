@@ -48,17 +48,19 @@ export interface SpendEntry {
 /**
  * One event in the permission-change window `(P - N, P]` (the "Permission changes" global
  * constraint): the Identity Registry's `Transfer`/`Approval`/`ApprovalForAll` for the owner at `P`,
- * the forwarder's `AgentKeySet`, or the MandateRegistry's `MandateSet`/`MandateRevoked`.
- * `afterMandate` is computed by the collector by comparing `(block, logIndex)` against the current
- * mandate's `setAtBlock`: `true` means the event happened after the mandate was set, so it was never
- * reviewed when the owner approved this mandate.
+ * the forwarder's `AgentKeySet`, or the MandateRegistry's `MandateSet`/`MandateRevoked`/`PasskeySet`/
+ * `PasskeyRotated` (the registry valid at `P`; only a v2 registry emits the passkey events, so they
+ * appear only in evidence pinned on one, under the same `mandate-v1` tag). `afterMandate` is computed
+ * by the collector by comparing `(block, logIndex)` against the current mandate's `setAtBlock`: `true`
+ * means the event happened after the mandate was set, so it was never reviewed when the owner
+ * approved this mandate.
  */
 export interface PermissionEvent {
   block: bigint;
   logIndex: number;
   txHash: Hex;
   emitter: "IdentityRegistry" | "AgentRequestForwarder" | "MandateRegistry";
-  event: "Transfer" | "Approval" | "ApprovalForAll" | "AgentKeySet" | "MandateSet" | "MandateRevoked";
+  event: "Transfer" | "Approval" | "ApprovalForAll" | "AgentKeySet" | "MandateSet" | "MandateRevoked" | "PasskeySet" | "PasskeyRotated";
   afterMandate: boolean;
 }
 

@@ -15,7 +15,7 @@ import type { PromptGuard } from "./guard.ts";
 import type { ChatClient } from "./llm.ts";
 import type { NansenClient } from "./nansen.ts";
 import { RISK_V1 } from "./params.ts";
-import type { RiskAddresses, RiskReader } from "./reader.ts";
+import { riskAddressesAt, type RiskContracts, type RiskReader } from "./reader.ts";
 import { readPrerequisite, runRiskV1 } from "./run.ts";
 import type { Prerequisite } from "./types.ts";
 
@@ -30,7 +30,11 @@ export const DEFAULT_RISK_MAX_FAILED_CYCLES = 6;
 
 export type RiskValidatorOptions = Omit<ValidatorOptions, "tag" | "maxDeadlineAheadSeconds" | "maxRequestBytes"> & {
   reader: RiskReader;
-  addresses: RiskAddresses;
+  /**
+   * The contracts, with the MandateRegistry history (`riskContractsFor(chainId)`). A check pinned at `P`
+   * records the addresses valid at `P` (`riskAddressesAt`).
+   */
+  contracts: RiskContracts;
   /** Validator A, whose `mandate-v1` verdict on the same action must be answered first (`DEPLOYMENTS[chainId].validators.mandateV1`). */
   mandateValidator: Address;
   /** The (gate, agent) pairs whose requests this validator answers (`RISK_V1_GATES`); as `mandate-v1`'s. */
@@ -59,6 +63,7 @@ export type RiskValidatorOptions = Omit<ValidatorOptions, "tag" | "maxDeadlineAh
  *   admitted at the cycle head's time.
  * - **`check()`** pins `P` and waits there for A's verdict on the same action (`requestHash` for
  *   validator A, read with {@link readPrerequisite}); **no guard or model call happens before that**.
+ *   The evidence records the contracts valid at `P` (the MandateRegistry among them).
  *   A verdict from another validator, or under another tag, declines `MANDATE_V1_VERDICT_INVALID:
  *   <reason>`. A score of 0 from A still runs B. Then it runs {@link runRiskV1} at `P`, which may
  *   itself decline (`PROMPT_TOO_LARGE`, `MODEL_OUTPUT_INVALID`, `EVIDENCE_TOO_LARGE`).
@@ -85,7 +90,7 @@ export type RiskValidatorOptions = Omit<ValidatorOptions, "tag" | "maxDeadlineAh
  */
 export class RiskValidator extends ValidatorBase {
   private readonly reader: RiskReader;
-  private readonly addresses: RiskAddresses;
+  private readonly contracts: RiskContracts;
   private readonly mandateValidator: Address;
   /** The agents each served gate (lower-case) is answered for. */
   private readonly gates: ReadonlyMap<string, ReadonlySet<bigint>>;
@@ -105,7 +110,7 @@ export class RiskValidator extends ValidatorBase {
   private lastPinTimestamp = 0n;
 
   constructor(options: RiskValidatorOptions) {
-    const { reader, addresses, mandateValidator, gates, admission, llm, guard, nansen, model, pinTimeoutMs, pinPollMs, ...base } = options;
+    const { reader, contracts, mandateValidator, gates, admission, llm, guard, nansen, model, pinTimeoutMs, pinPollMs, ...base } = options;
     const log = options.log ?? jsonLineLog;
     super({
       ...base,
@@ -118,7 +123,7 @@ export class RiskValidator extends ValidatorBase {
     });
     if (gates.length === 0) throw new Error("a RiskValidator needs at least one gate to serve");
     this.reader = reader;
-    this.addresses = addresses;
+    this.contracts = contracts;
     this.mandateValidator = mandateValidator;
     const served = new Map<string, Set<bigint>>();
     for (const { gate, agentId } of gates) {
@@ -191,7 +196,7 @@ export class RiskValidator extends ValidatorBase {
       guard: this.guard,
       nansen: this.nansen,
       model: this.model,
-      addresses: this.addresses,
+      addresses: riskAddressesAt(this.contracts, pinned.number),
       mandateValidator: this.mandateValidator,
       request: mandateRequestOf(request.json, requestHash, blockNumber),
       pinned,

@@ -4,7 +4,7 @@
 // knowing this key's last response. Logs are JSON lines; the key and the RPC URL are never logged.
 import {
   Admission,
-  deploymentsFor,
+  currentMandateRegistry,
   jsonLineLog,
   mandateRegistryAbi,
   validationRegistryAbi,
@@ -19,7 +19,7 @@ import { privateKeyToAccount } from "viem/accounts";
 import { monadTestnet } from "viem/chains";
 import { parseServiceConfig } from "./config.ts";
 import { MANDATE_V1 } from "./params.ts";
-import { mandateAddressesFor, viemMandateReader, type MandateAddresses } from "./reader.ts";
+import { mandateContractsFor, viemMandateReader, type MandateContracts } from "./reader.ts";
 import { MandateValidator } from "./validator.ts";
 
 const REPO_ROOT = fileURLToPath(new URL("../../../", import.meta.url));
@@ -36,7 +36,7 @@ const log = (level: "info" | "warn" | "error", msg: string, fields: Record<strin
 async function main(): Promise<void> {
   const config = parseServiceConfig(process.env, REPO_ROOT);
   const chain = monadTestnet;
-  const addresses = mandateAddressesFor(chain.id);
+  const contracts = mandateContractsFor(chain.id);
   const account = privateKeyToAccount(config.privateKey);
   const transport = http(config.rpcUrl);
   const publicClient: PublicClient = createPublicClient({ chain, transport });
@@ -53,20 +53,19 @@ async function main(): Promise<void> {
     maxResponseGas: config.maxResponseGas,
   });
 
-  await startupChecks(publicClient, chain.id, addresses);
+  await startupChecks(publicClient, chain.id, contracts);
   await mkdir(dirname(config.cursorPath), { recursive: true });
 
   const validator = new MandateValidator({
     chain: viemValidatorChain({
       publicClient,
       walletClient,
-      validationRegistry: addresses.validationRegistry,
+      validationRegistry: contracts.validationRegistry,
       gasLimit: { headroomPercent: RESPONSE_HEADROOM_PERCENT, max: config.maxResponseGas },
     }),
     cursor: new FileCursorStore(config.cursorPath),
-    reader: viemMandateReader({ publicClient, addresses, concurrency: READER_CONCURRENCY }),
-    addresses,
-    mandateRegistryDeployBlock: deploymentsFor(chain.id).mandateRegistryDeployBlock,
+    reader: viemMandateReader({ publicClient, contracts, concurrency: READER_CONCURRENCY }),
+    contracts,
     gates: config.gates,
     admission: new Admission({
       maxRequestsPerAgent: config.maxRequestsPerAgentPerHour,
@@ -90,16 +89,18 @@ async function main(): Promise<void> {
 
 /**
  * Refuses to start unless the RPC is on the expected chain and the contracts agree on one Identity
- * Registry, the one the reader uses for owners and permission events.
+ * Registry, the one the reader uses for owners and permission events. The MandateRegistry checked is
+ * the current one (the history's last): the one new mandates are set on.
  */
-async function startupChecks(publicClient: PublicClient, chainId: number, addresses: MandateAddresses): Promise<void> {
+async function startupChecks(publicClient: PublicClient, chainId: number, contracts: MandateContracts): Promise<void> {
   const rpcChainId = await publicClient.getChainId();
   if (rpcChainId !== chainId) throw new Error(`the RPC is on chain ${rpcChainId}, expected ${chainId}`);
+  const mandateRegistry = currentMandateRegistry(contracts).address;
   const [fromMandateRegistry, fromValidationRegistry] = await Promise.all([
-    publicClient.readContract({ address: addresses.mandateRegistry, abi: mandateRegistryAbi, functionName: "identityRegistry" }),
-    publicClient.readContract({ address: addresses.validationRegistry, abi: validationRegistryAbi, functionName: "getIdentityRegistry" }),
+    publicClient.readContract({ address: mandateRegistry, abi: mandateRegistryAbi, functionName: "identityRegistry" }),
+    publicClient.readContract({ address: contracts.validationRegistry, abi: validationRegistryAbi, functionName: "getIdentityRegistry" }),
   ]);
-  const expected = getAddress(addresses.identityRegistry);
+  const expected = getAddress(contracts.identityRegistry);
   if (getAddress(fromMandateRegistry) !== getAddress(fromValidationRegistry)) {
     throw new Error(
       `MandateRegistry.identityRegistry() is ${fromMandateRegistry}, but ValidationRegistry.getIdentityRegistry() is ${fromValidationRegistry}`,
@@ -111,9 +112,9 @@ async function startupChecks(publicClient: PublicClient, chainId: number, addres
   log("info", "startup checks passed", {
     chainId: rpcChainId,
     identityRegistry: expected,
-    validationRegistry: addresses.validationRegistry,
-    mandateRegistry: addresses.mandateRegistry,
-    forwarder: addresses.forwarder,
+    validationRegistry: contracts.validationRegistry,
+    mandateRegistry,
+    forwarder: contracts.forwarder,
   });
 }
 

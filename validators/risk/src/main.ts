@@ -5,6 +5,7 @@
 // keys and URLs are never logged (only the RPC's and the LLM endpoint's hosts, and the model).
 import {
   Admission,
+  currentMandateRegistry,
   deploymentsFor,
   jsonLineLog,
   mandateRegistryAbi,
@@ -24,7 +25,7 @@ import { openAiCompatibleClient } from "./llm.ts";
 import { nansenClient } from "./nansen.ts";
 import { RatePacer } from "./pacer.ts";
 import { RISK_V1 } from "./params.ts";
-import { checkRpcServesRiskV1, riskAddressesFor, viemRiskReader, type RiskAddresses } from "./reader.ts";
+import { checkRpcServesRiskV1, riskContractsFor, viemRiskReader, type RiskContracts } from "./reader.ts";
 import { RiskValidator } from "./validator.ts";
 
 const REPO_ROOT = fileURLToPath(new URL("../../../", import.meta.url));
@@ -43,7 +44,7 @@ const log = (level: "info" | "warn" | "error", msg: string, fields: Record<strin
 async function main(): Promise<void> {
   const config = parseRiskServiceConfig(process.env, REPO_ROOT);
   const chain = monadTestnet;
-  const addresses = riskAddressesFor(chain.id);
+  const contracts = riskContractsFor(chain.id);
   const deployment = deploymentsFor(chain.id);
   const account = privateKeyToAccount(config.privateKey);
   const transport = http(config.rpcUrl);
@@ -68,7 +69,7 @@ async function main(): Promise<void> {
     llmTokensPerMinute: config.llmTokensPerMinute,
   });
 
-  await startupChecks(publicClient, chain.id, addresses, account.address, deployment.validators.riskV1);
+  await startupChecks(publicClient, chain.id, contracts, account.address, deployment.validators.riskV1);
   await mkdir(dirname(config.cursorPath), { recursive: true });
 
   // Two clients, each with its own free-tier pacer: the main model and Prompt Guard have separate limits.
@@ -87,12 +88,12 @@ async function main(): Promise<void> {
     chain: viemValidatorChain({
       publicClient,
       walletClient,
-      validationRegistry: addresses.validationRegistry,
+      validationRegistry: contracts.validationRegistry,
       gasLimit: { headroomPercent: RESPONSE_HEADROOM_PERCENT, max: config.maxResponseGas },
     }),
     cursor: new FileCursorStore(config.cursorPath),
-    reader: viemRiskReader({ publicClient, addresses, concurrency: READER_CONCURRENCY }),
-    addresses,
+    reader: viemRiskReader({ publicClient, contracts, concurrency: READER_CONCURRENCY }),
+    contracts,
     mandateValidator: deployment.validators.mandateV1,
     gates: config.gates,
     admission: new Admission({
@@ -122,13 +123,14 @@ async function main(): Promise<void> {
 /**
  * Refuses to start unless this key is the recorded validator B (requests name that address, and the
  * vault requires `risk-v1` from it), the RPC is on the expected chain, the contracts agree on one
- * Identity Registry, the one the reader uses for owners and permission events, and the RPC serves
- * `debug_traceCall` with callTracer and state 2,000,000 blocks back (`checkRpcServesRiskV1`).
+ * Identity Registry, the one the reader uses for owners and permission events (the MandateRegistry
+ * checked is the current one, the history's last: the one new mandates are set on), and the RPC
+ * serves `debug_traceCall` with callTracer and state 2,000,000 blocks back (`checkRpcServesRiskV1`).
  */
 async function startupChecks(
   publicClient: PublicClient,
   chainId: number,
-  addresses: RiskAddresses,
+  contracts: RiskContracts,
   address: Address,
   expectedValidator: Address,
 ): Promise<void> {
@@ -137,11 +139,12 @@ async function startupChecks(
   }
   const rpcChainId = await publicClient.getChainId();
   if (rpcChainId !== chainId) throw new Error(`the RPC is on chain ${rpcChainId}, expected ${chainId}`);
+  const mandateRegistry = currentMandateRegistry(contracts).address;
   const [fromMandateRegistry, fromValidationRegistry] = await Promise.all([
-    publicClient.readContract({ address: addresses.mandateRegistry, abi: mandateRegistryAbi, functionName: "identityRegistry" }),
-    publicClient.readContract({ address: addresses.validationRegistry, abi: validationRegistryAbi, functionName: "getIdentityRegistry" }),
+    publicClient.readContract({ address: mandateRegistry, abi: mandateRegistryAbi, functionName: "identityRegistry" }),
+    publicClient.readContract({ address: contracts.validationRegistry, abi: validationRegistryAbi, functionName: "getIdentityRegistry" }),
   ]);
-  const expected = getAddress(addresses.identityRegistry);
+  const expected = getAddress(contracts.identityRegistry);
   if (getAddress(fromMandateRegistry) !== getAddress(fromValidationRegistry)) {
     throw new Error(
       `MandateRegistry.identityRegistry() is ${fromMandateRegistry}, but ValidationRegistry.getIdentityRegistry() is ${fromValidationRegistry}`,
@@ -155,10 +158,10 @@ async function startupChecks(
     chainId: rpcChainId,
     address: getAddress(address),
     identityRegistry: expected,
-    reputationRegistry: addresses.reputationRegistry,
-    validationRegistry: addresses.validationRegistry,
-    mandateRegistry: addresses.mandateRegistry,
-    forwarder: addresses.forwarder,
+    reputationRegistry: contracts.reputationRegistry,
+    validationRegistry: contracts.validationRegistry,
+    mandateRegistry,
+    forwarder: contracts.forwarder,
     debugTraceCall: true,
     historyBlock,
   });

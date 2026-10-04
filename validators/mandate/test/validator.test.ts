@@ -19,7 +19,7 @@ import { getAddress, keccak256, stringToBytes, toHex, zeroHash, type Address, ty
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { PreimageCache } from "../src/collect.ts";
 import { MANDATE_V1 } from "../src/params.ts";
-import type { MandateAddresses, MandateReader } from "../src/reader.ts";
+import type { MandateAddresses, MandateContracts, MandateReader } from "../src/reader.ts";
 import { runMandateV1 } from "../src/run.ts";
 import type { MandateInputs, MandateRecord, PermissionEvent, PinnedBlock, Simulation } from "../src/types.ts";
 import { MandateValidator, PIN_LAG_BLOCKS, type MandateValidatorOptions } from "../src/validator.ts";
@@ -43,8 +43,26 @@ const ADDRESSES: MandateAddresses = {
   validationRegistry: deployment.validationRegistry,
   identityRegistry: deployment.identityRegistry,
   forwarder: deployment.agentRequestForwarder,
-  mandateRegistry: deployment.mandateRegistry,
+  mandateRegistry: deployment.mandateRegistries[0].address,
 };
+const V2_REGISTRY = getAddress("0xb60adb7d3cfb303dd501fef6ae136131e655e231");
+
+/** The recorded contracts, with this MandateRegistry history (default: `ADDRESSES`' one, valid from block 0). */
+function contracts(mandateRegistries: MandateContracts["mandateRegistries"] = [{ address: ADDRESSES.mandateRegistry, fromBlock: 0n }]): MandateContracts {
+  return {
+    validationRegistry: ADDRESSES.validationRegistry,
+    identityRegistry: ADDRESSES.identityRegistry,
+    forwarder: ADDRESSES.forwarder,
+    mandateRegistries,
+  };
+}
+
+/** `ADDRESSES`' MandateRegistry from block 0, then v2 from `switchBlock`. */
+const history = (switchBlock: bigint): MandateContracts =>
+  contracts([
+    { address: ADDRESSES.mandateRegistry, fromBlock: 0n },
+    { address: V2_REGISTRY, fromBlock: switchBlock },
+  ]);
 
 type Response = { requestHash: Hex; response: number; responseURI: string; responseHash: Hex; tag: string };
 
@@ -266,8 +284,7 @@ function validator(over: Partial<MandateValidatorOptions> = {}): MandateValidato
     chain,
     cursor: new MemoryCursorStore(999n),
     reader,
-    addresses: ADDRESSES,
-    mandateRegistryDeployBlock: 0n,
+    contracts: contracts(),
     gates: [{ gate: GATE, agentId: AGENT }],
     admission,
     retryDelayMs: 0,
@@ -317,6 +334,18 @@ describe("MandateValidator: verdicts", () => {
     expect(text).toBe(canonicalJson(buildEvidence({ tag: "mandate-v1", requestHash: e.requestHash, result: recomputed })));
     expect(doc.block).toEqual({ number: "1004", hash: pinned.hash, timestamp: pinned.timestamp.toString() });
     expect(doc).toMatchObject({ schema: "attest8004.evidence.v1", validator: "mandate-v1", requestHash: e.requestHash, score: 100, reasons: [] });
+  });
+
+  it("evidence pinned before the switch records the P4 registry, at or after it the v2 one", async () => {
+    const before = addRequest(requestJson());
+    await validator({ contracts: history(1_005n) }).pollOnce(); // pins 1,004: v2 is valid from the next block
+    expect(posted(before.requestHash).doc.block.number).toBe("1004");
+    expect(posted(before.requestHash).doc.params.mandateRegistry).toBe(ADDRESSES.mandateRegistry);
+
+    const at = addRequest(requestJson());
+    await validator({ contracts: history(1_004n) }).pollOnce(); // a fresh process pins 1,004 again: v2's first block
+    expect(posted(at.requestHash).doc.block.number).toBe("1004");
+    expect(posted(at.requestHash).doc.params.mandateRegistry).toBe(V2_REGISTRY);
   });
 
   it("posts 0 with its reasons for a request that breaks the mandate", async () => {
@@ -684,10 +713,31 @@ describe("MandateValidator: the pinned block", () => {
     const e = addRequest(requestJson());
     reader.heads = [1_004n, 1_005n, 1_006n].map(headFor); // accepts() reads the first; the pin waits through 1,005
 
-    await validator({ mandateRegistryDeployBlock: 1_006n }).pollOnce();
+    await validator({ contracts: contracts([{ address: ADDRESSES.mandateRegistry, fromBlock: 1_006n }]) }).pollOnce();
 
     expect(posted(e.requestHash).doc.block.number).toBe("1006");
     expect(reader.heads).toEqual([headFor(1_006n)]);
+  });
+
+  it("the pin floor is the first registry's fromBlock", async () => {
+    const e = addRequest(requestJson());
+    reader.heads = [1_004n, 1_005n, 1_006n].map(headFor); // accepts() reads the first; the pin waits through 1,005
+    const twoRegistries = contracts([
+      { address: ADDRESSES.mandateRegistry, fromBlock: 1_006n },
+      { address: V2_REGISTRY, fromBlock: 1_008n },
+    ]);
+
+    await validator({ contracts: twoRegistries }).pollOnce();
+
+    // Not v2's block: the floor is where the history starts, and P = 1,006 falls in the first registry's range.
+    const { doc } = posted(e.requestHash);
+    expect(doc.block.number).toBe("1006");
+    expect(doc.params.mandateRegistry).toBe(ADDRESSES.mandateRegistry);
+    expect(reader.heads).toEqual([headFor(1_006n)]);
+  });
+
+  it("needs a MandateRegistry history with at least one entry", () => {
+    expect(() => validator({ contracts: contracts([]) })).toThrow(/at least one MandateRegistry/);
   });
 
   it("never pins below the request's own block", async () => {

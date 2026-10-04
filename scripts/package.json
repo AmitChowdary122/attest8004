@@ -13,7 +13,6 @@
     "hot-keys": "node src/hot-keys.ts",
     "addresses": "node --env-file=../.env src/addresses.ts",
     "setup-demo-agents": "node --conditions=@attest8004/source --env-file=../.env src/setup-demo-agents.ts",
-    "set-mandate": "node --conditions=@attest8004/source --env-file=../.env src/set-mandate.ts",
     "e2e": "node --conditions=@attest8004/source --env-file=../.env src/e2e.ts"
   },
   "dependencies": {
