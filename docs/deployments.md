@@ -576,6 +576,101 @@ on A's refusals too, to explain them. The e2e doesn't assert B's score on O, bec
 - Check it yourself (read-only, public RPC by default):
   `pnpm attest8004 verify 0x067b9b94de9ee2385e9f4a40b6dc2dfa4e35afc273bbd095cb75ea93d22f3336` (R ← B).
 
+## P6 passkey run: agent 1984's passkey and two passkey-approved mandates (testnet, 2026-10-05)
+
+One Google Password Manager passkey, created on `https://attest8004.vercel.app/approve` (production build `10cd31b`) in
+laptop Chrome on Linux, then used from laptop Chrome and, synced, from Chrome on Android. Every file below is public
+data and is kept as a test vector in `contracts/test/vectors/`, replayed by `contracts/test/PasskeyVectors.t.sol`.
+
+- **The passkey** (`passkey-registration.json`):
+  - credential `0QGvcMotO-w-2c_gJbwNSA`, ES256 (alg -7), PRF enabled;
+  - creation flags `0x5d` (user present, user verified, backup eligible, backed up, attested data);
+  - AAGUID `ea9b8d66-4d01-1d21-3ce4-b6b48cb575d4` (Google Password Manager);
+  - `qx` `0xa2502d7749840f70d8776fd6669ab62988d5026ef92f3c19d680e9642f40958e`,
+    `qy` `0xd7988334fe141b7ef9070e078db0e6a89653f1c66f6fa0bc0857add0d0419db6`.
+- **Mera PRF check** (salt `sha256("attest8004.prf-check.v1")`, never the inbox salt): the fingerprint was
+  `0xc54a3c3e4565465b` on the laptop **and** on the phone, so the synced passkey's PRF output is the same on both devices.
+
+| Transaction | Block | Estimate | Limit |
+|---|---|---|---|
+| `setPasskey(1984, qx, qy)` (deployer) [`0xb5424ba0…332ec59`](https://monad-testnet.socialscan.io/tx/0xb5424ba06be8fcb4113e72385cb6a6543d3c0ece64b8762ac357a4e76332ec59) | 68,213,932 | 109,035 | 130,842 |
+| `setMandate(1984, e2e mandate, laptop assertion)`, nonce 0 → 1 [`0x5d4cc955…d15444d`](https://monad-testnet.socialscan.io/tx/0x5d4cc955b9bcabf5b8268cb10b7622c6e5a8019897bb5e3036df86927d15444d) | 68,214,351 | 335,032 | 402,039 |
+| `setMandate(1984, e2e mandate, Android assertion)`, nonce 1 → 2 [`0xb4636b96…37af52e`](https://monad-testnet.socialscan.io/tx/0xb4636b96364c427a32d5caf3c2db2f9e5a10c32a22944a3b50e45cdfc37af52e) | 68,215,284 | 164,149 | 196,979 |
+| Fund agent 1984's hot key to 8 requests (+0.19278 MON) [`0x86f0f22e…ef4a44`](https://monad-testnet.socialscan.io/tx/0x86f0f22e5f0233550562aee1ce95c2d7307818826013a1484a0810ade7ef4a44) | 68,215,631 | 21,000 | 26,000 |
+
+- **Each limit is the live estimate × 1.2**, under the scripts' caps (setPasskey 170,000; setMandate 470,000 for
+  this mandate's 3 entries). Monad charges the limit.
+- **Both approvals bind the same e2e mandate**, changeHash
+  `0xf935d1625a09661cd7ac71eeaac67de09df9a9a96be76c3f68b37cec44bc7601`:
+  - targets: the deployer and the DemoPassThrough;
+  - plain MON transfers only;
+  - 0.002 MON per tx and 0.005 MON per day;
+  - valid until 2026-10-31T00:00:00Z.
+
+  The phone's approval re-approves it at nonce 1, which gives a new `MandateSet` baseline (`setAtBlock` 68,215,284).
+- **Before each send, `submit-approval` re-checked the approval** against the chain, verified the assertion locally, and
+  printed the mandate in plain words. It sent only with `--confirm 0xf935d162`.
+- **Both clientDataJSONs carry Chrome's `other_keys_can_be_added_here` key**, and the authenticator data flags are `0x1d`.
+- **The verification is visible in the transaction.** `debug_traceTransaction` (callTracer) of the laptop's
+  `setMandate` shows:
+  - three `STATICCALL`s to the sha256 precompile `0x…02`, the first returning the signed challenge
+    `0x1b4724353b085687edac4eace16f3906f0d3bde93d3ecd9df0f75c48efe71204`;
+  - one **`STATICCALL` to `0x…0100`** (P256VERIFY), which used **6,900 gas** and returned `…01`.
+
+## Verified end-to-end run against MandateRegistry v2 (P6, 2026-10-05)
+
+`pnpm --filter @attest8004/scripts e2e` printed **`e2e OK`** on attempt 3, on the code of commit `df35b37`. Agent 1984's
+mandate is the passkey-approved one above (`setAtBlock` 68,215,284), and every verdict is pinned on v2. Each `params`
+names `0x2Ee5…454B`, because `verify` re-ran every verdict with the registry valid at its pin and matched it byte for
+byte. The full output is kept outside the repo (`../plans/p6-e2e.log`).
+
+| Action | Validator A, `mandate-v1` (≥ 100) | Validator B, `risk-v1` (≥ 80) | The gate |
+|---|---|---|---|
+| S: 0.001 MON to the deployer | **100**, no reasons; pinned block 68,222,640 | **100**, no findings; pinned block 68,222,710 | **executed** (block 68,223,644) |
+| R: 0.001 MON to `DemoPassThrough` | **100**, no reasons; pinned block 68,222,705 | **0**: high `FUNDS_FORWARDED`, medium `FRESH_COUNTERPARTY`; pinned block 68,222,967 | **refused**, `ScoreTooLow(validator B, requestHash R, 0, 80)` (simulated) |
+| O: 0.003 MON to an unlisted target | **0**: `TARGET_NOT_ALLOWED`, `VALUE_OVER_TX_CAP`, `DAILY_CAP_EXCEEDED`; pinned block 68,222,759 | **0**: high `MANDATE_VIOLATION`; pinned block 68,223,368 | **refused**, `ScoreTooLow(validator A, requestHash O, 0, 100)` (simulated) |
+
+- **`verify`:** all six match.
+  - For `risk-v1` it re-ran 3, 3 and 1 onchain tool calls; the model output is recorded, not re-run.
+  - The ten P4/P5 verdicts also still match with v2 in the registry history (above).
+- **B's findings for R, verbatim:**
+  - medium `FRESH_COUNTERPARTY`: "The value forwarded from the target reaches address
+    0xC8702cA01e934f0568ea43B354C17ec7749d313f, which has never sent a transaction (nonce 0) and has no contract code,
+    indicating a fresh EOA counterparty…";
+  - high `FUNDS_FORWARDED`: "Funds are forwarded to 0xC8702cA01e934f0568ea43B354C17ec7749d313f, which is not listed in
+    the mandate's allowedTargets, violating the mandate."
+- **Groq:** 27,816 tokens in 13 calls (S 10,588, R 11,367, O 5,861). Every call was served by `openai/gpt-oss-120b`, and
+  every final answer came on the first attempt. Prompt Guard made 0 calls, and Nansen was unavailable (no key).
+- **Daily cap:**
+  - A's spend counted 0.003 MON before S: P5's consumed S, plus attempt 2's S and R approvals, which were unconsumed
+    and before their deadline.
+  - O's evidence shows 0.005 MON counted, hence `DAILY_CAP_EXCEEDED`, which the e2e expects from that evidence.
+- **Restart:** freshly started validators skipped all six requests (`ALREADY_RESPONDED`), and B made no model call.
+  Exactly one response exists for each request.
+- **Attempts 1 and 2 hit the public RPC's per-IP limit.** Past 15 requests a second it answers JSON-RPC `-32011`
+  ("requests limited to 15/sec"), which viem doesn't retry. Both validators run in-process next to the e2e's own reads.
+  - Attempt 1 stopped in the read-only preflight, and sent nothing.
+  - Attempt 2 sent its six requests, and A answered all three (S 100, R 100, O 0). B stalled on refused reads,
+    and the run was stopped before any model call. B never answered those three; attempt 2 has no execute.
+  - The fix (`df35b37`): every client in `scripts/src/common.ts` shares one fetch that starts at most 10 requests a
+    second and retries a `-32011` or HTTP 429.
+
+| Date | Transaction | Hash | Block | Limit (estimate) |
+|---|---|---|---|---|
+| 2026-10-05 | forwarder.request S → A | [`0x908e1475…3fd4995`](https://monad-testnet.socialscan.io/tx/0x908e1475cbaeb07e2cf9d76859ff8b0fede8da3d53bbd60b289c8499a3fd4995) | 68,222,605 | 315,000 (251,903) |
+| 2026-10-05 | forwarder.request S → B | [`0xaf551997…fa3d19e`](https://monad-testnet.socialscan.io/tx/0xaf5519972a2568e121c44306f110a53ed1b5836879f463260b95c843efa3d19e) | 68,222,611 | 315,000 (251,903) |
+| 2026-10-05 | forwarder.request R → A | [`0x33dc79de…79c4647`](https://monad-testnet.socialscan.io/tx/0x33dc79de095bbec4cf8a6345d17075a46d93f4a432efa314a4e38a85179c4647) | 68,222,617 | 315,000 (251,903) |
+| 2026-10-05 | forwarder.request R → B | [`0xf9ff2f11…94ab049`](https://monad-testnet.socialscan.io/tx/0xf9ff2f112f1a7ded02c97c3fd07590322257b90dd7e3693e7062e0b4c94ab049) | 68,222,623 | 315,000 (251,903) |
+| 2026-10-05 | forwarder.request O → A | [`0x8e9ecdec…5bfaae2`](https://monad-testnet.socialscan.io/tx/0x8e9ecdec7d4a5c8eff04e875ef28fa1831016f5448d35b6e1f732a4e85bfaae2) | 68,222,628 | 315,000 (251,903) |
+| 2026-10-05 | forwarder.request O → B | [`0x812bae54…af205ca`](https://monad-testnet.socialscan.io/tx/0x812bae546bd3adc91481adad1e337ef212576a514415ee4c464832914af205ca) | 68,222,635 | 315,000 (251,903) |
+| 2026-10-05 | validationResponse S → 100 (A, `mandate-v1`) | [`0x55bbbabd…216a714`](https://monad-testnet.socialscan.io/tx/0x55bbbabdd304f52974e94da793290acaee64f1a10d8f2ed4d3b05d42d216a714) | 68,222,705 | 203,914 (169,928) |
+| 2026-10-05 | validationResponse R → 100 (A, `mandate-v1`) | [`0xe4a350e0…0e0e406`](https://monad-testnet.socialscan.io/tx/0xe4a350e0d925b7872b40c6172d822405e0f3fb149695fa07b08cbe4860e0e406) | 68,222,759 | 218,908 (182,423) |
+| 2026-10-05 | validationResponse O → 0 (A, `mandate-v1`) | [`0x659fb1d5…71f1d9f`](https://monad-testnet.socialscan.io/tx/0x659fb1d57935f5a49fe493e433c684ba04b402fbd05d3350e7e00bf9871f1d9f) | 68,222,805 | 239,188 (199,323) |
+| 2026-10-05 | validationResponse S → 100 (B, `risk-v1`) | [`0x17c1b729…9a517cb`](https://monad-testnet.socialscan.io/tx/0x17c1b7297b764badda5131d8bb3d2ce4fd26f0103859b9cee0d160b279a517cb) | 68,222,965 | 430,902 (359,085) |
+| 2026-10-05 | validationResponse R → 0 (B, `risk-v1`) | [`0xe69d5cde…6ad4c05`](https://monad-testnet.socialscan.io/tx/0xe69d5cdee7933daeff2e1c7aa8531dd663de1da57c03e8be7477654736ad4c05) | 68,223,368 | 596,932 (497,443) |
+| 2026-10-05 | validationResponse O → 0 (B, `risk-v1`) | [`0x3d327cfa…044d665`](https://monad-testnet.socialscan.io/tx/0x3d327cfa2e7055fbf1e04712d166c73d755ca3b8fb1febfcb79836ffc044d665) | 68,223,571 | 401,237 (334,364) |
+| 2026-10-05 | execute(S) (deployer) | [`0xa21e2f7d…6cc507d`](https://monad-testnet.socialscan.io/tx/0xa21e2f7d1778a57402eec82c59a0e79b0674ed883a26326af2b0506206cc507d) | 68,223,644 | 121,000 (99,578) |
+
 ## Canonical contracts used (not deployed by us)
 
 | Contract | Monad testnet (10143) | Monad mainnet (143) |

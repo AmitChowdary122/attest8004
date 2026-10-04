@@ -9,7 +9,7 @@
 >
 > The refusals were checked by simulation. Anyone can re-check all six verdicts with `pnpm attest8004 verify <requestHash>` (see [Deployments](#deployments)). `mandate-v1` is re-run in full. For `risk-v1`, the onchain facts and the scoring are re-checked, but the model output is recorded, not re-run.
 >
-> Mandates are set by the agent owner's wallet for now. Passkey approval, the findings inbox and the indexer are being built. Progress is in [STATUS.md](./STATUS.md).
+> **Passkey-approved mandates are live (5 Oct 2026).** MandateRegistry v2 accepts a mandate change only with the owner's transaction **and** an assertion from the agent's passkey, verified onchain by Monad's P256 precompile (`0x0100`; the 6,900-gas call shows in the transaction's trace). One Google Password Manager passkey, created on [`/approve`](https://attest8004.vercel.app/approve), approved agent 1984's mandate from laptop Chrome and again, synced, from Chrome on Android; both real assertions are test vectors. The same three-action e2e then passed against v2 (`e2e OK`, all six verdicts `match`), and the P4/P5 verdicts still verify. The findings inbox and the indexer are being built. Progress is in [STATUS.md](./STATUS.md).
 
 ## What
 

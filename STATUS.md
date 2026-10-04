@@ -4,6 +4,104 @@ Running log, updated at the end of every session (CLAUDE.md, rule 10). Newest se
 
 ---
 
+## Mon 5 Oct 2026 · P6 passkey mandates via `0x0100`, the registry history and `/approve`
+
+### Done
+- **MandateRegistry v2** (`contracts/src/MandateRegistry.sol`, in place; P4's source is at `6e08223`), tests committed before the contract.
+  - **Two factors for every change:** `setMandate`, `rotatePasskey` and `setInboxKey` each need the agent owner's transaction **and** a WebAuthn assertion from the agent's passkey.
+  - **How the assertion is checked:** OpenZeppelin 5.7 `WebAuthn.verify` with UV required, and `P256` through `0x0100` (low-s; an empty answer is never success). The registry checks the rpIdHash itself (`sha256("attest8004.vercel.app")`, an immutable constructor argument), because OZ doesn't.
+  - **The challenge** is `sha256(abi.encode(chainid, registry, agentId, changeHash, nonce))`, with a per-agent nonce.
+  - **The rest:** `setPasskey` is owner-only and works once. The passkey stays bound to the agent across transfers. `revokeMandate` is owner-only, the panic button, and also bumps the nonce while a mandate is set. `MandateSet`/`MandateRevoked` keep P4's signatures.
+  - **Tests:** 45 unit and fuzz tests (your full negative list, rotation, transfer, cross-operation and cross-agent replay, both precompile mocks), plus fork tests and the cast-computed `passkey-vectors.json`, which now also pins each challenge's base64url form.
+  - **Deployed:** `0x2Ee5f78149762DE630c6bFF8CD81166010D0454B`, tx `0xfa483be3…751c0d`, block 68,196,462, limit 2,690,000 against an estimate of 2,241,334.
+- **The registry history.** `DEPLOYMENTS.mandateRegistries` (P4's registry from block 67,842,487, then v2 from 68,196,462) replaces the single address. `mandate-v1`, `risk-v1` and `verify` read the registry valid at each pin, so the evidence format is unchanged and both tags stay. PasskeySet and PasskeyRotated count as permission changes.
+  - **All ten P4/P5 verdicts still `match`**, checked after Task 2 and again after v2 was appended.
+- **`@attest8004/sdk/browser`**, browser-safe, holds:
+  - the challenge and the change hashes;
+  - the strict `attest8004.passkey.v1` / `attest8004.approval.v1` formats;
+  - SPKI → key, DER → low-s, `clientDataJSON` byte indices found by search, and the attested-credential check;
+  - a WebCrypto P-256 verifier that makes the contract's checks.
+
+  An SDK-built approval is replayed through the contract in forge.
+- **Scripts:**
+  - **`set-passkey`** and **`submit-approval`** are dry runs by default and send only with `--confirm <8 hex digits>`.
+  - **`submit-approval` checks before sending:** it re-checks everything against the chain (stale nonce → "approve again"), verifies the assertion locally, and shows the new and current mandate in plain words.
+  - Gas caps are fork-measured.
+  - `set-mandate` is retired.
+  - **All script clients are rate-limited** to stay under the public RPC's new 15 requests/s limit.
+- **`/approve` live on `attest8004.vercel.app`:**
+  - **What it does:** creates the ES256 passkey (resident key, UV, PRF requested), runs the Mera PRF check (check-only salt, fingerprint, output zeroed), then Prepare → Sign with fresh chain reads, a registry cross-check and local verification, and exports the approval.
+  - **Your amendments, both done:**
+    - CSP `default-src 'self'`, `connect-src` limited to the testnet RPC, `frame-ancestors`/`object-src`/`base-uri`/`form-action 'none'`, plus `X-Frame-Options: DENY`, `Referrer-Policy: no-referrer`, nosniff and COOP. zod runs jitless, so the console is clean under the CSP.
+    - No URL input: link parameters are stripped unread, enforced by a source test.
+- **The live run** (docs/deployments.md):
+  - your GPM passkey (laptop Chrome) was bound with `setPasskey` (tx `0xb5424ba0…`);
+  - the e2e mandate was approved on the laptop (`setMandate` tx `0x5d4cc955…`; its trace shows the **`0x0100` STATICCALL, 6,900 gas, `…01`**);
+  - the same mandate was approved again from **Android** with the same synced passkey (tx `0xb4636b96…`);
+  - **the Mera PRF fingerprint matched on both devices** (`0xc54a3c3e4565465b`).
+
+  Both real assertions and the registration are vectors in `contracts/test/vectors/`. forge replays them through the contract (nonce → 2) and rejects their high-s twins; vitest checks them through the SDK.
+- **e2e against v2: `e2e OK`** on attempt 3.
+  - S: 100/100, executed. R: 100/0 (high `FUNDS_FORWARDED`, medium `FRESH_COUNTERPARTY`), refused. O: 0/0, refused.
+  - All six verdicts `match` under `verify`; the restart skipped all six.
+  - Groq used 27,816 tokens in 13 calls.
+  - **Attempts 1–2 hit the RPC rate limit:** attempt 1 sent nothing; attempt 2 has six requests on chain, with A's answers but none from B, and no execute.
+- **How it was built:**
+  - Tasks 1–2 were subagent-driven, each with a task review (Task 1 needed one fix round).
+  - Tasks 3–5 were inline.
+  - One whole-branch review (most capable model) ran before the deploy and found a **Critical** I had planned in: the forge-based gas caps would have refused `set-passkey` live. It also found 3 Important items (stale page state, blind owner send, public docs), all fixed in one inline fix wave with a scoped re-review: all addressed, no new Critical/Important.
+- **Checks on the final tree:** forge 203 (default and `ci`), fmt, both vector checks, typecheck, TS 1,152 (sdk 211, scripts 54, mandate 301, risk 508, cli 76) + web 7, the web build, gitleaks over the full history.
+
+### Next
+- **P7:** the inbox reuses this passkey through Mera's `getPasskeyPrfOutput` (credential `0QGvcMotO-w-2c_gJbwNSA`). `setInboxKey` is already in v2 (same two factors); the page needs a `setInboxKey` change kind and `submit-approval` support for it.
+- **P8:** index both MandateRegistries by block range, plus `PasskeySet`, `PasskeyRotated` and `InboxKeySet`.
+- **The validator services' own RPC clients** (`validators/*/src/main.ts`) aren't rate-limited. Move `rateLimitedFetch` into the SDK and use it there before running the services against the public RPC.
+- **P10 threat-model items from P6:**
+  - **No passkey recovery** (a timelocked owner reset is roadmap); rotate before selling an agent.
+  - **Revoke can't cancel a pending approval when no mandate is set.**
+  - **The attested-credential y search can scan x's bytes** (fails safe, ≈1.8e-6 per passkey).
+  - **The public RPC is a trust root for the page's reads.**
+  - **A compromised page or Vercel account can ask the passkey to sign anything** (the WebAuthn prompt shows no content). The owner's `submit-approval` summary is the human check.
+- **Deferred minors** (task reviews and the final review; triaged, none blocking):
+  - a layered-failure test pinning `_authorize`'s check order;
+  - `abi.test.ts` doesn't independently check `ROTATE_PASSKEY`/`SET_INBOX_KEY`/`MAX_*`;
+  - the "history is empty" text appears three times;
+  - `firstMandateRegistryBlock` could live in the SDK;
+  - `RiskValidator` has no constructor guard on the history;
+  - `mandateRegistryAt` assumes ascending order (only `DEPLOYMENTS` is tested);
+  - the lint-suppression wording at `MandateRegistry.sol:127`;
+  - `test_Gas_Record` is isolated only in the default profile.
+
+### Blockers or decisions needed
+- **Your side:**
+  - The P6 commits are pushed (`main` up to the docs commit). Check CI.
+  - Groq has about 15K tokens left today.
+- **The one place I went past your brief, approved with the plan:** `revokeMandate` also bumps the nonce (Decision 6).
+- **Rulings I made during P6** (every `Ruling:` from the build ledger, in order, each with what it costs if wrong):
+
+1. Work on `main` without a worktree: P1–P5 ran on main and your brief allows pushing to main after checks. Cost if wrong: commits would need moving to a branch.
+2. Task 4 recreated the permission-window helpers from the deleted `set-mandate.ts` (via `git show`), adding PasskeySet/PasskeyRotated. Cost if wrong: none.
+3. The SDK vector `webauthn-vector.json` is itself an `attest8004.approval.v1` document, so the scripts' tests and the real-device vectors share one format and one forge `_replay`. Cost if wrong: reshaping one fixture.
+4. The vector generator lives in `packages/sdk/test/` so typecheck covers it. Cost if wrong: a file move.
+5. `registrationProblems` lives in the SDK, so the page refuses what `set-passkey` refuses; the on-curve check is pure bigint. Cost if wrong: none.
+6. Added `mandateRuleProblems` (zero target, expired, tx cap > daily cap), so the page never asks for a signature the registry would reject. Cost if wrong: one helper.
+7. Took Task 1's deferred minor: `passkey-vectors.json` pins each challenge's base64url, checked by forge and vitest. Cost if wrong: none.
+8. `set-mandate-plan.ts` folded into `permission-window.ts`; `shouldSendMandate` deleted with `set-mandate`. Cost if wrong: none.
+9. The web app runs zod `jitless`, because zod's `new Function` probe tripped the CSP; the alternative, `'unsafe-eval'`, weakens it. Cost if wrong: slower zod parsing on one page.
+10. Web typecheck is split (src vs config and tests), and the chunk-size warning limit is set to 700 kB. Cost if wrong: none.
+11. The page shows viem's short error message. Cost if wrong: none.
+12. The final fix wave was done inline, not by a fix subagent (you chose inline for web and scripts), with a scoped re-review. Cost if wrong: one wave without an independent implementer.
+13. **Plan Decision 29 ("forge gas × 1.3") was wrong:** the caps are now fork-measured against the canonical (proxy) Identity Registry, plus intrinsic gas and calldata, × 1.3. `setPasskey` is 170,000; `setMandate` is 470,000 for up to 3 entries, plus 40,000 per extra entry. Cost if wrong: a refused send, never an overpaid one.
+14. Both scripts are dry runs by default and send only with `--confirm`, with strict argument parsing. Cost if wrong: one extra command per send.
+15. The contract keeps "revoke reverts `NoMandate` with no mandate set", and the docs say "while a mandate is set". Cost if wrong: an owner with a passkey but no mandate can't cancel a pending approval.
+16. Parked the attested-credential y-search edge case: it fails safe, ≈1.8e-6 per passkey, and a rewrite would have been unreviewed code on the live ceremony's path. Cost if wrong: one refused ceremony in ~550,000.
+17. The re-review's residual minors (docs, comments, re-reading the agent dropping a prepared approval) went in without another review. Cost if wrong: none material.
+18. **After e2e attempt 1, I re-ran unchanged rather than add a retry, calling the RPC error transient.** That was wrong: attempt 2 showed the real cause, the RPC's new 15/s limit, made worse by my own concurrent debug reads. Cost: one failed attempt (six requests' gas) and a top-up.
+19. Fixed the root cause in `scripts/src/common.ts` (one rate-limited fetch: at most 10 requests a second, -32011/429 retried), test-first, with no further review: transport only. Cost if wrong: a slower run. The services' clients are still unprotected (Next).
+20. Attempt 2's requests stay on chain unanswered by B. Its approvals counted toward the daily cap until their deadline, and the run still fit exactly (0.005 MON). Cost if wrong: the preflight refuses and says when it fits.
+
+---
+
 ## Sun 4 Oct 2026 · P5 risk-v1, the gate's tag requirement and the two-validator vault
 
 ### Done

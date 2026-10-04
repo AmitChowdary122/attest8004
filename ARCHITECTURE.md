@@ -1,6 +1,6 @@
 # Attest8004 — Architecture
 
-> **Status:** design reference v0.1 (2 Oct 2026), kept in sync with the code as it is built (P4, 3 Oct 2026: the owner-set MandateRegistry, the `mandate-v1` validator and `verify`, and per-agent forwarder approvals in the demo; P5, 4 Oct 2026: `risk-v1` is built (§5.6, its evidence in §6) and tested against fakes and recorded Groq runs; the gate's tag requirement (§4.1, §4.4), the two-validator vault and the demo "risky but mandated" target `DemoPassThrough` are **deployed**; the `verify` CLI now lives in `packages/cli` and re-checks both validators' tags (§5.5); agent 1984's mandate now allowlists `DemoPassThrough` next to the deployer. **The live end-to-end run with both validators passed** on 4 Oct 2026: `risk-v1`'s first testnet verdicts, and all six verdicts `match` under `verify` (docs/deployments.md)). P6, in progress: MandateRegistry v2 (every mandate, passkey and inbox-key change needs the owner's transaction **and** a passkey assertion verified through `0x0100`, §4.1, §7, §9) is **deployed** on testnet at `0x2Ee5f78149762DE630c6bFF8CD81166010D0454B` (block 68,196,462), with P4's registry kept in the history for older verdicts (§6); the `/approve` page is built (§5.1); the inbox and the indexer are still design.
+> **Status:** design reference v0.1 (2 Oct 2026), kept in sync with the code as it is built (P4, 3 Oct 2026: the owner-set MandateRegistry, the `mandate-v1` validator and `verify`, and per-agent forwarder approvals in the demo; P5, 4 Oct 2026: `risk-v1` is built (§5.6, its evidence in §6) and tested against fakes and recorded Groq runs; the gate's tag requirement (§4.1, §4.4), the two-validator vault and the demo "risky but mandated" target `DemoPassThrough` are **deployed**; the `verify` CLI now lives in `packages/cli` and re-checks both validators' tags (§5.5); agent 1984's mandate now allowlists `DemoPassThrough` next to the deployer. **The live end-to-end run with both validators passed** on 4 Oct 2026: `risk-v1`'s first testnet verdicts, and all six verdicts `match` under `verify` (docs/deployments.md)). P6, in progress: MandateRegistry v2 (every mandate, passkey and inbox-key change needs the owner's transaction **and** a passkey assertion verified through `0x0100`, §4.1, §7, §9) is **deployed** on testnet at `0x2Ee5f78149762DE630c6bFF8CD81166010D0454B` (block 68,196,462), with P4's registry kept in the history for older verdicts (§6); the `/approve` page is live (§5.1). On 5 Oct 2026 a real Google Password Manager passkey approved agent 1984's mandate from laptop Chrome and, synced, from Chrome on Android, and the e2e passed against v2 (docs/deployments.md). The inbox and the indexer are still design.
 > **Rule:** any change to an interface, flow, data format or trust assumption updates this file **in the same commit**.
 > Build scope and acceptance criteria live in [`SPEC.md`](./SPEC.md). This file explains *how the system works and why*.
 
@@ -694,12 +694,13 @@ attest8004/
   CLAUDE.md         rules for the AI coding agent
   STATUS.md         progress log
   contracts/        Foundry: src/, test/, script/
-  packages/sdk/     @attest8004/sdk (client, validator base, admission, canonical JSON, deployments)
+  packages/sdk/     @attest8004/sdk (client, validator base, admission, canonical JSON, deployments with the MandateRegistry history,
+                    passkey files and WebAuthn parsing; `@attest8004/sdk/browser` is the browser-safe subset)
   packages/cli/     @attest8004/cli (`pnpm attest8004 verify`: re-checks mandate-v1 and risk-v1 verdicts)
   validators/       mandate/ (mandate-v1: the service and verifyRequest), risk/ (risk-v1, P5: the validator and verifyRiskRequest)
   indexer/          Envio HyperIndex
-  web/              /approve, /inbox, /dashboard
+  web/              /approve (P6: src/approve/, headers in vercel.json), /inbox, /dashboard
   cre/              (stretch) Chainlink CRE workflow
-  scripts/          @attest8004/scripts: operational scripts (round trip, hot keys, demo agents, end to end)
+  scripts/          @attest8004/scripts: operational scripts (round trip, hot keys, demo agents, set-passkey, submit-approval, end to end)
   docs/             quickstart, API ref, threat model, deployments, spec-notes.md, nansen.md, mera.md, security-review.md
 ```
