@@ -37,13 +37,13 @@ function isNansenToolName(name: string): name is NansenToolName {
   return (NANSEN_TOOLS as readonly string[]).includes(name);
 }
 
-/** One entry of the OpenAI-compatible `tools` array sent to the model. */
+/** One entry of the OpenAI-compatible `tools` array sent to the model, for a tool with arguments. */
 function toolDefinition(
   name: OnchainToolName | NansenToolName,
   description: string,
   properties: Record<string, { type: string; description: string }>,
-  required: string[] = [],
-) {
+  required: string[],
+): { type: "function"; function: { name: string; description: string; parameters: object } } {
   return {
     type: "function" as const,
     function: {
@@ -52,6 +52,22 @@ function toolDefinition(
       parameters: { type: "object" as const, properties, required, additionalProperties: false },
     },
   };
+}
+
+/** The tools that always read the request's own target/gate/agent and take no arguments. */
+const NO_ARGUMENT_TOOLS: ReadonlySet<string> = new Set(["get_mandate", "simulate_action", "recent_permission_events"]);
+
+/**
+ * The definition of a tool that takes no arguments (Task 13 ruling): a plain empty object schema, with
+ * no `additionalProperties: false` and no `required`, so a provider that validates tool calls against
+ * the schema itself (Groq's `tool_use_failed`) never refuses a call that passes stray arguments.
+ * {@link runTool} ignores whatever object such a call carries.
+ */
+function noArgumentToolDefinition(
+  name: OnchainToolName,
+  description: string,
+): { type: "function"; function: { name: string; description: string; parameters: object } } {
+  return { type: "function" as const, function: { name, description, parameters: { type: "object" as const, properties: {} } } };
 }
 
 /** The description every address argument shares (Decision 18): what scope means, independent of which tool. */
@@ -65,16 +81,14 @@ const ADDRESS_ARG_DESCRIPTION =
  * target/gate/agent, never a model-supplied address.
  */
 export const TOOL_DEFINITIONS = [
-  toolDefinition("get_mandate", "Read the requesting agent's mandate and its owner, both at the pinned block.", {}),
-  toolDefinition(
+  noArgumentToolDefinition("get_mandate", "Read the requesting agent's mandate and its owner, both at the pinned block."),
+  noArgumentToolDefinition(
     "simulate_action",
     "Simulate the requested action (debug_traceCall) at the pinned block, from the gate to the request's target, with the request's value and data. Shows every call it makes and where value ends up.",
-    {},
   ),
-  toolDefinition(
+  noArgumentToolDefinition(
     "recent_permission_events",
     "List ownership and mandate-change events for the requesting agent in the recent block window ending at the pinned block.",
-    {},
   ),
   toolDefinition(
     "counterparty_onchain",
@@ -138,12 +152,16 @@ const agentIdArg = z
   .refine((s) => DECIMAL.test(s) && BigInt(s) <= UINT256_MAX, "out of range")
   .transform((s) => BigInt(s));
 
-const noArgsSchema = z.strictObject({});
 const counterpartyArgsSchema = z.strictObject({ address: addressArg });
 const reputationArgsSchema = z.strictObject({ agentId: agentIdArg });
 
 /** The validated arguments `execute` needs per tool, or `null` for a schema mismatch. */
 type ToolArgs = { address?: Address; agentId?: bigint };
+
+/** A JSON object (not an array, not `null`): all a no-argument tool asks of its arguments. */
+function isJsonObject(value: unknown): boolean {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
 
 function validateArguments(name: OnchainToolName | NansenToolName, parsed: unknown): ToolArgs | null {
   if (name === "counterparty_onchain" || name === "nansen_counterparty_profile" || name === "nansen_flows") {
@@ -154,8 +172,8 @@ function validateArguments(name: OnchainToolName | NansenToolName, parsed: unkno
     const result = reputationArgsSchema.safeParse(parsed);
     return result.success ? { agentId: result.data.agentId } : null;
   }
-  const result = noArgsSchema.safeParse(parsed);
-  return result.success ? {} : null;
+  // A no-argument tool (Task 13 ruling): any JSON object, its contents ignored.
+  return isJsonObject(parsed) ? {} : null;
 }
 
 /** Whether an own `__proto__` key appears in any object at any depth of `value`. */
@@ -566,7 +584,8 @@ export function initialScope(request: MandateInputs["request"], owner: Address, 
  * Runs one model tool call, deterministically, from the raw argument string the model sent (Ruling
  * R3): never throws on bad input — an unknown `name` gives `{error: "UNKNOWN_TOOL"}`; a
  * `rawArguments` that isn't JSON, or doesn't match that tool's shape, gives
- * `{error: "INVALID_ARGUMENTS"}`; an address argument outside `ctx.scope` gives
+ * `{error: "INVALID_ARGUMENTS"}` (the three no-argument tools accept any JSON object and ignore its
+ * contents, Task 13 ruling: only input that isn't a JSON object is invalid for them); an address argument outside `ctx.scope` gives
  * `{error: "ADDRESS_OUT_OF_SCOPE"}` with no chain read or Nansen call. Any other failure (an RPC or
  * transport error — Nansen's own failures never throw; see `nansen.ts`) throws, so it can never
  * become a tool output. The returned `arguments` is the parsed JSON when `rawArguments` parsed, else
@@ -602,7 +621,10 @@ export async function runTool(
   let argumentsRecord: JsonValue = rawArguments;
   if (parsedOk) {
     if (isRecordableJson(parsed)) argumentsRecord = parsed;
-    else parsedOk = false; // treated the same as unparseable from here on: validateArguments is skipped
+    // Treated the same as unparseable from here on (validateArguments is skipped), except by a
+    // no-argument tool, which ignores its arguments' contents and needs only a JSON object (Task 13
+    // ruling); the record keeps the raw string either way.
+    else if (!(NO_ARGUMENT_TOOLS.has(name) && isJsonObject(parsed))) parsedOk = false;
   }
 
   // Fix round 1, finding 6: an unrecognised name is still `onchain: true`, so `verify` re-checks

@@ -204,7 +204,6 @@ describe("constants", () => {
   it("MODEL_FINDING_CODES is in the exact fixed order and excludes the code-only finding", () => {
     expect(MODEL_FINDING_CODES).toEqual([
       "FUNDS_FORWARDED",
-      "UNMANDATED_RECIPIENT",
       "NEW_CONTRACT",
       "FRESH_COUNTERPARTY",
       "MANDATE_VIOLATION",
@@ -216,6 +215,13 @@ describe("constants", () => {
       "OTHER",
     ]);
     expect(MODEL_FINDING_CODES).not.toContain(PROMPT_INJECTION_SUSPECTED);
+  });
+
+  it("has no UNMANDATED_RECIPIENT (Task 13 ruling): FUNDS_FORWARDED is the one code for value reaching an address outside the mandate, so a model answer naming it fails like any unknown code", () => {
+    expect(MODEL_FINDING_CODES as readonly string[]).not.toContain("UNMANDATED_RECIPIENT");
+    expect(findingsJsonSchema.properties.findings.items.properties.code.enum as readonly string[]).not.toContain("UNMANDATED_RECIPIENT");
+    const raw = '{"findings":[{"code":"UNMANDATED_RECIPIENT","severity":"high","explanation":"x","sources":["request"]}]}';
+    expect(parseModelOutput(raw, new Set(["request"]))).toEqual({ ok: false, error: "invalid at findings[0].code" });
   });
 
   it("CODE_FINDING_CODES holds only the code-only finding", () => {

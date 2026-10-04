@@ -6,7 +6,7 @@
  */
 export const RISK_V1 = {
   tag: "risk-v1",
-  promptVersion: "risk-v1/1",
+  promptVersion: "risk-v1/4",
   maxToolCalls: 8,
   invalidOutputRetries: 2,
   reasoningEffort: "low",
@@ -35,7 +35,8 @@ export const RISK_V1 = {
   maxSourcesPerFinding: 4,
   calldataTextMinChars: 8,
   // 512 characters in at most 16 runs (Task 10 fix rounds 1-2): with the largest request summary,
-  // the initial messages still leave room for 3 tool answers (worst case 6,828 of 7,000 tokens).
+  // the initial messages still leave room for 3 tool answers (worst case 6,828 of 7,000 tokens with the
+  // risk-v1/1 prompt, 6,871 with risk-v1/4's: a longer prompt must be re-measured against agent.test.ts).
   calldataTextMaxChars: 512,
   calldataTextMaxRuns: 16,
   calldataHeadBytes: 132,

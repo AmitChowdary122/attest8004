@@ -50,8 +50,8 @@ function makeData(overrides: Partial<InitialData> = {}): InitialData {
 const PARAMS = { model: "openai/gpt-oss-120b", temperature: RISK_V1.temperature, seed: RISK_V1.seed };
 
 describe("PROMPT_VERSION", () => {
-  it("is risk-v1/1", () => {
-    expect(PROMPT_VERSION).toBe("risk-v1/1");
+  it("is risk-v1/4 (tuned on Task 13's live recordings: no invented findings on the safe transfer; one code, FUNDS_FORWARDED, for value leaving the mandate)", () => {
+    expect(PROMPT_VERSION).toBe("risk-v1/4");
   });
 });
 
@@ -78,6 +78,18 @@ describe("SYSTEM_PROMPT (pinning test)", () => {
     expect(SYSTEM_PROMPT).toContain("A plain transfer within the mandate to an EOA that has sent transactions has no medium or high finding");
   });
 
+  it("says value that reaches only the target is not forwarded, and never to invent a finding (risk-v1/2-3, from Task 13's recorded safe transfer)", () => {
+    expect(SYSTEM_PROMPT).toContain("Value that reaches only the target is not forwarded: never FUNDS_FORWARDED.");
+    expect(SYSTEM_PROMPT).toContain("Never invent a finding: if nothing qualifies, report no findings, the normal answer for a routine action");
+    expect(SYSTEM_PROMPT).toContain("10^18 wei is 1 MON");
+    expect(SYSTEM_PROMPT).toContain("a check that found nothing wrong is not a finding");
+  });
+
+  it("has one code for value reaching an address outside the mandate, FUNDS_FORWARDED, and no UNMANDATED_RECIPIENT (Task 13 ruling)", () => {
+    expect(SYSTEM_PROMPT).toContain("- FUNDS_FORWARDED: value reaches an address that is not the target and not in the mandate's allowedTargets.");
+    expect(SYSTEM_PROMPT).not.toContain("UNMANDATED_RECIPIENT");
+  });
+
   it("says how to work: simulate_action first, one tool per turn, at most 8", () => {
     expect(SYSTEM_PROMPT).toContain("Call simulate_action first");
     expect(SYSTEM_PROMPT).toContain("one per turn, at most 8");
@@ -99,7 +111,7 @@ describe("SYSTEM_PROMPT (pinning test)", () => {
     expect(SYSTEM_PROMPT).toContain("mandate_v1_verdict");
   });
 
-  it("stays compact (about 450 words) for the 8K TPM limit", () => {
+  it("stays compact (about 525 words) for the 8K TPM limit", () => {
     const words = SYSTEM_PROMPT.split(/\s+/).filter((w) => w.length > 0).length;
     expect(words).toBeGreaterThan(350);
     expect(words).toBeLessThan(550);
@@ -238,6 +250,7 @@ describe("finalMessages and the final instruction", () => {
     expect(text).not.toContain("simulate_action");
     expect(text).toContain(String(RISK_V1.maxFindings));
     expect(text).toContain(String(RISK_V1.maxExplanationChars));
+    expect(text).toContain('If nothing qualifies, answer exactly {"findings":[]}; never invent a finding to fill the list.');
   });
 
   it("never lists a name outside SOURCE_NAMES (a model-chosen tool name can't reach a trusted message)", () => {

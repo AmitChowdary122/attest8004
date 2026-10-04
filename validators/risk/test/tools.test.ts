@@ -99,11 +99,20 @@ describe("ONCHAIN_TOOLS, NANSEN_TOOLS and TOOL_DEFINITIONS", () => {
   it("TOOL_DEFINITIONS matches all seven names, in TOOL_NAMES order, and each one's no-arg/one-arg shape", () => {
     expect(TOOL_DEFINITIONS.map((t) => t.function.name)).toEqual(TOOL_NAMES);
     const byName = new Map(TOOL_DEFINITIONS.map((t) => [t.function.name, t]));
-    expect(byName.get("get_mandate")?.function.parameters.required).toEqual([]);
-    expect(byName.get("counterparty_onchain")?.function.parameters.required).toEqual(["address"]);
-    expect(byName.get("erc8004_reputation")?.function.parameters.required).toEqual(["agentId"]);
-    expect(byName.get("nansen_counterparty_profile")?.function.parameters.required).toEqual(["address"]);
-    expect(byName.get("nansen_flows")?.function.parameters.required).toEqual(["address"]);
+    const paramsOf = (name: string) => byName.get(name)?.function.parameters as { required?: string[]; additionalProperties?: boolean } | undefined;
+    // The no-argument tools (Task 13 ruling): a plain empty object schema, with no additionalProperties
+    // false and no required list, so a provider that validates tool calls server-side (Groq's
+    // tool_use_failed) never refuses a call that passes stray arguments; runTool ignores them.
+    for (const name of ["get_mandate", "simulate_action", "recent_permission_events"]) {
+      expect(byName.get(name)?.function.parameters, name).toEqual({ type: "object", properties: {} });
+    }
+    for (const name of ["counterparty_onchain", "erc8004_reputation", "nansen_counterparty_profile", "nansen_flows"]) {
+      expect(paramsOf(name)?.additionalProperties, name).toBe(false);
+    }
+    expect(paramsOf("counterparty_onchain")?.required).toEqual(["address"]);
+    expect(paramsOf("erc8004_reputation")?.required).toEqual(["agentId"]);
+    expect(paramsOf("nansen_counterparty_profile")?.required).toEqual(["address"]);
+    expect(paramsOf("nansen_flows")?.required).toEqual(["address"]);
   });
 });
 
@@ -158,8 +167,41 @@ describe("runTool: arguments", () => {
       expect(result.output, raw).toEqual({ error: "INVALID_ARGUMENTS" });
     }
     expect(reader.code).not.toHaveBeenCalled();
+    // A no-argument tool ignores its arguments, so it runs; the record still keeps the raw string.
     const noArgs = await runTool("get_mandate", '{"__proto__":{}}', ctx);
-    expect(noArgs).toMatchObject({ arguments: '{"__proto__":{}}', output: { error: "INVALID_ARGUMENTS" } });
+    expect(noArgs.arguments).toBe('{"__proto__":{}}');
+    expect(noArgs.output).toEqual((await runTool("get_mandate", "{}", ctx)).output);
+  });
+
+  it("a no-argument tool accepts any JSON object and ignores its contents (Task 13 ruling: Groq's recorded tool_use_failed passed the action as arguments)", async () => {
+    const reader = makeReader({ mandate: vi.fn(async () => null) });
+    const recorded = JSON.stringify({ agentId: "1984", block: "67959992", chainId: 10_143, target: TARGET, value: "1000000000000000", data: "0x2b66d72e" });
+    for (const name of ["get_mandate", "simulate_action", "recent_permission_events"]) {
+      const ctx = makeCtx(reader);
+      const empty = await runTool(name, "{}", ctx);
+      expect(empty.output, name).not.toEqual({ error: "INVALID_ARGUMENTS" });
+      for (const raw of [recorded, '{"x":{"y":[1,2]}}', '{"x":1.5}']) {
+        const result = await runTool(name, raw, makeCtx(reader));
+        expect(result.output, `${name} ${raw}`).toEqual(empty.output);
+        expect(result.onchain).toBe(true);
+      }
+      // Recorded as parsed JSON when canonical-JSON-safe, else as the raw string (as for every tool).
+      expect((await runTool(name, recorded, makeCtx(reader))).arguments).toEqual(JSON.parse(recorded));
+      expect((await runTool(name, '{"x":1.5}', makeCtx(reader))).arguments).toBe('{"x":1.5}');
+    }
+  });
+
+  it("a no-argument tool still gives INVALID_ARGUMENTS, with no read, for input that isn't a JSON object", async () => {
+    for (const name of ["get_mandate", "simulate_action", "recent_permission_events"]) {
+      const reader = makeReader();
+      for (const raw of ["", "not json", "[]", "null", "1", '"{}"', "true", "{"]) {
+        const result = await runTool(name, raw, makeCtx(reader));
+        expect(result.output, `${name} ${JSON.stringify(raw)}`).toEqual({ error: "INVALID_ARGUMENTS" });
+      }
+      expect(reader.mandate).not.toHaveBeenCalled();
+      expect(reader.trace).not.toHaveBeenCalled();
+      expect(reader.permissionLogs).not.toHaveBeenCalled();
+    }
   });
 });
 

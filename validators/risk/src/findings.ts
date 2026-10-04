@@ -5,11 +5,12 @@ import type { Finding, GuardResult, RecordedFinding, Severity } from "./types.ts
 /**
  * The finding codes the model may emit, in the fixed order of the P5 plan's Decision 8. A new code
  * is a schema change before the first live verdict, and a new tag after it (the evidence format
- * freezes once one exists).
+ * freezes once one exists). Task 13's ruling removed `UNMANDATED_RECIPIENT`: `FUNDS_FORWARDED` is the
+ * one code for value reaching an address that is neither the target nor in the mandate's
+ * `allowedTargets` (a target outside the mandate is `mandate-v1`'s, reported as `MANDATE_VIOLATION`).
  */
 export const MODEL_FINDING_CODES = [
   "FUNDS_FORWARDED",
-  "UNMANDATED_RECIPIENT",
   "NEW_CONTRACT",
   "FRESH_COUNTERPARTY",
   "MANDATE_VIOLATION",

@@ -2,14 +2,23 @@ import { canonicalJson } from "@attest8004/sdk";
 import type { MandateInputs, PinnedBlock, Simulation } from "@attest8004/validator-mandate";
 import { concatHex, encodeErrorResult, getAddress, keccak256, stringToHex, toHex, type Address, type Hex } from "viem";
 import { describe, expect, it, vi } from "vitest";
-import { FINAL_TOOL_CALLS_ERROR, InitialMessagesTooLargeError, MIN_TOOL_ANSWERS, promptParams, RESERVE_TURN, reaskMessages, runAgent } from "../src/agent.ts";
+import {
+  FINAL_SCHEMA_ERROR,
+  FINAL_TOOL_CALLS_ERROR,
+  InitialMessagesTooLargeError,
+  MIN_TOOL_ANSWERS,
+  promptParams,
+  RESERVE_TURN,
+  reaskMessages,
+  runAgent,
+} from "../src/agent.ts";
 import { findingsJsonSchema, SOURCE_NAMES } from "../src/findings.ts";
 import type { PromptGuard } from "../src/guard.ts";
 import { estimateTokens, parseChatResponse, ProviderError, type ChatClient, type ChatMessage, type ChatRequest, type ChatResponse } from "../src/llm.ts";
 import type { NansenClient } from "../src/nansen.ts";
 import { TokenBudgetExceededError } from "../src/pacer.ts";
 import { RISK_V1 } from "../src/params.ts";
-import { finalMessages, initialMessages, invalidOutputMessage, promptHash, type InitialData } from "../src/prompt.ts";
+import { finalMessages, initialMessages, invalidOutputMessage, promptHash, TOOL_SCHEMA_RETRY_MESSAGE, type InitialData } from "../src/prompt.ts";
 import type { RiskReader } from "../src/reader.ts";
 import { initialScope, TOOL_DEFINITIONS, type ToolContext } from "../src/tools.ts";
 import type { CallFrame, TraceResult } from "../src/trace.ts";
@@ -554,8 +563,13 @@ describe("runAgent: caps", () => {
     const ran = result.toolCalls.filter((c) => !JSON.stringify(c.output).includes("TOOL_CALL_LIMIT"));
     expect(ran.length).toBeGreaterThan(0);
     expect(ran.length).toBeLessThan(RISK_V1.maxToolCalls);
-    // Nothing ran that wasn't then sent: every simulation was answered with its output.
-    expect(reader.trace).toHaveBeenCalledTimes(ran.length);
+    // Every simulation that ran was answered with its output, except at most one at the boundary:
+    // these answers are a little over the reservation once serialised, so one can run and then not fit
+    // (answered TOOL_CALL_LIMIT, never sent). Where it lands depends on the prompt's exact length (Task
+    // 13: risk-v1/4's shorter prompt moved it); the strict "runs only when sent" property holds for
+    // answers within the reservation, pinned below ("with answers no larger than the reservation …").
+    expect(vi.mocked(reader.trace).mock.calls.length - ran.length).toBeGreaterThanOrEqual(0);
+    expect(vi.mocked(reader.trace).mock.calls.length - ran.length).toBeLessThanOrEqual(1);
     if (stopsBeforeAsking) expect(ran).toHaveLength(result.toolCalls.length);
 
     for (const request of requests) expect(estimateTokens(request)).toBeLessThanOrEqual(RISK_V1.maxRequestTokens);
@@ -658,7 +672,8 @@ describe("runAgent: caps", () => {
   });
 
   it("at the caps (512 characters of < in 1..16 runs, the largest request summary), the room check passes and a 3-call at-cap run keeps every request <= 7,000 (fix rounds 1-2, finding 1)", async () => {
-    // The chosen caps (Task 10 fix round 2): measured worst case 6,828 of 7,000 for the room check, at 16 runs of 32.
+    // The chosen caps (Task 10 fix round 2): measured worst case 6,828 of 7,000 for the room check, at 16 runs of 32
+    // (6,871 with the risk-v1/4 prompt, Task 13).
     expect(RISK_V1.calldataTextMaxChars).toBe(512);
     expect(RISK_V1.calldataTextMaxRuns).toBe(16);
     const cap = RISK_V1.calldataTextMaxChars;
@@ -748,23 +763,68 @@ describe("runAgent: invalid model output (one shared budget of 2 retries)", () =
     expect(requests).toHaveLength(4);
   });
 
-  it("a tool_use_failed on turn 1 re-asks that same turn", async () => {
+  it("a tool_use_failed on turn 1 re-asks that turn with our fixed corrective message appended, so a seeded retry isn't identical (Task 13 ruling)", async () => {
     const sim = call("simulate_action");
     const { client, requests } = scripted([toolUseFailed(), toolTurn([sim]), textTurn("done"), textTurn(EMPTY)]);
     const result = await run({ llm: client });
-    expect(requests[1]).toEqual(requests[0]);
+    const [first, retry, next] = requests as [ChatRequest, ChatRequest, ChatRequest];
+    expect(retry.messages).toEqual([...first.messages, { role: "user", content: TOOL_SCHEMA_RETRY_MESSAGE }]);
+    expect({ ...retry, messages: [] }).toEqual({ ...first, messages: [] }); // otherwise the same request
+    // Once a turn succeeds the correction is dropped: later requests carry the history without it.
+    expect(next.messages.slice(0, first.messages.length)).toEqual(first.messages);
+    expect(JSON.stringify(requests.slice(2))).not.toContain(TOOL_SCHEMA_RETRY_MESSAGE);
     expect(result.toolCalls.map((c) => c.name)).toEqual(["simulate_action"]);
     expect(result.turns).toHaveLength(3); // a failed request has no response to record
     expect(result.final).toEqual({ raw: EMPTY, attempts: 1 });
     expect(result.findings).toEqual([]);
+    for (const request of requests) expect(estimateTokens(request)).toBeLessThanOrEqual(RISK_V1.maxRequestTokens);
   });
 
-  it("json_validate_failed re-asks the same final request", async () => {
+  it("each further tool_use_failed adds one more corrective message, so no two requests of a turn are identical", async () => {
+    const sim = call("simulate_action");
+    const { client, requests } = scripted([toolUseFailed(), toolUseFailed(), toolTurn([sim]), textTurn("done"), textTurn(EMPTY)]);
+    const result = await run({ llm: client });
+    const correction: ChatMessage = { role: "user", content: TOOL_SCHEMA_RETRY_MESSAGE };
+    expect(requests[2]?.messages).toEqual([...(requests[0]?.messages ?? []), correction, correction]);
+    expect(new Set(requests.slice(0, 3).map((r) => JSON.stringify(r))).size).toBe(3);
+    expect(result.findings).toEqual([]); // two retries: still within the budget
+  });
+
+  it("the corrective message names the no-argument tools and asks for schema-exact arguments", () => {
+    expect(TOOL_SCHEMA_RETRY_MESSAGE).toBe(
+      "Your previous tool call did not match the tool's schema. Call tools with arguments exactly matching their schemas; get_mandate, simulate_action and recent_permission_events take {}.",
+    );
+  });
+
+  it("json_validate_failed re-asks with the failed generation and our fixed error text, so a seeded retry isn't identical (Task 13 ruling)", async () => {
     const { client, requests } = scripted([textTurn("done"), jsonValidateFailed(), textTurn(EMPTY)]);
     const result = await run({ llm: client });
-    expect(requests[2]).toEqual(requests[1]);
+    const [, first, retry] = requests as [ChatRequest, ChatRequest, ChatRequest];
+    expect(retry.messages).toEqual([
+      ...first.messages,
+      { role: "assistant", content: '{"findings": [' },
+      { role: "user", content: invalidOutputMessage(FINAL_SCHEMA_ERROR, ["request", "mandate_v1_verdict"]) },
+    ]);
+    expect(isFinalRequest(retry)).toBe(true);
+    expect(estimateTokens(retry)).toBeLessThanOrEqual(RISK_V1.maxRequestTokens);
     expect(result.final).toEqual({ raw: EMPTY, attempts: 2 });
     expect(result.findings).toEqual([]);
+  });
+
+  it("a corrective message never takes a request past the token bound: tool_use_failed at the caps still keeps every request <= 7,000", async () => {
+    const run8 = stringToHex("<".repeat(32));
+    const text = calldataText(concatHex(Array.from({ length: 16 }, () => concatHex([run8, "0x00"]))));
+    const reader = makeReader({ trace: vi.fn(async () => okTrace(bigFrame())) });
+    // Each turn's first request fails; its retry (with the correction) succeeds.
+    const { client, requests } = scripted((request) => {
+      if (!request.tools) return textTurn(EMPTY);
+      const corrected = request.messages.at(-1)?.content === TOOL_SCHEMA_RETRY_MESSAGE;
+      return corrected ? toolTurn([call("simulate_action")]) : toolUseFailed();
+    });
+    const result = await run({ llm: client, reader, data: largestData(text) });
+    expect(requests.some((r) => r.messages.at(-1)?.content === TOOL_SCHEMA_RETRY_MESSAGE)).toBe(true);
+    for (const request of requests) expect(estimateTokens(request)).toBeLessThanOrEqual(RISK_V1.maxRequestTokens);
+    expect(result.findings === null || Array.isArray(result.findings)).toBe(true);
   });
 
   it("json_validate_failed and tool_use_failed count toward the same budget: tool_use_failed + json_validate_failed + one zod failure -> findings null, no further call", async () => {

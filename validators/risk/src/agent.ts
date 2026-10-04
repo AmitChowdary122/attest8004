@@ -35,18 +35,22 @@
  *
  * **Failures.** A transient provider failure (`isTransientError`) rejects the whole run, with no
  * partial result (Decision 6). Invalid model output — a `tool_use_failed` in the loop (the same turn
- * is re-asked), a `json_validate_failed` on the final call (the same request is re-sent), or a final
- * answer zod rejects (re-asked with our fixed error text), or a final answer that calls a tool
+ * is re-asked with {@link TOOL_SCHEMA_RETRY_MESSAGE} appended, one more copy per further failure, and
+ * dropped once the turn succeeds), a `json_validate_failed` on the final call (re-asked with the
+ * failed generation and {@link FINAL_SCHEMA_ERROR}), a final answer zod rejects (re-asked with our
+ * fixed error text), or a final answer that calls a tool
  * ({@link FINAL_TOOL_CALLS_ERROR}: not recorded as a turn, so the record never holds a tool call
  * without its answer, though its usage still counts) — shares one budget of
- * `RISK_V1.invalidOutputRetries` retries (Decision 7); once it's spent, `findings` is `null`.
+ * `RISK_V1.invalidOutputRetries` retries (Decision 7); once it's spent, `findings` is `null`. Every
+ * re-ask differs from the request that failed (Task 13 ruling: with a fixed `seed`, an identical retry
+ * repeats the same failure), unless even our error text no longer fits the token bound.
  * Anything else (a chain read failing inside a tool, the guard failing) rethrows.
  */
 import { findingsJsonSchema, parseModelOutput, SOURCE_NAMES } from "./findings.ts";
 import { screen, type PromptGuard } from "./guard.ts";
 import { estimateTokens, isTransientError, ProviderError, type ChatClient, type ChatMessage, type ChatRequest, type ChatResponse } from "./llm.ts";
 import { RISK_V1 } from "./params.ts";
-import { finalMessages, initialMessages, invalidOutputMessage, type InitialData } from "./prompt.ts";
+import { finalMessages, initialMessages, invalidOutputMessage, TOOL_SCHEMA_RETRY_MESSAGE, type InitialData } from "./prompt.ts";
 import { isRecordableJson, NANSEN_TOOLS, runTool, TOOL_DEFINITIONS, type ToolContext } from "./tools.ts";
 import type { Finding, GuardResult, JsonValue, ToolCallRecord, TurnRecord } from "./types.ts";
 import { safeJson } from "./untrusted.ts";
@@ -72,6 +76,13 @@ export interface AgentResult {
  * (`verify` requires every recorded tool call to be answered exactly once).
  */
 export const FINAL_TOOL_CALLS_ERROR = "the final answer called a tool, but the final answer has no tools";
+
+/**
+ * Our fixed error text for a final answer the provider refused as not matching the JSON schema
+ * (`json_validate_failed`; Task 13 ruling): the final call is re-asked with the failed generation and
+ * this text (as for a zod failure), so the seeded retry is not the identical request.
+ */
+export const FINAL_SCHEMA_ERROR = "it did not match the JSON schema (every key exactly as named, nothing else)";
 
 /** The answer to a call that is not run (Decision 21); a fresh object each time, so no two records share one. */
 function toolCallLimit(): JsonValue {
@@ -348,16 +359,21 @@ export async function runAgent(o: {
 
   // ---- phase 1: the tool loop ----
   let stop = false;
+  /** One TOOL_SCHEMA_RETRY_MESSAGE per failed attempt at the current turn; cleared once it succeeds. */
+  let corrections: ChatMessage[] = [];
   while (!stop && executed < RISK_V1.maxToolCalls && usage.total < RISK_V1.maxCheckTokens) {
-    const request = toolRequest(model, history);
+    const request = toolRequest(model, [...history, ...corrections]);
     if (estimateTokens(request) > RISK_V1.maxRequestTokens) break;
-    if (!finalFits(model, [...history, ...RESERVE_TURN])) break;
+    // The corrections ride only on this request, but the bound is checked with them, so a re-ask can never go over.
+    if (!finalFits(model, [...history, ...corrections, ...RESERVE_TURN])) break;
 
     const answer = await ask(request);
     if ("invalid" in answer) {
       if (budgetSpent()) return result(null, null);
-      continue; // re-ask the same turn
+      corrections = [...corrections, { role: "user", content: TOOL_SCHEMA_RETRY_MESSAGE }];
+      continue; // re-ask the same turn, with one more correction
     }
+    corrections = [];
     const { response } = answer;
     // A turn with no tool call ends the loop. Its prose isn't carried into the final call: the final
     // instruction asks for everything afresh, and leaving it out keeps the final call within budget.
@@ -406,7 +422,8 @@ export async function runAgent(o: {
     const answer = await askFinal(finalRequest(model, [...base, ...extra]));
     if ("invalid" in answer) {
       if (budgetSpent()) return result({ raw: answer.invalid, attempts }, null);
-      continue; // re-send the same request
+      extra = reaskMessages(model, base, answer.invalid, FINAL_SCHEMA_ERROR, citable);
+      continue;
     }
     if ("calledTool" in answer) {
       if (budgetSpent()) return result({ raw: answer.calledTool, attempts }, null);

@@ -233,7 +233,7 @@ describe("runRiskV1", () => {
       model: MODEL,
       servedModels: ["openai/gpt-oss-120b", "openai/gpt-oss-120b-2"],
       systemFingerprints: ["fp_a", null],
-      promptVersion: "risk-v1/1",
+      promptVersion: "risk-v1/4",
       promptHash: promptHash(llm.requests[0]?.messages.slice(0, 2) ?? [], TOOL_DEFINITIONS, promptParams(MODEL)),
       usage: { prompt: 3_350, completion: 150, total: 3_500 },
     });
