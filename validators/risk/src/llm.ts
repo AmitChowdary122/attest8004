@@ -10,7 +10,7 @@
  * untrusted input back).
  */
 import { canonicalJson } from "@attest8004/sdk";
-import { RatePacer } from "./pacer.ts";
+import { RatePacer, TokenBudgetExceededError } from "./pacer.ts";
 
 export type ChatToolCall = { id: string; type: "function"; function: { name: string; arguments: string } };
 
@@ -83,6 +83,18 @@ export class ProviderError extends Error {
     this.code = info.code;
     this.failedGeneration = info.failedGeneration;
   }
+}
+
+/**
+ * Whether `error` is a provider-side failure that must reject the whole check, never become a
+ * verdict (Decision 6): a {@link ProviderError} of kind `"transient"`, or the pacer's
+ * {@link TokenBudgetExceededError} (a call that can never fit the per-minute budget). Both carry
+ * `kind: "transient"`, but only these two classes count — an arbitrary object or error shaped like
+ * `{kind: "transient"}` does not, so callers classify failures through this one helper instead of
+ * duck-typing on `.kind` or checking `instanceof ProviderError` alone (which would miss the pacer's).
+ */
+export function isTransientError(error: unknown): boolean {
+  return (error instanceof ProviderError && error.kind === "transient") || error instanceof TokenBudgetExceededError;
 }
 
 /** `ceil(chars(JSON.stringify({messages, tools, response_format})) / 3) + max_completion_tokens`. */

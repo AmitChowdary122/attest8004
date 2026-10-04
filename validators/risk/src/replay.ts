@@ -29,10 +29,11 @@ export interface LlmFixture {
  * Recursively replaces every non-integer finite number (e.g. a real request's `temperature: 0.2`)
  * with its decimal string, and drops an explicit `undefined` property — `canonicalJson` rejects
  * both (no floats; no undefined values) — so a request that still sends the real number over the
- * wire can still be hashed deterministically. Used only for the hash: the fixture's own `request`
- * field, and what's actually sent, keep the real numbers.
+ * wire can still be hashed deterministically. Used only for hashes ({@link hashRequest}, and
+ * `prompt.ts`'s `promptHash`, Ruling R4): the fixture's own `request` field, and what's actually
+ * sent, keep the real numbers.
  */
-function normalizeForHash(value: unknown): unknown {
+export function normalizeForHash(value: unknown): unknown {
   if (typeof value === "number") return Number.isInteger(value) ? value : value.toString();
   if (Array.isArray(value)) return value.map(normalizeForHash);
   if (value !== null && typeof value === "object") {

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { ProviderError, estimateTokens, openAiCompatibleClient, type ChatRequest } from "../src/llm.ts";
-import type { RatePacer } from "../src/pacer.ts";
+import { ProviderError, estimateTokens, isTransientError, openAiCompatibleClient, type ChatRequest } from "../src/llm.ts";
+import { TokenBudgetExceededError, type RatePacer } from "../src/pacer.ts";
 
 function fakeFetch(responses: Response[]): { fn: typeof fetch; calls: { url: string; init: RequestInit }[] } {
   const calls: { url: string; init: RequestInit }[] = [];
@@ -365,5 +365,19 @@ describe("estimateTokens", () => {
     const request: ChatRequest = { model: "m", messages: [{ role: "user", content: "hello there" }], max_completion_tokens: 100 };
     const chars = JSON.stringify({ messages: request.messages, tools: request.tools, response_format: request.response_format }).length;
     expect(estimateTokens(request)).toBe(Math.ceil(chars / 3) + 100);
+  });
+});
+
+describe("isTransientError", () => {
+  it("is true for a transient ProviderError and for the pacer's TokenBudgetExceededError", () => {
+    expect(isTransientError(new ProviderError("x", { kind: "transient", status: 503, code: null, failedGeneration: null }))).toBe(true);
+    expect(isTransientError(new TokenBudgetExceededError(9_000, 8_000))).toBe(true);
+  });
+
+  it("is false for invalid model output, any other error, and non-errors (even ones shaped like {kind: \"transient\"})", () => {
+    expect(isTransientError(new ProviderError("x", { kind: "invalid_output", status: 400, code: "tool_use_failed", failedGeneration: null }))).toBe(false);
+    expect(isTransientError(new Error("boom"))).toBe(false);
+    expect(isTransientError({ kind: "transient" })).toBe(false);
+    expect(isTransientError(undefined)).toBe(false);
   });
 });

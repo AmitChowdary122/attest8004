@@ -11,3 +11,5 @@ export * from "./trace.ts";
 export * from "./reader.ts";
 export * from "./nansen.ts";
 export * from "./tools.ts";
+export * from "./prompt.ts";
+export * from "./agent.ts";
