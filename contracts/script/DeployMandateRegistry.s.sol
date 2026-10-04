@@ -13,11 +13,10 @@ import {MandateRegistry} from "../src/MandateRegistry.sol";
 contract DeployMandateRegistry is Script {
     // CREATE2_FACTORY (0x4e59b448…956C) is inherited from forge-std's CommonBase.
     bytes32 public constant SALT = keccak256("attest8004.MandateRegistry.v2");
-    /// Literal gas limit for the deploy transaction. Forge's gas for this exact transaction (run
-    /// isolated, so intrinsic and calldata gas are included) was 2,204,014 on 4 Oct 2026; the limit
-    /// is that x 1.2, rounded up to 10k. (For P4, the same measurement was 819,533 against a live
-    /// Monad estimate of 834,877.) Replace it with the live eth_estimateGas x 1.2 before broadcasting.
-    uint256 public constant DEPLOY_GAS = 2_650_000;
+    /// Literal gas limit for the deploy transaction. Monad testnet eth_estimateGas for this exact
+    /// call (deploy-testnet.sh's dry run) was 2,241,334 on 5 Oct 2026; the limit is that x 1.2,
+    /// rounded up to 10k. (Forge's isolated measurement was 2,204,014.)
+    uint256 public constant DEPLOY_GAS = 2_690_000;
 
     address public constant IDENTITY_REGISTRY_TESTNET = 0x8004A818BFB912233c491871b3d84c89A494BD9e;
     /// The WebAuthn relying party: the fixed web domain the passkeys are created on.
