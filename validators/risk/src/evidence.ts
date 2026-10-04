@@ -54,6 +54,7 @@ export interface RiskParams {
   maxSourcesPerFinding: number;
   calldataTextMinChars: number;
   calldataTextMaxChars: number;
+  calldataTextMaxRuns: number;
   calldataHeadBytes: number;
   maxDeadlineAheadSeconds: bigint;
   scores: { none: number; low: number; medium: number; high: number };
@@ -123,6 +124,7 @@ export function riskParams(addresses: RiskAddresses, mandateValidator: Address):
     maxSourcesPerFinding: RISK_V1.maxSourcesPerFinding,
     calldataTextMinChars: RISK_V1.calldataTextMinChars,
     calldataTextMaxChars: RISK_V1.calldataTextMaxChars,
+    calldataTextMaxRuns: RISK_V1.calldataTextMaxRuns,
     calldataHeadBytes: RISK_V1.calldataHeadBytes,
     maxDeadlineAheadSeconds: RISK_V1.maxDeadlineAheadSeconds,
     scores: { ...RISK_V1.scores },
@@ -203,6 +205,7 @@ export function riskEvidence(r: RiskEvidenceRecord): Record<string, unknown> {
       maxSourcesPerFinding: params.maxSourcesPerFinding,
       calldataTextMinChars: params.calldataTextMinChars,
       calldataTextMaxChars: params.calldataTextMaxChars,
+      calldataTextMaxRuns: params.calldataTextMaxRuns,
       calldataHeadBytes: params.calldataHeadBytes,
       maxDeadlineAheadSeconds: params.maxDeadlineAheadSeconds,
       scores: { none: params.scores.none, low: params.scores.low, medium: params.scores.medium, high: params.scores.high },
@@ -354,6 +357,7 @@ const riskEvidenceSchema = z.strictObject({
     maxSourcesPerFinding: count,
     calldataTextMinChars: count,
     calldataTextMaxChars: count,
+    calldataTextMaxRuns: count,
     calldataHeadBytes: count,
     maxDeadlineAheadSeconds: uint64,
     scores: z.strictObject({ none: count, low: count, medium: count, high: count }),
