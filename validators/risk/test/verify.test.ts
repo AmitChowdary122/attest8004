@@ -3,10 +3,12 @@
 // `responseHash`, so each test reaches the check it targets. No network anywhere.
 import { buildEvidence, canonicalJson, encodeCanonicalJsonDataUri, toBase64, type CheckResult, type RequestJsonV1 } from "@attest8004/sdk";
 import { mandateRequestOf, PIN_LAG_BLOCKS } from "@attest8004/validator-mandate";
-import { keccak256, stringToBytes, toHex, zeroAddress, type Hex } from "viem";
+import { encodeErrorResult, keccak256, stringToBytes, toHex, zeroAddress, type Hex } from "viem";
 import { beforeEach, describe, expect, it } from "vitest";
 import { PROMPT_INJECTION_SUSPECTED } from "../src/findings.ts";
 import type { NansenClient } from "../src/nansen.ts";
+import type { TraceResult } from "../src/trace.ts";
+import type { JsonValue } from "../src/types.ts";
 import { RISK_V1 } from "../src/params.ts";
 import { PrerequisiteLogNotFoundError, readPrerequisite, runRiskV1 } from "../src/run.ts";
 import { RISK_MISMATCH_PROBLEMS, verifyRiskRequest, type RiskVerifyProblem, type RiskVerifyReport } from "../src/verify.ts";
@@ -20,10 +22,12 @@ import {
   fakeGuard,
   FakeRiskReader,
   findingsJson,
+  GATE,
   INJECTION,
   landMandateVerdict,
   MODEL,
   NO_FINDINGS,
+  PASS_THROUGH,
   passThroughTrace,
   requestPair,
   scriptedLlm,
@@ -137,6 +141,33 @@ function expectProblem(report: RiskVerifyReport, problem: RiskVerifyProblem): vo
 
 const clone = <T>(value: T): T => structuredClone(value);
 
+/** A trace whose top frame reverts with `Error(reason)`: the simulation's revert reason is screened text. */
+function revertingTrace(reason: string): TraceResult {
+  const output = encodeErrorResult({
+    abi: [{ type: "error", name: "Error", inputs: [{ name: "message", type: "string" }] }],
+    errorName: "Error",
+    args: [reason],
+  });
+  return { ok: true, frame: { type: "CALL", from: GATE, to: PASS_THROUGH, value: "0x0", input: "0x", error: "execution reverted", output } };
+}
+
+/** A Nansen client with a key: each `profile` call answers the next of `profiles` (the last one repeats). */
+function availableNansen(profiles: JsonValue[]): NansenClient {
+  let call = 0;
+  return {
+    available: true,
+    reason: null,
+    profile: async () => profiles[Math.min(call++, profiles.length - 1)] ?? null,
+    flows: async () => ({ available: true, counterparties: [{ address: SINK, labels: ["Counterparty label"] }] }),
+  };
+}
+
+const steps = (...calls: ReturnType<typeof toolCall>[][]): Step[] => [
+  ...calls.map((turn) => chatResponse({ toolCalls: turn })),
+  chatResponse({ content: "Enough." }),
+  chatResponse({ content: NO_FINDINGS }),
+];
+
 describe("verifyRiskRequest: an honest verdict", () => {
   it("honest verdict matches", async () => {
     const { rhB, doc } = await honest({ steps: riskyRun() });
@@ -228,10 +259,52 @@ describe("verifyRiskRequest: an honest verdict", () => {
     expect(report.uncheckedToolCalls).toEqual([{ index: 2, name: "nansen_flows" }]);
     expect(report.checkedToolCalls.map((c) => c.index)).toEqual([0, 1]);
 
-    // Nansen is offchain and advisory: verify can't re-check it, so an edited answer is still no problem.
+    // Nansen is offchain and advisory: verify can't re-check it, so an edited answer (with no labels to cover) is still no problem.
     const edited = clone(doc);
     edited.toolCalls[2]!.output = { available: true, counterparties: [] };
     post(rhB, edited);
+    expect((await verify(rhB)).verdict).toBe("match");
+  });
+
+  it("a simulation's revert reason is screened before the model saw it, and its classifier result covers it", async () => {
+    reader.traceResult = revertingTrace(INJECTION);
+    const { rhB, doc } = await honest({ steps: steps([toolCall("simulate_action")]) });
+    expect(doc.classifier.results.map((r) => [r.source, r.flagged])).toEqual([["tool:simulate_action", true]]);
+    expect(doc.findings.map((f) => f.code)).toEqual([PROMPT_INJECTION_SUSPECTED]);
+    expect(await verify(rhB)).toMatchObject({ verdict: "match", recomputed: { score: 40 } });
+  });
+
+  it("an answer never shown to the model (TOOL_CALL_LIMIT) needs no classifier result", async () => {
+    reader.traceResult = revertingTrace("a benign revert reason");
+    const calls = Array.from({ length: RISK_V1.maxToolCalls + 2 }, () => toolCall("simulate_action"));
+    const { rhB, doc } = await honest({ steps: steps(calls) });
+    const shown = doc.toolCalls.filter((c) => canonicalJson(c.output) !== '{"error":"TOOL_CALL_LIMIT"}').length;
+    expect(shown).toBeLessThan(doc.toolCalls.length);
+    expect(doc.classifier.results).toHaveLength(shown);
+    expect((await verify(rhB)).verdict).toBe("match");
+  });
+
+  it("Nansen labels are covered by their classifier results; labels the output cap removed or shortened leave extra results, which are allowed", async () => {
+    const many = {
+      available: true,
+      labels: Array.from({ length: 20 }, (_, i) => ({ label: `entity label ${i} ${"x".repeat(48)}`, category: "cex", kind: ["hot_wallet"] })),
+      firstFunder: { address: SINK, name: "first funder name" },
+    };
+    const longName = "n".repeat(390);
+    const shortened = { available: true, labels: [], firstFunder: { name: longName, a: "a".repeat(389), b: "b".repeat(389), c: "c".repeat(389) } };
+    const { rhB, doc } = await honest({
+      steps: steps([toolCall("nansen_counterparty_profile", { address: PASS_THROUGH })], [toolCall("nansen_counterparty_profile", { address: PASS_THROUGH })]),
+      nansen: availableNansen([many, shortened]),
+    });
+    // The cap removed labels from the first answer and shortened the funder's name in the second.
+    const first = doc.toolCalls[0]!.output as { labels: unknown[]; truncated?: unknown };
+    expect(first.labels.length).toBeLessThan(20);
+    expect(first.truncated).toBeDefined();
+    const second = doc.toolCalls[1]!.output as { firstFunder: { name: string } };
+    expect(second.firstFunder.name.length).toBeLessThan(longName.length);
+    expect(longName.startsWith(second.firstFunder.name)).toBe(true);
+    // Every label was screened in full, before the cap.
+    expect(doc.classifier.results).toHaveLength(20 + 1 + 1);
     expect((await verify(rhB)).verdict).toBe("match");
   });
 
@@ -325,6 +398,87 @@ describe("verifyRiskRequest: tampering is a mismatch", () => {
     expectProblem(await verify(rhB), "FINDINGS_MISMATCH");
   });
 
+  it("a dropped calldata_text result → FINDINGS_MISMATCH", async () => {
+    const benign = await honest({ steps: riskyRun(), data: calldataWith("a harmless memo here") });
+    const dropped = clone(benign.doc);
+    dropped.classifier.results = [];
+    post(benign.rhB, dropped);
+    expectProblem(await verify(benign.rhB), "FINDINGS_MISMATCH");
+
+    // A flagged one dropped together with its code finding: the injection rule was not applied.
+    const flagged = await honest({ steps: riskyRun(), data: calldataWith(INJECTION) });
+    const hidden = clone(flagged.doc);
+    hidden.classifier.results = [];
+    hidden.findings = hidden.findings.filter((f) => f.origin === "model");
+    hidden.reasons = ["FUNDS_FORWARDED"];
+    post(flagged.rhB, hidden);
+    expectProblem(await verify(flagged.rhB), "FINDINGS_MISMATCH");
+  });
+
+  it("the calldata's and Nansen's coverage is checked with the injection rule, before the score and the re-runs", async () => {
+    const { rhB, doc } = await honest({ steps: riskyRun(), data: calldataWith("a harmless memo here") });
+    const dropped = clone(doc);
+    dropped.classifier.results = [];
+    post(rhB, dropped, { score: 80 });
+    const report = await verify(rhB);
+    expectProblem(report, "FINDINGS_MISMATCH");
+    expect(report.recomputed).toBeNull();
+    expect(report.checkedToolCalls).toEqual([]);
+  });
+
+  it("a dropped revert-reason result → FINDINGS_MISMATCH", async () => {
+    reader.traceResult = revertingTrace(INJECTION);
+    const { rhB, doc } = await honest({ steps: steps([toolCall("simulate_action")]) });
+    const hidden = clone(doc);
+    hidden.classifier.results = [];
+    hidden.findings = [];
+    hidden.reasons = [];
+    hidden.score = 100;
+    post(rhB, hidden);
+    const report = await verify(rhB);
+    expectProblem(report, "FINDINGS_MISMATCH");
+    expect(report.checkedToolCalls).toEqual([{ index: 0, name: "simulate_action" }]);
+  });
+
+  it("an edited result text → FINDINGS_MISMATCH", async () => {
+    const { rhB, doc } = await honest({ steps: riskyRun(), data: calldataWith("a harmless memo here") });
+    const edited = clone(doc);
+    edited.classifier.results[0]!.text = "a different memo";
+    post(rhB, edited);
+    expectProblem(await verify(rhB), "FINDINGS_MISMATCH");
+
+    // An empty text would be a substring of anything: it covers nothing.
+    const emptied = clone(doc);
+    emptied.classifier.results[0]!.text = "";
+    post(rhB, emptied);
+    expectProblem(await verify(rhB), "FINDINGS_MISMATCH");
+
+    // Another source doesn't cover it either.
+    const moved = clone(doc);
+    moved.classifier.results[0]!.source = "tool:simulate_action";
+    post(rhB, moved);
+    expectProblem(await verify(rhB), "FINDINGS_MISMATCH");
+  });
+
+  it("a recorded Nansen label with no result → FINDINGS_MISMATCH", async () => {
+    const profile = { available: true, labels: [{ label: "Exchange hot wallet", category: "cex", kind: [] }], firstFunder: null };
+    const { rhB, doc } = await honest({
+      steps: steps([toolCall("nansen_counterparty_profile", { address: PASS_THROUGH }), toolCall("nansen_flows", { address: PASS_THROUGH })]),
+      nansen: availableNansen([profile]),
+    });
+    expect((await verify(rhB)).verdict).toBe("match");
+
+    const injected = clone(doc);
+    (injected.toolCalls[0]!.output as { labels: unknown[] }).labels.push({ label: "A label nobody screened", category: "x", kind: [] });
+    post(rhB, injected);
+    expectProblem(await verify(rhB), "FINDINGS_MISMATCH");
+
+    const dropped = clone(doc);
+    dropped.classifier.results = dropped.classifier.results.filter((r) => r.source !== "tool:nansen_flows");
+    post(rhB, dropped);
+    expectProblem(await verify(rhB), "FINDINGS_MISMATCH");
+  });
+
   it("an unparseable recorded guard score → FINDINGS_MISMATCH", async () => {
     const { rhB, doc } = await honest({ steps: riskyRun(), data: calldataWith("a harmless memo here") });
     const edited = clone(doc);
@@ -352,23 +506,47 @@ describe("verifyRiskRequest: tampering is a mismatch", () => {
     expect(report.mismatchedToolCalls).toEqual([0]);
   });
 
-  it("edited recorded arguments, or a record no model tool call backs → TOOL_OUTPUT_MISMATCH", async () => {
+  it("edited recorded arguments → TOOL_OUTPUT_MISMATCH", async () => {
     const { rhB, doc } = await honest({ steps: riskyRun() });
     const args = clone(doc);
     args.toolCalls[1]!.arguments = { address: "0x0000000000000000000000000000000000000001" };
     post(rhB, args);
     expect(await verify(rhB)).toMatchObject({ problems: ["TOOL_OUTPUT_MISMATCH"], mismatchedToolCalls: [1] });
+  });
+
+  it("a dropped onchain record whose call stays in modelOutputs → EVIDENCE_INVALID", async () => {
+    const { rhB, doc } = await honest({ steps: riskyRun() });
+    const dropped = clone(doc);
+    dropped.toolCalls.splice(1, 1);
+    post(rhB, dropped);
+    expectProblem(await verify(rhB), "EVIDENCE_INVALID");
+  });
+
+  it("a record no recorded model tool call backs (onchain, Nansen or TOOL_CALL_LIMIT), or of another name → EVIDENCE_INVALID", async () => {
+    const { rhB, doc } = await honest({ steps: riskyRun() });
+    const extra = (record: Doc["toolCalls"][number]) => {
+      const edited = clone(doc);
+      edited.toolCalls.push(record);
+      return edited;
+    };
+    for (const record of [
+      { id: "call_extra", name: "get_mandate", arguments: {}, output: { owner: SINK }, onchain: true },
+      { id: "call_extra", name: "nansen_flows", arguments: { address: SINK }, output: { available: false, reason: "x" }, onchain: false },
+      { id: "call_extra", name: "simulate_action", arguments: {}, output: { error: "TOOL_CALL_LIMIT" }, onchain: true },
+    ]) {
+      post(rhB, extra(record));
+      expectProblem(await verify(rhB), "EVIDENCE_INVALID");
+    }
 
     const unbacked = clone(doc);
     unbacked.toolCalls[1]!.id = "call_never_made";
     post(rhB, unbacked);
-    expect(await verify(rhB)).toMatchObject({ problems: ["TOOL_OUTPUT_MISMATCH"], mismatchedToolCalls: [1] });
+    expectProblem(await verify(rhB), "EVIDENCE_INVALID");
 
-    // (Index 1: renaming the simulation would already fail the findings, which cite it.)
     const renamed = clone(doc);
     renamed.toolCalls[1]!.name = "get_mandate";
     post(rhB, renamed);
-    expect(await verify(rhB)).toMatchObject({ problems: ["TOOL_OUTPUT_MISMATCH"], mismatchedToolCalls: [1] });
+    expectProblem(await verify(rhB), "EVIDENCE_INVALID");
   });
 
   it("a changed prerequisite score → PREREQUISITE_MISMATCH", async () => {

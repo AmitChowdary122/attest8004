@@ -107,6 +107,17 @@ export async function readPrerequisite(
   };
 }
 
+/**
+ * The calldata's untrusted text exactly as validator B screens it before the first model call
+ * (Decision 12): one field, `calldata_text`, every printable run (`calldataText`) joined by newlines;
+ * no field when there is no run. Exported so `verify` derives the same field to check that it was
+ * screened.
+ */
+export function calldataFields(data: Hex): { source: string; text: string }[] {
+  const runs = calldataText(data);
+  return runs.length === 0 ? [] : [{ source: "calldata_text", text: runs.map((run) => run.text).join("\n") }];
+}
+
 /** The data's first `RISK_V1.calldataHeadBytes` bytes, lower-case (all of it when shorter). */
 function dataHeadOf(data: Hex): Hex {
   const head = size(data) <= RISK_V1.calldataHeadBytes ? data : slice(data, 0, RISK_V1.calldataHeadBytes);
@@ -196,7 +207,7 @@ export async function runRiskV1(o: {
   };
 
   // Screened before the model sees any of it (Decision 12).
-  const fields = text.length === 0 ? [] : [{ source: "calldata_text", text: text.map((run) => run.text).join("\n") }];
+  const fields = calldataFields(request.data);
   const initialGuard = await screen(guard, fields, RISK_V1.guardThreshold);
 
   let agent: AgentResult;

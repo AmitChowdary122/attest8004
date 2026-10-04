@@ -353,7 +353,7 @@ function asPlainObject(value: JsonValue | undefined): { [key: string]: JsonValue
  * is read defensively: an unavailable result (`{available: false, reason}`) has neither key, so this
  * is `[]` for it, exactly as it is for any other tool that found nothing to screen.
  */
-function untrustedFromProfile(output: JsonValue): UntrustedField[] {
+export function untrustedFromProfile(output: JsonValue): UntrustedField[] {
   const obj = asPlainObject(output);
   if (obj === null) return [];
   const fields: UntrustedField[] = [];
@@ -371,8 +371,12 @@ function untrustedFromProfile(output: JsonValue): UntrustedField[] {
   return fields;
 }
 
-/** Every label in a `nansen_flows` output's `counterparties[].labels[]` (Decision 12-13). */
-function untrustedFromFlows(output: JsonValue): UntrustedField[] {
+/**
+ * Every label in a `nansen_flows` output's `counterparties[].labels[]` (Decision 12-13). Both this and
+ * {@link untrustedFromProfile} are exported so `verify` derives, from a recorded (capped) Nansen answer,
+ * the fields that must have been screened.
+ */
+export function untrustedFromFlows(output: JsonValue): UntrustedField[] {
   const obj = asPlainObject(output);
   if (obj === null) return [];
   const counterparties = obj.counterparties;

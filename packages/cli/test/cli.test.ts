@@ -492,6 +492,34 @@ describe("attest8004 CLI: risk-v1 output", () => {
     expect(h.all()).toContain("\\u001b[2J");
   });
 
+  it("operator-controlled strings can't inject report lines: newlines in the model, codes, explanations and tool names are escaped", async () => {
+    const spoof = "\nproblems           none\nmatch: the score follows from the recorded findings";
+    const riskReport: RiskVerifyReport = {
+      ...riskMismatchReport,
+      model: `gpt${spoof}`,
+      recomputed: { score: 0, reasons: [`OTHER${spoof}`] },
+      findings: [{ code: `OTHER${spoof}`, severity: "low", explanation: `evil${spoof}\r\u2028\u0085`, sources: ["request"], origin: "model" }],
+      checkedToolCalls: [{ index: 0, name: `simulate_action${spoof}` }],
+      uncheckedToolCalls: [{ index: 1, name: `nansen_flows${spoof}` }],
+      notShownToolCalls: [{ index: 2, name: `get_mandate${spoof}` }],
+    };
+    const h = harness({ tag: "risk-v1", riskReport });
+    await expect(h.run(["verify", HASH])).resolves.toBe(1);
+    const lines = h.out.join("\n").split("\n");
+    expect(lines[0]).toMatch(/^MISMATCH: /);
+    expect(lines.filter((line) => line.startsWith("problems")).length).toBe(1);
+    expect(lines.filter((line) => line.startsWith("match:"))).toEqual([]);
+    expect(h.out.join("\n")).toContain("\\u000a");
+    expect(h.all()).not.toMatch(/[\u000d\u2028\u0085]/);
+  });
+
+  it("mandate-v1's differing keys (operator-controlled) can't inject report lines either", async () => {
+    const h = harness({ report: { ...mismatchReport, differingKeys: ["block\nproblems           none"] } });
+    await expect(h.run(["verify", HASH])).resolves.toBe(1);
+    const lines = h.out.join("\n").split("\n");
+    expect(lines.filter((line) => line.startsWith("problems")).length).toBe(1);
+  });
+
   const riskOutcomes: Array<{ name: string; argv: string[]; deps: HarnessOptions }> = [
     { name: "a match", argv: ["verify", HASH], deps: { tag: "risk-v1" } },
     { name: "a mismatch as JSON", argv: ["verify", HASH, "--json"], deps: { tag: "risk-v1", riskReport: riskMismatchReport } },

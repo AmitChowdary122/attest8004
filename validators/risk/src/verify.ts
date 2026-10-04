@@ -1,9 +1,11 @@
 /**
  * `verify` for `risk-v1` (SPEC §4.6, ARCHITECTURE §5.5; the P5 plan's Decision 27): re-checks a posted
  * verdict from its public evidence and the chain. It **never re-runs the model** (nor Prompt Guard):
- * it re-derives the score from the recorded findings, re-applies the injection rule to the recorded
- * classifier results, re-parses the recorded final answer, re-runs every onchain tool call the model
- * saw at the pinned block `P`, and re-checks the `mandate-v1` verdict it required and the request.
+ * it re-derives the score from the recorded findings, checks that every untrusted text shown to the
+ * model has a classifier result and re-applies the injection rule to the recorded results (the guard's
+ * scores themselves are recorded, not re-run), re-parses the recorded final answer, re-runs every
+ * onchain tool call the model saw at the pinned block `P`, and re-checks the `mandate-v1` verdict it
+ * required and the request.
  *
  * What a match proves: the score follows from the recorded findings; every onchain fact shown to the
  * model was true at `P`; the injection rule was applied. What it doesn't: that the recorded output
@@ -28,9 +30,9 @@ import { parseGuardScore } from "./guard.ts";
 import type { NansenClient } from "./nansen.ts";
 import { RISK_V1 } from "./params.ts";
 import type { RiskAddresses, RiskReader } from "./reader.ts";
-import { readPrerequisite } from "./run.ts";
-import { collectAddresses, initialScope, runTool } from "./tools.ts";
-import type { JsonValue, RecordedFinding } from "./types.ts";
+import { calldataFields, readPrerequisite } from "./run.ts";
+import { collectAddresses, initialScope, runTool, untrustedFromFlows, untrustedFromProfile, type UntrustedField } from "./tools.ts";
+import type { GuardResult, JsonValue, RecordedFinding } from "./types.ts";
 
 /**
  * Why `verify` didn't find a match. The first three leave nothing compared (unverifiable); every
@@ -42,8 +44,10 @@ import type { JsonValue, RecordedFinding } from "./types.ts";
  * - `REQUEST_NOT_FOUND`: the registry has no such request, or state confirms the request's block but
  *   its `ValidationRequest` log wasn't returned (lag).
  * - `EVIDENCE_HASH_MISMATCH`: the decoded evidence doesn't hash to the onchain `responseHash`.
- * - `EVIDENCE_INVALID`: the evidence isn't a strict `risk-v1` document (`parseRiskEvidence`), or isn't
- *   the canonical JSON of what it parses to (no honest run writes other bytes).
+ * - `EVIDENCE_INVALID`: the evidence isn't a strict `risk-v1` document (`parseRiskEvidence`), isn't the
+ *   canonical JSON of what it parses to (no honest run writes other bytes), or its tool-call records
+ *   don't pair one to one with the tool calls in its recorded model responses (by id, in order, same
+ *   name; Nansen and `TOOL_CALL_LIMIT` records included): the agent answers every call it is sent.
  * - `PIN_OUT_OF_RANGE`: `P` is before the request's block or the MandateRegistry's deployment, or
  *   after the block the response landed in.
  * - `PIN_MISMATCH`: block `P`'s hash or timestamp on the chain isn't the evidence's `block`.
@@ -54,15 +58,16 @@ import type { JsonValue, RecordedFinding } from "./types.ts";
  * - `PARAMS_MISMATCH`: `params`, `classifier.model` or `classifier.threshold` isn't the constants'.
  * - `PREREQUISITE_MISMATCH`: validator A's verdict at `P`, read as validator B reads it
  *   (`readPrerequisite`), isn't the evidence's `prerequisite`, or wasn't answered (or valid) at `P`.
- * - `FINDINGS_MISMATCH`: the findings don't follow from the record: a classifier result's `flagged`
- *   isn't its recorded score against the threshold, code's findings aren't the injection rule applied
- *   to the classifier results, `finalOutput.raw` isn't the last recorded model response, or the
- *   model's findings aren't that answer re-parsed (with the tools that ran as citable sources).
+ * - `FINDINGS_MISMATCH`: the findings don't follow from the record: an untrusted text the model was
+ *   shown (the calldata's text, a re-run simulation's revert reason, a recorded Nansen label) has no
+ *   classifier result of its own ({@link coversAll}), a classifier result's `flagged` isn't its
+ *   recorded score against the threshold, code's findings aren't the injection rule applied to the
+ *   classifier results, `finalOutput.raw` isn't the last recorded model response, or the model's
+ *   findings aren't that answer re-parsed (with the tools that ran as citable sources).
  * - `SCORE_MISMATCH`: `scoreOf(findings)` isn't the posted score or the evidence's `score`, or
  *   `reasons` aren't the findings' codes in order.
  * - `TOOL_OUTPUT_MISMATCH`: an onchain tool call, re-run at `P` with the model's raw arguments and the
- *   address scope rebuilt from the recorded outputs, gave another answer (`mismatchedToolCalls`), or
- *   isn't backed by a tool call in the recorded model responses.
+ *   address scope rebuilt from the recorded outputs, gave another answer (`mismatchedToolCalls`).
  */
 export type RiskVerifyProblem =
   | "RESPONSE_NOT_FOUND"
@@ -170,7 +175,8 @@ const TOOL_CALL_LIMIT = canonicalJson({ error: "TOOL_CALL_LIMIT" });
  *    `RESPONSE_NOT_FOUND`; another tag → rejects with {@link NotRiskV1Error}); the response log found
  *    through its `lastUpdate` (→ `RESPONSE_NOT_FOUND`); the inline evidence decoded
  *    (→ `EVIDENCE_NOT_DECODED`), hashing to `responseHash` (→ `EVIDENCE_HASH_MISMATCH`), parsed strictly
- *    and canonical (→ `EVIDENCE_INVALID`).
+ *    and canonical, its tool-call records paired one to one with the recorded model tool calls
+ *    (→ `EVIDENCE_INVALID`).
  * 2. `P` between the request's block (and the MandateRegistry's deployment) and the response's block
  *    (→ `PIN_OUT_OF_RANGE`, nothing read at `P`); the request log and JSON, as `mandate-v1`'s
  *    `requestAt` reads them (→ `REQUEST_BLOCK_WRONG`, `REQUEST_INVALID`, `REQUEST_NOT_FOUND`); block
@@ -181,14 +187,17 @@ const TOOL_CALL_LIMIT = canonicalJson({ error: "TOOL_CALL_LIMIT" });
  *    `classifier.threshold`, against the constants (→ `PARAMS_MISMATCH`).
  * 5. Validator A's verdict on the same action at `P`, read with `readPrerequisite`
  *    (→ `PREREQUISITE_MISMATCH`).
- * 6. The classifier → code-findings rule; 7. `finalOutput.raw` re-parsed into the model's findings
- *    (→ `FINDINGS_MISMATCH` for either).
+ * 6. Screening coverage for the calldata's text and every recorded Nansen label, and the classifier →
+ *    code-findings rule; 7. `finalOutput.raw` re-parsed into the model's findings (→ `FINDINGS_MISMATCH`
+ *    for either).
  * 8. `scoreOf(findings)` against the posted score and the evidence's, and `reasons` against the codes
  *    (→ `SCORE_MISMATCH`).
  * 9. Every onchain tool call the model saw, re-run in order at `P` with `runTool`, from the model's raw
  *    argument string (matched by tool-call id) and the address scope rebuilt from `initialScope` at `P`
  *    and the recorded outputs, compared as canonical JSON (→ `TOOL_OUTPUT_MISMATCH`, listing every
- *    index that differs). Nansen calls are listed unchecked; `TOOL_CALL_LIMIT` answers aren't re-run.
+ *    index that differs); then screening coverage again, with each re-run's own untrusted text (a
+ *    revert reason) added (→ `FINDINGS_MISMATCH`). Nansen calls are listed unchecked;
+ *    `TOOL_CALL_LIMIT` answers aren't re-run, and nothing is derived from them (never screened).
  *
  * Rejects, rather than report, when a read fails: an RPC error during any read or tool re-run
  * (including history the node no longer serves), and validator A's response log not found
@@ -222,6 +231,8 @@ export async function verifyRiskRequest(o: { reader: RiskReader; requestHash: He
   const parsed = parseRiskEvidence(decoded.text);
   if (!parsed.ok || !isCanonical(parsed.doc, decoded.text)) return report(base, ["EVIDENCE_INVALID"]);
   const doc = parsed.doc;
+  const pairing = pairToolCalls(doc);
+  if (pairing === null) return report(base, ["EVIDENCE_INVALID"]);
   const written = riskEvidence(doc);
   const classified = classifyToolCalls(doc);
   const evidenceFields = {
@@ -275,7 +286,11 @@ export async function verifyRiskRequest(o: { reader: RiskReader; requestHash: He
     return report(fields, ["PREREQUISITE_MISMATCH"]);
   }
 
-  // 6. The classifier → code-findings rule, from the recorded results (the guard isn't re-run).
+  // 6. Every untrusted text shown to the model was screened (the calldata's, and every recorded Nansen
+  // label; a re-run tool's own text is added at step 9), and the classifier → code-findings rule holds
+  // for the recorded results (the guard isn't re-run).
+  const recordedFields = [...calldataFields(mandateRequest.data), ...nansenFields(doc)];
+  if (!coversAll(recordedFields, doc.classifier.results)) return report(fields, ["FINDINGS_MISMATCH"]);
   for (const result of doc.classifier.results) {
     const score = parseGuardScore(result.score);
     if (score === null || (score >= RISK_V1.guardThreshold) !== result.flagged) return report(fields, ["FINDINGS_MISMATCH"]);
@@ -300,52 +315,117 @@ export async function verifyRiskRequest(o: { reader: RiskReader; requestHash: He
     return report(scored, ["SCORE_MISMATCH"]);
   }
 
-  // 9. Every onchain fact the model saw, re-read at P.
-  const { checked, mismatched } = await rerunToolCalls(reader, doc, mandateRequest, pinned);
-  return report({ ...scored, checkedToolCalls: checked, mismatchedToolCalls: mismatched }, mismatched.length > 0 ? ["TOOL_OUTPUT_MISMATCH"] : []);
+  // 9. Every onchain fact the model saw, re-read at P; then the screening of each re-run's own text.
+  const { checked, mismatched, untrusted } = await rerunToolCalls(reader, doc, pairing, mandateRequest, pinned);
+  const rerun = { ...scored, checkedToolCalls: checked, mismatchedToolCalls: mismatched };
+  if (mismatched.length > 0) return report(rerun, ["TOOL_OUTPUT_MISMATCH"]);
+  if (!coversAll([...recordedFields, ...untrusted], doc.classifier.results)) return report(rerun, ["FINDINGS_MISMATCH"]);
+  return report(rerun, []);
 }
 
 /**
  * Re-runs every onchain tool call the model saw, in order, as `runTool` ran it: with the model's raw
- * argument string from the recorded model responses (matched by tool-call id, each model call used
- * once, in order) and the address scope the run had at that point, rebuilt from `initialScope` at `P`
- * and every earlier recorded output (Nansen's included), exactly as `runTool` adds them. Each re-run
- * gets a copy of that scope, so the scope only ever grows from the recorded outputs. A call that
- * matches no recorded model call, or one of another name, is a mismatch. Rejects on any read failure.
+ * argument string (the recorded model tool call `pairing` gives each record) and the address scope the
+ * run had at that point, rebuilt from `initialScope` at `P` and every earlier recorded output (Nansen's
+ * included), exactly as `runTool` adds them. Each re-run gets a copy of that scope, so the scope only
+ * ever grows from the recorded outputs. Also returns the untrusted text each re-run found (what validator
+ * B screened for that call). Rejects on any read failure.
  */
 async function rerunToolCalls(
   reader: RiskReader,
   doc: RiskEvidence,
+  pairing: readonly number[],
   request: ReturnType<typeof mandateRequestOf>,
   pinned: PinnedBlock,
-): Promise<{ checked: ToolCallRef[]; mismatched: number[] }> {
+): Promise<{ checked: ToolCallRef[]; mismatched: number[]; untrusted: UntrustedField[] }> {
   const [owner, mandate] = await Promise.all([reader.ownerOf(request.agentId, pinned.number), reader.mandate(request.agentId, pinned.number)]);
   const scope = initialScope(request, owner, mandate);
   const modelCalls = doc.modelOutputs.flatMap((turn) => turn.toolCalls);
-  const used = new Set<number>();
   const checked: ToolCallRef[] = [];
   const mismatched: number[] = [];
+  const untrusted: UntrustedField[] = [];
 
   for (const [index, record] of doc.toolCalls.entries()) {
-    const callIndex = modelCalls.findIndex((call, i) => !used.has(i) && call.id === record.id);
-    if (callIndex >= 0) used.add(callIndex);
-    // The model never saw this answer, and nothing ran after it (the loop stops there).
+    // The model never saw this answer, nothing was screened for it, and nothing ran after it.
     if (isToolCallLimit(record.output)) continue;
     if (record.onchain) {
       checked.push({ index, name: record.name });
-      const call = modelCalls[callIndex];
-      if (call === undefined || call.name !== record.name) {
+      const call = modelCalls[pairing[index] as number] as { arguments: string };
+      const rerun = await runTool(record.name, call.arguments, { reader, pinned, request, nansen: NO_NANSEN, scope: new Set(scope) });
+      if (!sameJson(rerun.output, record.output) || !sameJson(rerun.arguments, record.arguments) || rerun.onchain !== record.onchain) {
         mismatched.push(index);
-      } else {
-        const rerun = await runTool(record.name, call.arguments, { reader, pinned, request, nansen: NO_NANSEN, scope: new Set(scope) });
-        if (!sameJson(rerun.output, record.output) || !sameJson(rerun.arguments, record.arguments) || rerun.onchain !== record.onchain) {
-          mismatched.push(index);
-        }
       }
+      untrusted.push(...rerun.untrusted);
     }
     collectAddresses(record.output, scope);
   }
-  return { checked, mismatched };
+  return { checked, mismatched, untrusted };
+}
+
+/**
+ * For each tool-call record, the index of the recorded model tool call it answers: the first not yet
+ * paired with the same id, which must have the same name. `null` unless every record has one and every
+ * model tool call is paired, i.e. one to one (Nansen and `TOOL_CALL_LIMIT` records included): the agent
+ * records exactly one answer for every tool call in every turn it receives.
+ */
+function pairToolCalls(doc: RiskEvidence): number[] | null {
+  const calls = doc.modelOutputs.flatMap((turn) => turn.toolCalls);
+  const used = new Set<number>();
+  const pairs: number[] = [];
+  for (const record of doc.toolCalls) {
+    const i = calls.findIndex((call, j) => !used.has(j) && call.id === record.id);
+    if (i < 0 || calls[i]?.name !== record.name) return null;
+    used.add(i);
+    pairs.push(i);
+  }
+  return used.size === calls.length ? pairs : null;
+}
+
+/**
+ * The untrusted text validator B screened for the Nansen answers the model saw, derived from the
+ * recorded (capped) answers with the same functions `runTool` uses. A label the output cap shortened is
+ * a prefix of what was screened; one it removed is simply absent (its classifier result is an extra).
+ */
+function nansenFields(doc: RiskEvidence): UntrustedField[] {
+  return doc.toolCalls.flatMap((record) => {
+    if (isToolCallLimit(record.output)) return [];
+    if (record.name === "nansen_counterparty_profile") return untrustedFromProfile(record.output);
+    if (record.name === "nansen_flows") return untrustedFromFlows(record.output);
+    return [];
+  });
+}
+
+/**
+ * Whether `result` can stand for `field`'s screening: the same source, a non-empty text, and that text
+ * a substring of the field's (the guard records the highest-scoring chunk), or the field's text a prefix
+ * of it (a string the output cap shortened after screening).
+ */
+function coversField(result: GuardResult, field: UntrustedField): boolean {
+  return result.source === field.source && result.text.length > 0 && (field.text.includes(result.text) || result.text.startsWith(field.text));
+}
+
+/**
+ * Whether every field can be given a distinct classifier result that covers it ({@link coversField}).
+ * Extra results are allowed (labels the output cap removed were screened but aren't in the record), and
+ * no order is required. A maximum bipartite matching (augmenting paths), so the answer never depends on
+ * the order fields or results are tried in.
+ */
+function coversAll(fields: readonly UntrustedField[], results: readonly GuardResult[]): boolean {
+  const owner: Array<number | undefined> = new Array(results.length);
+  const assign = (f: number, seen: Set<number>): boolean => {
+    const field = fields[f] as UntrustedField;
+    for (let r = 0; r < results.length; r++) {
+      if (seen.has(r) || !coversField(results[r] as GuardResult, field)) continue;
+      seen.add(r);
+      const current = owner[r];
+      if (current === undefined || assign(current, seen)) {
+        owner[r] = f;
+        return true;
+      }
+    }
+    return false;
+  };
+  return fields.every((_, f) => assign(f, new Set()));
 }
 
 /** The Nansen calls and the `TOOL_CALL_LIMIT` answers, by index, from the evidence alone. */

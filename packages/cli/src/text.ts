@@ -21,6 +21,16 @@ export function printable(text: string): string {
   );
 }
 
+/**
+ * An operator-controlled string (a model name, a finding's code or explanation, a tool name, an
+ * evidence key) kept on its own line: a newline becomes `\u000a`, so an accused validator can't add a
+ * fake `problems  none` or `match: …` line to the report. (`printable` escapes every other line
+ * separator: CR, NEL, U+2028 and U+2029.)
+ */
+function oneLine(value: string): string {
+  return value.replace(/\n/g, "\\u000a");
+}
+
 /** A value as one line of JSON, every `bigint` as a decimal string. */
 export function jsonText(value: unknown): string {
   return JSON.stringify(value, (_key, v: unknown) => (typeof v === "bigint" ? v.toString() : v));
@@ -112,7 +122,7 @@ export function mandateText(report: VerifyReport): string {
   } else {
     report.problems.forEach((problem, i) => row(i === 0 ? "problems" : "", `${problem}: ${PROBLEM_TEXT[problem]}`));
   }
-  if (report.differingKeys.length > 0) row("differing keys", report.differingKeys.join(", "));
+  if (report.differingKeys.length > 0) row("differing keys", report.differingKeys.map(oneLine).join(", "));
   return out.lines.join("\n");
 }
 
@@ -123,7 +133,8 @@ const RISK_PROBLEM_TEXT: Record<RiskVerifyProblem, string> = {
   EVIDENCE_NOT_DECODED: PROBLEM_TEXT.EVIDENCE_NOT_DECODED,
   REQUEST_NOT_FOUND: PROBLEM_TEXT.REQUEST_NOT_FOUND,
   EVIDENCE_HASH_MISMATCH: PROBLEM_TEXT.EVIDENCE_HASH_MISMATCH,
-  EVIDENCE_INVALID: "the evidence isn't a strict risk-v1 document in canonical JSON",
+  EVIDENCE_INVALID:
+    "the evidence isn't a strict risk-v1 document in canonical JSON, or its tool-call records don't pair one to one with the tool calls in its recorded model responses",
   PIN_OUT_OF_RANGE: PROBLEM_TEXT.PIN_OUT_OF_RANGE,
   PIN_MISMATCH: "the pinned block's hash or timestamp on the chain isn't the one the evidence records",
   REQUEST_BLOCK_WRONG: PROBLEM_TEXT.REQUEST_BLOCK_WRONG,
@@ -133,7 +144,7 @@ const RISK_PROBLEM_TEXT: Record<RiskVerifyProblem, string> = {
   PREREQUISITE_MISMATCH:
     "mandate-v1's verdict at the pinned block, read as risk-v1 reads it, isn't the one the evidence records (or wasn't answered there)",
   FINDINGS_MISMATCH:
-    "the findings don't follow from the record: the injection rule over the recorded classifier results, or the recorded final answer re-parsed",
+    "the findings don't follow from the record: an untrusted text the model was shown has no classifier result, the injection rule doesn't hold for the recorded results, or the recorded final answer re-parsed gives other findings",
   SCORE_MISMATCH: "the score doesn't follow from the recorded findings, or the reasons aren't their codes",
   TOOL_OUTPUT_MISMATCH: "an onchain tool call, re-run at the pinned block, gave another answer than the one the model was shown",
 };
@@ -155,7 +166,7 @@ function riskVerdictLine(report: RiskVerifyReport): string {
 }
 
 function calls(refs: readonly ToolCallRef[]): string {
-  return refs.map((ref) => `#${ref.index} ${ref.name}`).join(", ");
+  return refs.map((ref) => `#${ref.index} ${oneLine(ref.name)}`).join(", ");
 }
 
 /**
@@ -174,17 +185,17 @@ export function riskText(report: RiskVerifyReport): string {
   row("request", report.requestHash);
   row("validator", report.validator);
   row("tag", JSON.stringify(posted.tag));
-  row("model", report.model ?? "-");
+  row("model", report.model === null ? "-" : oneLine(report.model));
   pinnedRows(out, report, "named by the evidence; not read");
   row("score", `posted ${posted.score}, recomputed ${recomputed?.score ?? "-"}`);
-  if (recomputed !== null) row("reasons", recomputed.reasons.length === 0 ? "none" : recomputed.reasons.join(", "));
+  if (recomputed !== null) row("reasons", recomputed.reasons.length === 0 ? "none" : recomputed.reasons.map(oneLine).join(", "));
 
   if (!parsed) {
     row("findings", "-");
   } else if (report.findings.length === 0) {
     row("findings", "none");
   } else {
-    report.findings.forEach((f, i) => row(i === 0 ? "findings" : "", `${f.severity} ${f.code} — ${f.explanation}`));
+    report.findings.forEach((f, i) => row(i === 0 ? "findings" : "", `${oneLine(f.severity)} ${oneLine(f.code)} — ${oneLine(f.explanation)}`));
   }
 
   const reachedTools = report.verdict === "match" || report.problems.includes("TOOL_OUTPUT_MISMATCH");
