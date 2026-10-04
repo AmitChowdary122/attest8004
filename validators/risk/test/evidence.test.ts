@@ -2,10 +2,10 @@ import { buildEvidence, canonicalJson, EVIDENCE_SCHEMA_V1 } from "@attest8004/sd
 import { mandateRequestOf } from "@attest8004/validator-mandate";
 import { keccak256, stringToBytes, toHex, type Hex } from "viem";
 import { describe, expect, it } from "vitest";
-import { parseRiskEvidence, riskEvidence, riskParams, type RiskEvidenceRecord } from "../src/evidence.ts";
+import { parseRiskEvidence, riskEvidence, riskParams } from "../src/evidence.ts";
 import { RISK_V1 } from "../src/params.ts";
 import { runRiskV1 } from "../src/run.ts";
-import type { JsonValue } from "../src/types.ts";
+import type { JsonValue, RiskRecord } from "../src/types.ts";
 import {
   ADDRESSES,
   blockAt,
@@ -28,7 +28,7 @@ import {
 const TOP_LEVEL_KEYS = ["block", "request", "params", "prerequisite", "llm", "classifier", "tools", "toolCalls", "modelOutputs", "finalOutput", "findings"];
 
 /** A realistic record: the pass-through traced, the sink looked up, one high finding. */
-function sampleRecord(over: Partial<RiskEvidenceRecord> = {}): RiskEvidenceRecord {
+function sampleRecord(over: Partial<RiskRecord> = {}): RiskRecord {
   const { jsonB, rhB, rhA } = requestPair(fakeAction());
   const request = mandateRequestOf(jsonB, rhB, 1_000n);
   const raw = findingsJson([
@@ -92,7 +92,7 @@ function sampleRecord(over: Partial<RiskEvidenceRecord> = {}): RiskEvidenceRecor
 }
 
 /** The full document as the base publishes it, its canonical text and its size in bytes. */
-function publish(record: RiskEvidenceRecord, score = 0, reasons = ["FUNDS_FORWARDED"]): { doc: Record<string, unknown>; text: string; bytes: number } {
+function publish(record: RiskRecord, score = 0, reasons = ["FUNDS_FORWARDED"]): { doc: Record<string, unknown>; text: string; bytes: number } {
   const doc = buildEvidence({ tag: RISK_V1.tag, requestHash: keccak256(toHex("rhB")), result: { score, reasons, evidence: riskEvidence(record) } });
   const text = canonicalJson(doc);
   return { doc, text, bytes: stringToBytes(text).length };
@@ -291,6 +291,61 @@ describe("parseRiskEvidence", () => {
     for (const [path, edit] of cases) {
       expect(parseRiskEvidence(edited(text, edit)), path).toEqual({ ok: false, error: `invalid at ${path}` });
     }
+  });
+
+  it("a free-form object with an own __proto__ key is invalid, so no forged fact can hide from a canonical comparison", () => {
+    const { text } = publish(sampleRecord());
+    // The hole is real: canonicalJson writes an own __proto__ key, so these bytes carry the forged fact.
+    const hidden = edited(text, (d) => (d.toolCalls[0].output = JSON.parse('{"__proto__":{"isContract":false},"ok":true}')));
+    expect(canonicalJson(JSON.parse(hidden))).toContain('"__proto__":{"isContract":false}');
+    expect(parseRiskEvidence(hidden)).toEqual({ ok: false, error: "invalid at toolCalls[0].output" });
+    // Even a float can't hide there.
+    const forged = edited(text, (d) => (d.toolCalls[0].output = JSON.parse('{"__proto__":{"fakeFact":1.5},"ok":true}')));
+    expect(parseRiskEvidence(forged)).toEqual({ ok: false, error: "invalid at toolCalls[0].output" });
+    expect(parseRiskEvidence(edited(text, (d) => (d.toolCalls[0].output.calls[0] = JSON.parse('{"__proto__":1,"depth":0}'))))).toEqual({
+      ok: false,
+      error: "invalid at toolCalls[0].output.calls[0]",
+    });
+    expect(parseRiskEvidence(edited(text, (d) => (d.toolCalls[1].arguments = JSON.parse('{"__proto__":{}}'))))).toEqual({
+      ok: false,
+      error: "invalid at toolCalls[1].arguments",
+    });
+    // Elsewhere the strict objects already refuse it as an unknown key.
+    expect(parseRiskEvidence(edited(text, (d) => (d.llm.usage = JSON.parse('{"__proto__":{},"prompt":1,"completion":1,"total":2}'))))).toEqual({
+      ok: false,
+      error: "unknown key at llm.usage",
+    });
+  });
+
+  it("a model argument carrying __proto__ is recorded as its raw string, and the evidence round-trips", async () => {
+    const chain = new FakeChain();
+    const { jsonB, rhB, rhA } = requestPair(fakeAction());
+    const raw = `{"address":"${SINK}","__proto__":{"isContract":true}}`;
+    const llm = scriptedLlm([
+      chatResponse({ toolCalls: [toolCall("simulate_action")] }),
+      chatResponse({ toolCalls: [toolCall("counterparty_onchain", raw)] }),
+      chatResponse({ content: "done" }),
+      chatResponse({ content: '{"findings":[]}' }),
+    ]);
+    const result = await runRiskV1({
+      reader: new FakeRiskReader(chain),
+      llm: llm.client,
+      guard: fakeGuard(),
+      nansen: unavailableNansen(),
+      model: MODEL,
+      addresses: ADDRESSES,
+      mandateValidator: VALIDATOR_A,
+      request: mandateRequestOf(jsonB, rhB, 1_000n),
+      pinned: blockAt(1_004n),
+      prerequisite: { validator: VALIDATOR_A, requestHash: rhA, score: 100, responseHash: keccak256(toHex("A")), tag: "mandate-v1", reasons: [] },
+    });
+    if ("decline" in result) throw new Error(result.decline);
+    const text = canonicalJson(buildEvidence({ tag: RISK_V1.tag, requestHash: rhB, result }));
+    const parsed = parseRiskEvidence(text);
+    if (!parsed.ok) throw new Error(parsed.error);
+    expect(parsed.doc.toolCalls[1]).toMatchObject({ name: "counterparty_onchain", arguments: raw, output: { error: "INVALID_ARGUMENTS" } });
+    const { schema: _schema, validator: _validator, requestHash, score, reasons, ...rest } = parsed.doc;
+    expect(canonicalJson(buildEvidence({ tag: RISK_V1.tag, requestHash, result: { score, reasons, evidence: riskEvidence(rest) } }))).toBe(text);
   });
 
   it("a tool call is onchain exactly when it isn't a Nansen tool, so verify can't be told to skip an onchain one", () => {

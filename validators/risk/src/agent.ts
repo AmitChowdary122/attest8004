@@ -15,12 +15,14 @@
  *
  * **Token budget** (Decision 4). Every request this loop sends estimates (`estimateTokens`) at most
  * `RISK_V1.maxRequestTokens`, so it never meets Groq's 413 or the pacer's per-minute refusal:
- * - **the invariant** (Task 10 fix round 1): the initial messages, the final instruction and
+ * - **the invariant** (Task 10 fix rounds 1-2): the initial messages, the final instruction and
  *   `response_format` always leave room for at least {@link MIN_TOOL_ANSWERS} tool turns at the
- *   output cap ({@link RESERVE_TURN}). The caps make this hold for the largest request summary and
- *   `RISK_V1.calldataTextMaxChars` (512) characters of `<` in one run, so hostile calldata can't buy a
- *   review with no tools; initial messages that don't leave that room (only reachable with many short
- *   runs of `<`, `>` or `&`) are never sent — `runAgent` rejects before any model call;
+ *   output cap ({@link RESERVE_TURN}). With `calldataText`'s caps (at most `RISK_V1.calldataTextMaxRuns`
+ *   (16) runs and `RISK_V1.calldataTextMaxChars` (512) characters), every calldata fits, even at the
+ *   largest request summary and text that is all `<`, `>` or `&`, so hostile calldata can't buy a
+ *   review with no tools. Initial messages that don't leave that room can only come from the prompt,
+ *   the tool definitions or the request summary growing: they are never sent — `runAgent` rejects
+ *   with {@link InitialMessagesTooLargeError} before any model call;
  * - before each tool turn, the loop stops calling tools if the tool request itself, or the *next*
  *   final call after one more tool turn at the output cap ({@link RESERVE_TURN}), would be over;
  * - inside a turn, each call runs only if the final call still fits with an answer at the cap in its
@@ -38,13 +40,12 @@
  * `RISK_V1.invalidOutputRetries` retries (Decision 7); once it's spent, `findings` is `null`.
  * Anything else (a chain read failing inside a tool, the guard failing) rethrows.
  */
-import { canonicalJson } from "@attest8004/sdk";
 import { findingsJsonSchema, parseModelOutput, SOURCE_NAMES } from "./findings.ts";
 import { screen, type PromptGuard } from "./guard.ts";
 import { estimateTokens, isTransientError, ProviderError, type ChatClient, type ChatMessage, type ChatRequest, type ChatResponse } from "./llm.ts";
 import { RISK_V1 } from "./params.ts";
 import { finalMessages, initialMessages, invalidOutputMessage, type InitialData } from "./prompt.ts";
-import { NANSEN_TOOLS, runTool, TOOL_DEFINITIONS, type ToolContext } from "./tools.ts";
+import { isRecordableJson, NANSEN_TOOLS, runTool, TOOL_DEFINITIONS, type ToolContext } from "./tools.ts";
 import type { Finding, GuardResult, JsonValue, ToolCallRecord, TurnRecord } from "./types.ts";
 import { safeJson } from "./untrusted.ts";
 
@@ -120,9 +121,14 @@ function finalRequest(model: string, messages: readonly ChatMessage[]): ChatRequ
 /** Every source citable at once: the longest final instruction there can be, so a budget check against it bounds the real one. */
 const ALL_SOURCES: readonly string[] = [...SOURCE_NAMES];
 
+/** The final call's estimate on `history`, with every source citable. */
+function finalEstimate(model: string, history: readonly ChatMessage[]): number {
+  return estimateTokens(finalRequest(model, finalMessages(history, ALL_SOURCES)));
+}
+
 /** Whether the final call on `history` would estimate within `RISK_V1.maxRequestTokens`. */
 function finalFits(model: string, history: readonly ChatMessage[]): boolean {
-  return estimateTokens(finalRequest(model, finalMessages(history, ALL_SOURCES))) <= RISK_V1.maxRequestTokens;
+  return finalEstimate(model, history) <= RISK_V1.maxRequestTokens;
 }
 
 /**
@@ -139,8 +145,11 @@ function reserveAnswer(id: string): ChatMessage {
 
 const RESERVE_ID = "call_reserve";
 
-/** One more tool turn: an assistant message carrying one call with an address argument, and its answer at the cap. */
-const RESERVE_TURN: readonly ChatMessage[] = [
+/**
+ * One more tool turn: an assistant message carrying one call with an address argument, and its answer
+ * at the cap. Exported (with {@link MIN_TOOL_ANSWERS}) so tests pin the invariant against the exact reserve.
+ */
+export const RESERVE_TURN: readonly ChatMessage[] = [
   {
     role: "assistant",
     content: null,
@@ -156,9 +165,28 @@ const RESERVE_TURN: readonly ChatMessage[] = [
 ];
 
 /** The invariant's floor: the initial messages always leave room for this many tool turns at the cap. */
-const MIN_TOOL_ANSWERS = 3;
+export const MIN_TOOL_ANSWERS = 3;
 
 const INVARIANT_RESERVE: readonly ChatMessage[] = Array.from({ length: MIN_TOOL_ANSWERS }, () => RESERVE_TURN).flat();
+
+/**
+ * The initial messages leave no room for {@link MIN_TOOL_ANSWERS} tool turns at the output cap within
+ * `RISK_V1.maxRequestTokens` (see the module doc's invariant): `runAgent` rejects with this before any
+ * model call. `estimate` is that final call's estimate with the reserved turns. Deterministic for the
+ * same request, so a retry can never succeed: `runRiskV1` turns it into one `PROMPT_TOO_LARGE` decline.
+ */
+export class InitialMessagesTooLargeError extends Error {
+  readonly estimate: number;
+
+  constructor(estimate: number) {
+    super(
+      `runAgent: the initial messages leave no room for ${MIN_TOOL_ANSWERS} tool answers: ` +
+        `the final call would estimate ${estimate} tokens, over ${RISK_V1.maxRequestTokens}; not sent`,
+    );
+    this.name = "InitialMessagesTooLargeError";
+    this.estimate = estimate;
+  }
+}
 
 /**
  * `ToolCallRecord.onchain` by the tool's name alone, exactly as `runTool` sets it: `false` only for the
@@ -199,17 +227,17 @@ function turnRecord(response: ChatResponse): TurnRecord {
 
 /**
  * A call's raw argument string as a record (Ruling R3, exactly as `runTool` records it): the parsed
- * JSON when it parses and is canonical-JSON-safe, else the raw string. Used for calls answered
- * `TOOL_CALL_LIMIT` before `runTool` ever saw them.
+ * JSON when it parses and `isRecordableJson` (canonical-JSON-safe, no `__proto__` key), else the raw
+ * string. Used for calls answered `TOOL_CALL_LIMIT` before `runTool` ever saw them.
  */
 function recordedArguments(raw: string): JsonValue {
+  let parsed: unknown;
   try {
-    const parsed: unknown = JSON.parse(raw);
-    canonicalJson(parsed);
-    return parsed as JsonValue;
+    parsed = JSON.parse(raw);
   } catch {
     return raw;
   }
+  return isRecordableJson(parsed) ? parsed : raw;
 }
 
 /**
@@ -289,9 +317,8 @@ export async function runAgent(o: {
   };
 
   // The invariant: never send initial messages that leave no room for MIN_TOOL_ANSWERS tool turns.
-  if (!finalFits(model, [...history, ...INVARIANT_RESERVE])) {
-    throw new Error(`runAgent: the initial messages leave no room for ${MIN_TOOL_ANSWERS} tool answers within maxRequestTokens; not sent`);
-  }
+  const reserved = finalEstimate(model, [...history, ...INVARIANT_RESERVE]);
+  if (reserved > RISK_V1.maxRequestTokens) throw new InitialMessagesTooLargeError(reserved);
 
   // ---- phase 1: the tool loop ----
   let stop = false;

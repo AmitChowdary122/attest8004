@@ -8,77 +8,13 @@
  * may still change, under `promptVersion`.
  */
 import { EVIDENCE_SCHEMA_V1 } from "@attest8004/sdk";
-import type { EvidenceRequest } from "@attest8004/validator-mandate";
 import { getAddress, type Address, type Hex } from "viem";
 import { z } from "zod";
 import { CODE_FINDING_CODES, MODEL_FINDING_CODES } from "./findings.ts";
 import { RISK_V1 } from "./params.ts";
 import type { RiskAddresses } from "./reader.ts";
 import { NANSEN_TOOLS } from "./tools.ts";
-import type { GuardResult, JsonValue, RiskRecord } from "./types.ts";
-
-/**
- * The evidence's `params`: **every** `RISK_V1` constant except `tag` (it is the document's
- * `validator`), `promptVersion` (recorded in `llm`) and `guardModel` (recorded as `classifier.model`),
- * plus the contracts the tools read and validator A's address. Integers that may pass 2^53 are
- * `bigint` (written as decimal strings), and the two non-integer constants, `temperature` and
- * `guardThreshold`, are decimal strings (`"0.2"`, `"0.5"`; Ruling R4: canonical JSON has no floats).
- * `verify` compares the whole object with {@link riskParams}, so a verdict reached under any other
- * constant doesn't verify.
- */
-export interface RiskParams {
-  maxToolCalls: number;
-  invalidOutputRetries: number;
-  reasoningEffort: string;
-  temperature: string;
-  seed: number;
-  toolTurnMaxCompletionTokens: number;
-  finalMaxCompletionTokens: number;
-  maxRequestTokens: number;
-  maxCheckTokens: number;
-  guardThreshold: string;
-  guardChunkChars: number;
-  guardChunkOverlap: number;
-  toolOutputMaxBytes: number;
-  maxEvidenceBytes: number;
-  simulationGas: bigint;
-  maxTraceCalls: number;
-  maxRevertReasonChars: number;
-  ageProbeBlocks: bigint[];
-  reputationMaxClients: number;
-  nansenWindowSeconds: bigint;
-  nansenMaxLabels: number;
-  nansenMaxCounterparties: number;
-  maxFindings: number;
-  maxExplanationChars: number;
-  maxSourcesPerFinding: number;
-  calldataTextMinChars: number;
-  calldataTextMaxChars: number;
-  calldataTextMaxRuns: number;
-  calldataHeadBytes: number;
-  maxDeadlineAheadSeconds: bigint;
-  scores: { none: number; low: number; medium: number; high: number };
-  contracts: {
-    identityRegistry: Address;
-    reputationRegistry: Address;
-    validationRegistry: Address;
-    mandateRegistry: Address;
-    forwarder: Address;
-  };
-  mandateValidator: Address;
-}
-
-/**
- * Everything `riskEvidence` serialises, typed: `types.ts`'s provisional {@link RiskRecord} as built,
- * with the complete {@link RiskParams}, `classifier.threshold` as the decimal string it is recorded
- * as, and `request` exactly `mandate-v1`'s `EvidenceRequest`. Block numbers, timestamps and wei
- * amounts are `bigint`.
- */
-export type RiskEvidenceRecord = Omit<RiskRecord, "params" | "classifier" | "request"> & {
-  request: EvidenceRequest;
-  params: RiskParams;
-  classifier: { model: string; threshold: string; results: GuardResult[] };
-};
+import type { JsonValue, RiskParams, RiskRecord } from "./types.ts";
 
 /** A parsed `risk-v1` evidence document: the base's five fields, then the record. */
 export type RiskEvidence = {
@@ -87,7 +23,7 @@ export type RiskEvidence = {
   requestHash: Hex;
   score: number;
   reasons: string[];
-} & RiskEvidenceRecord;
+} & RiskRecord;
 
 /** A non-integer constant as the decimal string the evidence records (Ruling R4). */
 function decimalString(value: number): string {
@@ -161,7 +97,7 @@ export function riskParams(addresses: RiskAddresses, mandateValidator: Address):
  * Addresses are EIP-55 and hashes lower-case, so the bytes don't depend on the input's letter case.
  * Integers stay `bigint`; `canonicalJson` writes them as decimal strings.
  */
-export function riskEvidence(r: RiskEvidenceRecord): Record<string, unknown> {
+export function riskEvidence(r: RiskRecord): Record<string, unknown> {
   const { block, request, params, prerequisite, llm, classifier, tools, toolCalls, modelOutputs, finalOutput, findings } = r;
   return {
     block: { number: block.number, hash: lower(block.hash), timestamp: block.timestamp },
@@ -297,10 +233,41 @@ const bytes32 = z
 const selector = z.union([z.string().regex(/^0x[0-9a-f]{8}$/).transform((s) => s as Hex), z.null()]);
 const usage = z.strictObject({ prompt: count, completion: count, total: count });
 
-/** Free-form JSON whose every number is a safe integer: tool arguments and outputs. */
-const jsonValue: z.ZodType<JsonValue> = z.lazy(() =>
-  z.union([z.null(), z.boolean(), safeInt, z.string(), z.array(jsonValue), z.record(z.string(), jsonValue)]),
-);
+/**
+ * Where the first problem in free-form JSON is (a path relative to `value`), or `null` when there is
+ * none: every number a safe integer, every object plain, and **no object with an own `__proto__` key**.
+ * zod's records drop such a key silently while `canonicalJson` writes it, so without this check a
+ * forged fact (even a float) could hide in a tool output and survive a canonical comparison of the
+ * parsed document (fix round 1 for Task 11). Walks the raw parsed input, before zod copies anything.
+ */
+function freeJsonProblem(value: unknown, path: PropertyKey[]): PropertyKey[] | null {
+  if (value === null || typeof value === "boolean" || typeof value === "string") return null;
+  if (typeof value === "number") return Number.isSafeInteger(value) ? null : path;
+  if (Array.isArray(value)) {
+    for (let i = 0; i < value.length; i++) {
+      const problem = freeJsonProblem(value[i], [...path, i]);
+      if (problem !== null) return problem;
+    }
+    return null;
+  }
+  if (typeof value !== "object") return path;
+  const proto = Object.getPrototypeOf(value);
+  if ((proto !== Object.prototype && proto !== null) || Object.prototype.hasOwnProperty.call(value, "__proto__")) return path;
+  for (const [key, item] of Object.entries(value)) {
+    const problem = freeJsonProblem(item, [...path, key]);
+    if (problem !== null) return problem;
+  }
+  return null;
+}
+
+/** Free-form JSON: tool arguments and outputs (see {@link freeJsonProblem}). */
+const jsonValue = z
+  .unknown()
+  .superRefine((value, ctx) => {
+    const problem = freeJsonProblem(value, []);
+    if (problem !== null) ctx.addIssue({ code: "custom", message: "invalid", path: problem });
+  })
+  .transform((value) => value as JsonValue);
 
 const NANSEN: ReadonlySet<string> = new Set<string>(NANSEN_TOOLS);
 
@@ -433,7 +400,9 @@ function formatPath(path: ReadonlyArray<PropertyKey>): string {
  * free-form tool `arguments`/`output` is invalid, and every value must have exactly the encoding
  * `riskEvidence` writes — decimal strings without leading zeros for `bigint`s, `"0.2"`-style decimal
  * strings for the two fractional constants, EIP-55 addresses, lower-case hashes, safe integers only
- * (a float or an integer past 2^53 anywhere, tool outputs included, is invalid). A tool call must be
+ * (a float or an integer past 2^53 anywhere, tool outputs included, is invalid). An object with an
+ * own `__proto__` key is invalid anywhere: an unknown key in the strict objects, and `invalid at
+ * <path of that object>` inside a tool's free-form `arguments` or `output`. A tool call must be
  * `onchain` exactly when it isn't a Nansen tool. So a parsed document, passed back through
  * `riskEvidence` and `buildEvidence`, gives the same canonical bytes. Never throws.
  *

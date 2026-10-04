@@ -1,3 +1,4 @@
+import type { EvidenceRequest } from "@attest8004/validator-mandate";
 import type { Address, Hex } from "viem";
 
 /**
@@ -97,78 +98,83 @@ export interface GuardResult {
 }
 
 /**
- * Everything `riskEvidence` serialises for a `risk-v1` verdict (Task 11's evidence key table,
- * reproduced in the P5 plan and the Task 6 brief), typed. Block numbers, timestamps and wei amounts
- * are `bigint`; addresses and hashes are viem's `Address`/`Hex`. **Provisional**: later tasks
- * (evidence.ts, verify.ts) may refine this shape as the exact re-derivation needs become concrete;
- * this file stays the source of truth for it either way.
+ * The evidence's `params` (ARCHITECTURE §6): **every** `RISK_V1` constant except `tag` (it is the
+ * document's `validator`), `promptVersion` (recorded in `llm`) and `guardModel` (recorded as
+ * `classifier.model`), plus the contracts the tools read and validator A's address. Integers that may
+ * pass 2^53 are `bigint` (written as decimal strings), and the two non-integer constants,
+ * `temperature` and `guardThreshold`, are decimal strings (`"0.2"`, `"0.5"`; Ruling R4: canonical JSON
+ * has no floats). `verify` compares the whole object with `riskParams`, so a verdict reached under any
+ * other constant doesn't verify.
+ */
+export interface RiskParams {
+  maxToolCalls: number;
+  invalidOutputRetries: number;
+  reasoningEffort: string;
+  temperature: string;
+  seed: number;
+  toolTurnMaxCompletionTokens: number;
+  finalMaxCompletionTokens: number;
+  maxRequestTokens: number;
+  maxCheckTokens: number;
+  guardThreshold: string;
+  guardChunkChars: number;
+  guardChunkOverlap: number;
+  toolOutputMaxBytes: number;
+  maxEvidenceBytes: number;
+  simulationGas: bigint;
+  maxTraceCalls: number;
+  maxRevertReasonChars: number;
+  ageProbeBlocks: bigint[];
+  reputationMaxClients: number;
+  nansenWindowSeconds: bigint;
+  nansenMaxLabels: number;
+  nansenMaxCounterparties: number;
+  maxFindings: number;
+  maxExplanationChars: number;
+  maxSourcesPerFinding: number;
+  calldataTextMinChars: number;
+  calldataTextMaxChars: number;
+  calldataTextMaxRuns: number;
+  calldataHeadBytes: number;
+  maxDeadlineAheadSeconds: bigint;
+  scores: { none: number; low: number; medium: number; high: number };
+  contracts: {
+    identityRegistry: Address;
+    reputationRegistry: Address;
+    validationRegistry: Address;
+    mandateRegistry: Address;
+    forwarder: Address;
+  };
+  mandateValidator: Address;
+}
+
+/**
+ * Everything `riskEvidence` serialises for a `risk-v1` verdict (ARCHITECTURE §6's key table), typed;
+ * `parseRiskEvidence` returns exactly this (plus the base's five fields). Block numbers, timestamps
+ * and wei amounts are `bigint`; addresses and hashes are viem's `Address`/`Hex`.
  */
 export interface RiskRecord {
+  /** `P`. */
   block: { number: bigint; hash: Hex; timestamp: bigint };
-  /** `mandate-v1`'s request shape: the action's committed fields, without the raw `data` (its `selector` instead). */
-  request: {
-    block: bigint;
-    chainId: number;
-    gate: Address;
-    agentId: bigint;
-    target: Address;
-    value: bigint;
-    dataHash: Hex;
-    selector: Hex | null;
-    deadline: bigint;
-    salt: Hex;
-  };
-  /** The `RISK_V1` fields `verify` re-derives from, plus the contracts and validator A's address it reads. */
-  params: {
-    maxToolCalls: number;
-    invalidOutputRetries: number;
-    guardThreshold: number;
-    guardChunkChars: number;
-    guardChunkOverlap: number;
-    toolOutputMaxBytes: number;
-    maxEvidenceBytes: number;
-    simulationGas: bigint;
-    maxTraceCalls: number;
-    ageProbeBlocks: bigint[];
-    reputationMaxClients: number;
-    nansenWindowSeconds: bigint;
-    nansenMaxLabels: number;
-    nansenMaxCounterparties: number;
-    maxFindings: number;
-    maxExplanationChars: number;
-    maxSourcesPerFinding: number;
-    calldataTextMinChars: number;
-    calldataTextMaxChars: number;
-    calldataHeadBytes: number;
-    maxDeadlineAheadSeconds: bigint;
-    contracts: {
-      identityRegistry: Address;
-      reputationRegistry: Address;
-      validationRegistry: Address;
-      mandateRegistry: Address;
-      forwarder: Address;
-    };
-    mandateValidator: Address;
-  };
+  /** Exactly `mandate-v1`'s request object (`requestEvidence`): the committed fields, `dataHash` instead of the raw `data`, and the `selector`. */
+  request: EvidenceRequest;
+  params: RiskParams;
   prerequisite: Prerequisite;
   /** The LLM endpoint recorded as host only (never the URL or key), per every call actually made. */
   llm: {
     host: string;
     model: string;
+    /** Distinct, in first-seen order. */
     servedModels: string[];
+    /** Distinct, in first-seen order. */
     systemFingerprints: (string | null)[];
     promptVersion: string;
     promptHash: Hex;
     usage: { prompt: number; completion: number; total: number };
   };
-  classifier: {
-    model: string;
-    threshold: number;
-    results: GuardResult[];
-  };
-  tools: {
-    nansen: { available: boolean; reason: string | null };
-  };
+  /** `threshold` is the decimal string `"0.5"` (Ruling R4). */
+  classifier: { model: string; threshold: string; results: GuardResult[] };
+  tools: { nansen: { available: boolean; reason: string | null } };
   toolCalls: ToolCallRecord[];
   modelOutputs: TurnRecord[];
   finalOutput: { raw: string; attempts: number };

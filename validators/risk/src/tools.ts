@@ -158,6 +158,29 @@ function validateArguments(name: OnchainToolName | NansenToolName, parsed: unkno
   return result.success ? {} : null;
 }
 
+/** Whether an own `__proto__` key appears in any object at any depth of `value`. */
+function hasProtoKey(value: unknown): boolean {
+  if (Array.isArray(value)) return value.some(hasProtoKey);
+  if (value === null || typeof value !== "object") return false;
+  return Object.prototype.hasOwnProperty.call(value, "__proto__") || Object.values(value).some(hasProtoKey);
+}
+
+/**
+ * Whether parsed model JSON can be recorded as is (Ruling R3): canonical-JSON-safe (no float, no
+ * integer past 2^53), and with no own `__proto__` key at any depth. `JSON.parse` keeps `"__proto__"`
+ * as an ordinary own key and `canonicalJson` writes it, but zod's records drop it silently, so a
+ * record holding one could never be parsed back into the same evidence bytes (fix round 1 for Task
+ * 11). Anything else is recorded as the raw string. `runTool` and the agent loop both decide this way.
+ */
+export function isRecordableJson(value: unknown): value is JsonValue {
+  try {
+    canonicalJson(value);
+  } catch {
+    return false;
+  }
+  return !hasProtoKey(value);
+}
+
 /** Every `0x`-address-shaped string anywhere in `value`, lower-cased, added to `out`. */
 function collectAddresses(value: JsonValue, out: Set<string>): void {
   if (typeof value === "string") {
@@ -567,14 +590,11 @@ export async function runTool(
   // make a later `canonicalJson` call (building evidence) throw, turning a deterministic
   // INVALID_ARGUMENTS answer into a thrown error. When that would happen, record the raw string
   // instead, exactly as for unparseable JSON.
+  // Fix round 1 for Task 11: likewise for an own `__proto__` key at any depth (see isRecordableJson).
   let argumentsRecord: JsonValue = rawArguments;
   if (parsedOk) {
-    try {
-      canonicalJson(parsed);
-      argumentsRecord = parsed as JsonValue;
-    } catch {
-      parsedOk = false; // treated the same as unparseable from here on: validateArguments is skipped
-    }
+    if (isRecordableJson(parsed)) argumentsRecord = parsed;
+    else parsedOk = false; // treated the same as unparseable from here on: validateArguments is skipped
   }
 
   // Fix round 1, finding 6: an unrecognised name is still `onchain: true`, so `verify` re-checks

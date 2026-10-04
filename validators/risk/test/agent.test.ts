@@ -2,8 +2,8 @@ import { canonicalJson } from "@attest8004/sdk";
 import type { MandateInputs, PinnedBlock, Simulation } from "@attest8004/validator-mandate";
 import { concatHex, encodeErrorResult, getAddress, keccak256, stringToHex, toHex, type Address, type Hex } from "viem";
 import { describe, expect, it, vi } from "vitest";
-import { promptParams, reaskMessages, runAgent } from "../src/agent.ts";
-import { findingsJsonSchema } from "../src/findings.ts";
+import { InitialMessagesTooLargeError, MIN_TOOL_ANSWERS, promptParams, RESERVE_TURN, reaskMessages, runAgent } from "../src/agent.ts";
+import { findingsJsonSchema, SOURCE_NAMES } from "../src/findings.ts";
 import type { PromptGuard } from "../src/guard.ts";
 import { estimateTokens, parseChatResponse, ProviderError, type ChatClient, type ChatMessage, type ChatRequest, type ChatResponse } from "../src/llm.ts";
 import type { NansenClient } from "../src/nansen.ts";
@@ -506,6 +506,17 @@ describe("runAgent: caps", () => {
     expect(instruction).not.toContain("nansen_flows");
   });
 
+  it("a call over the cap whose arguments carry __proto__ is recorded with the raw string (fix round 1 for Task 11)", async () => {
+    const raw = `{"address":"${TARGET}","__proto__":{"x":1}}`;
+    const turn = () => toolTurn([call("get_mandate"), call("get_mandate"), call("get_mandate"), call("get_mandate")]);
+    // The 8th call runs; the 9th, in the same turn, is over the cap and never reaches runTool.
+    const last = toolTurn([call("get_mandate"), call("get_mandate"), call("get_mandate"), call("get_mandate"), call("counterparty_onchain", raw)]);
+    const { client } = scripted([turn(), last, textTurn(EMPTY)]);
+    const result = await runAgent({ llm: client, guard: fakeGuard(), model: MODEL, data: makeData(), tools: makeCtx(makeReader()), initialGuard: [] });
+    expect(result.toolCalls).toHaveLength(9);
+    expect(result.toolCalls[8]).toMatchObject({ name: "counterparty_onchain", arguments: raw, output: { error: "TOOL_CALL_LIMIT" } });
+  });
+
   it("with one call per turn, the 8th call ends the loop: the 9th request is the final one", async () => {
     const { client, requests } = scripted((request) => (request.tools ? toolTurn([call("get_mandate")]) : textTurn(EMPTY)));
     const result = await run({ llm: client });
@@ -942,5 +953,43 @@ describe("runAgent: untrusted tool text and records", () => {
     expect(JSON.stringify(result)).not.toContain(secret);
     expect(JSON.stringify(requests)).not.toContain(secret);
     expect(result.findings).toEqual([]);
+  });
+});
+
+describe("runAgent: the room for 3 tool answers (fix round 1 for Task 11)", () => {
+  /** The final call's estimate with `n` reserved tool turns after the initial messages, every source citable. */
+  function finalEstimate(data: InitialData, n: number): number {
+    const history = [...initialMessages(data), ...Array.from({ length: n }, () => RESERVE_TURN).flat()];
+    return estimateTokens({
+      model: MODEL,
+      messages: finalMessages(history, [...SOURCE_NAMES]),
+      response_format: promptParams(MODEL).response_format,
+      max_completion_tokens: RISK_V1.finalMaxCompletionTokens,
+    });
+  }
+  /** Calldata text crafted directly (past calldataText's own caps), `length` characters in one run. */
+  const withText = (length: number) => makeData({ calldataText: [{ offset: 4, text: "a".repeat(length) }] });
+
+  it("initial messages that fit with 1 reserved answer but not with 3 are rejected with InitialMessagesTooLargeError, and nothing is sent", async () => {
+    // The smallest crafted length whose initial messages leave no room for 3 answers.
+    let length = 0;
+    while (finalEstimate(withText(length), 3) <= RISK_V1.maxRequestTokens) length += 30;
+    const data = withText(length);
+    expect(MIN_TOOL_ANSWERS).toBe(3);
+    expect(finalEstimate(data, 1)).toBeLessThanOrEqual(RISK_V1.maxRequestTokens);
+    expect(finalEstimate(data, 3)).toBeGreaterThan(RISK_V1.maxRequestTokens);
+
+    const { client, requests } = scripted([textTurn(EMPTY)]);
+    const run = runAgent({ llm: client, guard: fakeGuard(), model: MODEL, data, tools: makeCtx(makeReader()), initialGuard: [] });
+    await expect(run).rejects.toBeInstanceOf(InitialMessagesTooLargeError);
+    await expect(run).rejects.toMatchObject({ estimate: finalEstimate(data, 3) });
+    expect(requests).toEqual([]);
+
+    // Just under the boundary, the run goes ahead.
+    const fits = withText(length - 30);
+    expect(finalEstimate(fits, 3)).toBeLessThanOrEqual(RISK_V1.maxRequestTokens);
+    const ok = scripted([textTurn("done"), textTurn(EMPTY)]);
+    await runAgent({ llm: ok.client, guard: fakeGuard(), model: MODEL, data: fits, tools: makeCtx(makeReader()), initialGuard: [] });
+    expect(ok.requests.length).toBeGreaterThan(0);
   });
 });

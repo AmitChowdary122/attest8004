@@ -285,6 +285,16 @@ describe("runRiskV1", () => {
     expect(result).toEqual({ decline: "MODEL_OUTPUT_INVALID: json_validate_failed" });
   });
 
+  it("initial messages with no room for 3 tool answers decline PROMPT_TOO_LARGE with the estimate, before any model call", async () => {
+    // Unreachable through readPrerequisite (at most 12 distinct codes) or the capped calldata: only a
+    // growing prompt, tool set or summary could get here. A direct prerequisite with many reasons does.
+    const reasons = Array.from({ length: 700 }, () => "PERMISSION_CHANGED_AFTER_MANDATE");
+    const { result, llm } = await run({ steps: [textTurn(), final(NO_FINDINGS)], prereq: { score: 0, reasons } });
+    expect(result).toEqual({ decline: expect.stringMatching(/^PROMPT_TOO_LARGE: \d+ tokens$/) });
+    expect(Number(/(\d+)/.exec((result as { decline: string }).decline)?.[1])).toBeGreaterThan(RISK_V1.maxRequestTokens);
+    expect(llm.requests).toEqual([]);
+  });
+
   it("a transient provider failure rejects with no result (the base retries)", async () => {
     await expect(run({ steps: [chatResponse({ toolCalls: [toolCall("simulate_action")] }), transient429()] })).rejects.toThrow(ProviderError);
   });
@@ -357,6 +367,18 @@ describe("readPrerequisite", () => {
       tag: "mandate-v1",
       reasons: ["TARGET_NOT_ALLOWED", "SIMULATION_FAILED"],
     });
+  });
+
+  it("keeps each known reason once, in first-seen order", async () => {
+    const { jsonA, rhA } = setup();
+    landMandateVerdict(chain, {
+      jsonA,
+      requestBlock: 1_000n,
+      block: 1_002n,
+      score: 0,
+      reasons: ["TARGET_NOT_ALLOWED", "SIMULATION_FAILED", "TARGET_NOT_ALLOWED", "NOT_A_CODE", "SIMULATION_FAILED"],
+    });
+    expect(await read(rhA)).toMatchObject({ reasons: ["TARGET_NOT_ALLOWED", "SIMULATION_FAILED"] });
   });
 
   it("is invalid when another validator answered, or with another tag", async () => {

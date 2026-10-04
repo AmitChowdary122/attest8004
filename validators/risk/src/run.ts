@@ -18,8 +18,8 @@ import {
   type VerifyReader,
 } from "@attest8004/validator-mandate";
 import { getAddress, keccak256, size, slice, stringToBytes, zeroHash, type Address, type Hex } from "viem";
-import { promptParams, runAgent, type AgentResult } from "./agent.ts";
-import { riskEvidence, riskParams, type RiskEvidenceRecord } from "./evidence.ts";
+import { InitialMessagesTooLargeError, promptParams, runAgent, type AgentResult } from "./agent.ts";
+import { riskEvidence, riskParams } from "./evidence.ts";
 import { injectionFinding, parseModelOutput, scoreOf } from "./findings.ts";
 import { screen, type PromptGuard } from "./guard.ts";
 import type { ChatClient } from "./llm.ts";
@@ -28,7 +28,7 @@ import { RISK_V1 } from "./params.ts";
 import { initialMessages, PROMPT_VERSION, promptHash, type InitialData } from "./prompt.ts";
 import type { RiskAddresses, RiskReader } from "./reader.ts";
 import { initialScope, TOOL_DEFINITIONS, weiToMon } from "./tools.ts";
-import type { JsonValue, Prerequisite, RecordedFinding } from "./types.ts";
+import type { JsonValue, Prerequisite, RecordedFinding, RiskRecord } from "./types.ts";
 import { calldataText } from "./untrusted.ts";
 
 /**
@@ -68,7 +68,8 @@ function quoted(value: string): string {
  *   own strict `parseApprovalParts`), or names another request. The reason is our own fixed text.
  * - Otherwise the {@link Prerequisite}: A's address, `requestHashA`, its score and `responseHash` from
  *   the status at `P`, and the reasons in A's evidence, keeping only the 12 known `mandate-v1` codes,
- *   in their order there (anything else in that list never reaches the model as one of A's reasons).
+ *   each once, in their first-seen order there (anything else in that list never reaches the model as
+ *   one of A's reasons).
  *
  * Throws on an RPC failure, and with {@link PrerequisiteLogNotFoundError} when A's response log can't
  * be found (lag), so neither ever becomes a verdict or a decline.
@@ -102,7 +103,7 @@ export async function readPrerequisite(
     score: status.response,
     responseHash,
     tag: "mandate-v1",
-    reasons: reasons.filter((reason) => KNOWN_REASONS.has(reason)),
+    reasons: [...new Set(reasons.filter((reason) => KNOWN_REASONS.has(reason)))],
   };
 }
 
@@ -149,8 +150,10 @@ function lastOutputError(agent: AgentResult): string {
  *    guard result (`origin: "code"`); the score is `scoreOf(findings)` and `reasons` their codes.
  * 5. Serialises the whole trace with {@link riskEvidence}.
  *
- * Declines (no response, no retry) with `MODEL_OUTPUT_INVALID: <last error>` when the model's output
- * still failed after its retries, and with `EVIDENCE_TOO_LARGE: <bytes> bytes` when the document the
+ * Declines (no response, no retry) with `PROMPT_TOO_LARGE: <estimate> tokens` when the initial
+ * messages leave no room for 3 tool answers (`runAgent`'s `InitialMessagesTooLargeError`, before any
+ * model call), with `MODEL_OUTPUT_INVALID: <last error>` when the model's output still failed after
+ * its retries, and with `EVIDENCE_TOO_LARGE: <bytes> bytes` when the document the
  * base would publish is over `RISK_V1.maxEvidenceBytes` of canonical JSON, so the response gas cap can
  * never fail a send after the model ran. Rejects on a transient provider failure and on any other
  * failure (a chain read, the guard), with no partial result: the base retries the request later.
@@ -196,14 +199,21 @@ export async function runRiskV1(o: {
   const fields = text.length === 0 ? [] : [{ source: "calldata_text", text: text.map((run) => run.text).join("\n") }];
   const initialGuard = await screen(guard, fields, RISK_V1.guardThreshold);
 
-  const agent = await runAgent({
-    llm,
-    guard,
-    model,
-    data,
-    tools: { reader, pinned, request, nansen, scope: initialScope(request, owner, mandate) },
-    initialGuard,
-  });
+  let agent: AgentResult;
+  try {
+    agent = await runAgent({
+      llm,
+      guard,
+      model,
+      data,
+      tools: { reader, pinned, request, nansen, scope: initialScope(request, owner, mandate) },
+      initialGuard,
+    });
+  } catch (error) {
+    // Deterministic for this request: a retry could never fit, so decline once instead.
+    if (error instanceof InitialMessagesTooLargeError) return { decline: `PROMPT_TOO_LARGE: ${error.estimate} tokens` };
+    throw error;
+  }
   if (agent.findings === null || agent.final === null) return { decline: `MODEL_OUTPUT_INVALID: ${lastOutputError(agent)}` };
 
   const injection = injectionFinding(agent.guard);
@@ -214,7 +224,7 @@ export async function runRiskV1(o: {
   const score = scoreOf(findings);
   const reasons = findings.map((f) => f.code);
 
-  const record: RiskEvidenceRecord = {
+  const record: RiskRecord = {
     block: pinned,
     request: requestEvidence(request),
     params: riskParams(addresses, mandateValidator),

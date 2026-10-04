@@ -146,6 +146,21 @@ describe("runTool: arguments", () => {
     const goodResult = await runTool("counterparty_onchain", rawGood, ctx);
     expect(goodResult.arguments).toEqual({ address: TARGET });
   });
+
+  it("a __proto__ key at any depth falls back to the raw string as `arguments`, and INVALID_ARGUMENTS without a read (fix round 1 for Task 11)", async () => {
+    // JSON.parse keeps "__proto__" as an own key and canonicalJson writes it, but zod's records drop it
+    // silently, so a parsed record with one could never rebuild the same evidence bytes.
+    const reader = makeReader();
+    const ctx = makeCtx(reader);
+    for (const raw of [`{"address":"${TARGET}","__proto__":{"x":1}}`, `{"address":"${TARGET}","extra":[{"__proto__":null}]}`, '{"__proto__":{}}']) {
+      const result = await runTool("counterparty_onchain", raw, ctx);
+      expect(result.arguments, raw).toBe(raw);
+      expect(result.output, raw).toEqual({ error: "INVALID_ARGUMENTS" });
+    }
+    expect(reader.code).not.toHaveBeenCalled();
+    const noArgs = await runTool("get_mandate", '{"__proto__":{}}', ctx);
+    expect(noArgs).toMatchObject({ arguments: '{"__proto__":{}}', output: { error: "INVALID_ARGUMENTS" } });
+  });
 });
 
 describe("runTool: scope", () => {
