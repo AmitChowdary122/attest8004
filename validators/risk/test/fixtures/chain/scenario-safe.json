@@ -1,0 +1,78 @@
+{
+  "_comment": [
+    "Synthetic RiskReader answers for risk-v1's safe action S (P5 Task 13; read by test/helpers/fixture-reader.ts, shared by injection.test.ts and scripts/record-fixtures.ts). Not read from any chain.",
+    "S sends 0.001 MON with empty calldata to the deployer, an EOA about 2 days old (its first transaction ~600,000 blocks before P: younger than 1M blocks, older than 100k) with nonce 40, listed in agent 1984's mandate. The gate is a freshly deployed contract (~50,000 blocks before P).",
+    "trace is one callTracer CALL from the gate to the deployer; its root frame's input is filled in with the variant's data ('0x').",
+    "accounts: code is present, and the nonce non-zero, from createdAtBlock on (code '0x' and nonce 0 before it, or always when createdAtBlock is null); balance is the balance at P. Any address not listed is an empty account. agents maps an agentId to its owner (anything else: no such agent); every agent has no reputation clients.",
+    "prerequisite is validator A's (mandate-v1) verdict at P: 100 with no reasons."
+  ],
+  "chainId": 10143,
+  "pinned": {
+    "number": "67960000",
+    "hash": "0xf8ae10c82ddb0604923275e46750cebc3d2d47ec14ed979be44b20ac0145ff71",
+    "timestamp": "1791090000"
+  },
+  "requestBlock": "67959992",
+  "gate": "0x12fAb3E3cA810Cc44bD9f537613a230a2be8D614",
+  "action": {
+    "agentId": "1984",
+    "target": "0x3EFEB3Cf2FB54A7D99abE90AaB786cE5A831a8CF",
+    "value": "1000000000000000",
+    "deadline": "1791091500",
+    "salt": "0x3a001b472910d0669523764f303be6c20891e0a45e910d56f6012a1d6f151732"
+  },
+  "variants": {
+    "safe": { "memo": null, "data": "0x" }
+  },
+  "prerequisite": { "score": 100, "reasons": [] },
+  "owner": "0x3EFEB3Cf2FB54A7D99abE90AaB786cE5A831a8CF",
+  "mandate": {
+    "allowedTargets": ["0x3EFEB3Cf2FB54A7D99abE90AaB786cE5A831a8CF", "0xEEEBBa55620afC42E9c88b5d962476367b8da338"],
+    "allowedSelectors": ["0x00000000"],
+    "maxValuePerTx": "2000000000000000",
+    "maxValuePerDay": "5000000000000000",
+    "validUntil": "1793404800",
+    "mandateHash": "0x6f4568e09e3ed17c07e08f0970b0642ebe1efd8d1e9588b2f26dd8057f3fedca",
+    "owner": "0x3EFEB3Cf2FB54A7D99abE90AaB786cE5A831a8CF",
+    "setAtBlock": "67940000"
+  },
+  "permissionEvents": [],
+  "trace": {
+    "type": "CALL",
+    "from": "0x12fab3e3ca810cc44bd9f537613a230a2be8d614",
+    "to": "0x3efeb3cf2fb54a7d99abe90aab786ce5a831a8cf",
+    "value": "0x38d7ea4c68000",
+    "gas": "0xf4240",
+    "gasUsed": "0xf4240"
+  },
+  "accounts": {
+    "0x12fAb3E3cA810Cc44bD9f537613a230a2be8D614": {
+      "label": "the gate (DemoAgentVault)",
+      "code": "0x608060405260043610610045575f3560e01c80631cff79cd146100495780637ecebe001461006b575b5f5ffd",
+      "createdAtBlock": "67910000",
+      "balance": "10000000000000000",
+      "nonce": "1",
+      "agentsOwned": "0"
+    },
+    "0x3EFEB3Cf2FB54A7D99abE90AaB786cE5A831a8CF": {
+      "label": "the target: the deployer, agent 1984's owner",
+      "code": "0x",
+      "createdAtBlock": "67360000",
+      "balance": "1600000000000000000",
+      "nonce": "40",
+      "agentsOwned": "2"
+    },
+    "0xEEEBBa55620afC42E9c88b5d962476367b8da338": {
+      "label": "DemoPassThrough, the mandate's other allowed target",
+      "code": "0x6080604052348015600e575f5ffd5b50",
+      "createdAtBlock": "67930000",
+      "balance": "0",
+      "nonce": "1",
+      "agentsOwned": "0"
+    }
+  },
+  "agents": {
+    "1984": "0x3EFEB3Cf2FB54A7D99abE90AaB786cE5A831a8CF",
+    "1985": "0x3EFEB3Cf2FB54A7D99abE90AaB786cE5A831a8CF"
+  }
+}
