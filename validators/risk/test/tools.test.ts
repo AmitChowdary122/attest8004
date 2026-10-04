@@ -321,24 +321,65 @@ describe("capOutput", () => {
     expect(canonicalJson(value)).toBe(before);
   });
 
-  it("fix round 1, finding 3(a): drops are tracked cumulatively per field even when cuts move between two arrays", () => {
-    // `calls` (13 items) and `valueFlows` (6 items), each item large enough that cutting one field a
-    // little still leaves the overall output too big, so capOutput must cross over to the other field.
+  it("fix round 1, finding 3(a) / fix round 2, finding 3: a realistic flattenTrace-shaped output (13 calls, 6 flows) caps to pinned exact counts, cutting both fields", () => {
+    // A realistic `simulate_action` output shape (the exact field names/types `flattenTrace`
+    // produces: `calls[]` of {depth,type,from,to,value,selector,error}, `valueFlows[]` of
+    // {from,to,value}), with real 42-char checksummed addresses — not the arbitrary "note"-padded
+    // placeholders the original fix-round-1 test used. `address(n)` below gives a distinct, valid
+    // checksummed address per index.
+    const address = (n: number): Address => getAddress(`0x${n.toString(16).padStart(40, "0")}`);
+    const calls = Array.from({ length: 13 }, (_, i) => ({
+      depth: i,
+      type: "CALL",
+      from: address(i + 1),
+      to: address(i + 2),
+      value: (i % 2 === 0 ? (i + 1) * 1_000 : 0).toString(),
+      selector: null,
+      error: null,
+    }));
+    // `flattenTrace` always sorts `valueFlows` by value descending (fix round 2, finding 1), so a
+    // "realistic flattenTrace-shaped output" has them pre-sorted: 6,000 down to 1,000. capOutput must
+    // then drop from the *end* — the smallest (1,000) — not the actual largest.
+    const valueFlows = Array.from({ length: 6 }, (_, i) => ({
+      from: address(i * 2 + 1),
+      to: address(i * 2 + 2),
+      value: ((6 - i) * 1_000).toString(),
+    }));
     const value: JsonValue = {
-      calls: Array.from({ length: 13 }, (_, i) => ({ depth: i, type: "CALL", note: "c".repeat(60) })),
-      valueFlows: Array.from({ length: 6 }, (_, i) => ({ from: i.toString(), to: i.toString(), note: "f".repeat(60) })),
+      ok: true,
+      error: null,
+      revertReason: null,
+      revertReasonTruncated: false,
+      calls,
+      valueFlows,
+      truncatedCalls: 0,
     };
-    const maxBytes = 400; // small enough that both fields must give something up
-    const capped = capOutput(value, maxBytes) as { calls: JsonValue[]; valueFlows: JsonValue[]; truncated: Record<string, number> };
 
-    expect(new TextEncoder().encode(canonicalJson(capped)).length).toBeLessThanOrEqual(maxBytes);
-    // Every field that lost elements is accounted for, and the recorded count is exactly how many
-    // elements are actually missing relative to the original — the bug this fixes under-reported
-    // `dropped` for whichever field *wasn't* the one most recently cut.
-    expect(capped.truncated.calls ?? 0).toBe(13 - capped.calls.length);
-    expect(capped.truncated.valueFlows ?? 0).toBe(6 - capped.valueFlows.length);
-    // and at least one field actually needed cutting for this input size
-    expect((capped.truncated.calls ?? 0) + (capped.truncated.valueFlows ?? 0)).toBeGreaterThan(0);
+    // Pinned by actually running capOutput on this exact input (measured, not hand-computed) —
+    // recomputed after the finding-1 sort change landed. Re-measure and update these four numbers
+    // together if `capOutput`'s algorithm or this input ever changes.
+    const fullBytes = new TextEncoder().encode(canonicalJson(value)).length;
+    expect(fullBytes).toBe(3_055);
+
+    const capped = capOutput(value, 1_536) as {
+      calls: JsonValue[];
+      valueFlows: Array<{ value: string }>;
+      truncated: Record<string, number>;
+    };
+    const cappedBytes = new TextEncoder().encode(canonicalJson(capped)).length;
+
+    expect(cappedBytes).toBe(1_434);
+    expect(cappedBytes).toBeLessThanOrEqual(1_536);
+    expect(capped.calls).toHaveLength(4);
+    expect(capped.valueFlows).toHaveLength(5);
+    expect(capped.truncated).toEqual({ calls: 9, valueFlows: 1 });
+    // both fields were actually cut (the regression this guards against: finding 3's reviewer
+    // measurement showed the *other* field's drop silently going unreported)
+    expect(capped.truncated.calls).toBeGreaterThan(0);
+    expect(capped.truncated.valueFlows).toBeGreaterThan(0);
+    // and the one flow capOutput dropped is the smallest (1,000) — the sort fix (finding 1) means
+    // cutting from the end of `valueFlows` always removes the least important entry
+    expect(capped.valueFlows.map((f) => f.value)).toEqual(["6000", "5000", "4000", "3000", "2000"]);
   });
 
   it("fix round 1, finding 3(b): when every array is exhausted, the longest string is cut from its end so the cap still holds", () => {
@@ -347,6 +388,24 @@ describe("capOutput", () => {
     expect(new TextEncoder().encode(canonicalJson(capped)).length).toBeLessThanOrEqual(1_536);
     expect(capped.revertReason.length).toBeLessThan(20_000);
     expect(capped.truncated.revertReason).toBe(20_000 - capped.revertReason.length);
+  });
+
+  it("fix round 2, finding 2: a string cut landing inside a surrogate pair drops the trailing lone high surrogate", () => {
+    // `fullBytes - 1`: exactly 1 byte over budget, so the *first* cut removes exactly 1 UTF-16 unit —
+    // the emoji's low surrogate, landing the cut right inside the pair, which is precisely where the
+    // bug lived. (capOutput then keeps cutting a little further to pay for the `truncated` marker's
+    // own bytes, same as any other string cut — that convergence isn't this test's concern.)
+    const prefix = "a".repeat(500);
+    const value: JsonValue = { note: `${prefix}\u{1F600}` };
+    const fullBytes = new TextEncoder().encode(canonicalJson(value)).length;
+    const capped = capOutput(value, fullBytes - 1) as { note: string; truncated: Record<string, number> };
+
+    expect(new TextEncoder().encode(canonicalJson(capped)).length).toBeLessThanOrEqual(fullBytes - 1);
+    expect(/[\uD800-\uDFFF]/.test(capped.note)).toBe(false); // no lone surrogate of either kind remains
+    expect(prefix.startsWith(capped.note)).toBe(true); // whatever remains is a clean prefix of the plain-ASCII text
+    expect(capped.note.length).toBeLessThan(prefix.length); // the emoji is gone, not left dangling as half a pair
+    expect(capped.truncated.note).toBeGreaterThanOrEqual(2); // at least both of the emoji's own surrogate units
+    expect(() => JSON.stringify(capped)).not.toThrow();
   });
 
   it("property-style: capOutput's result is always <= maxBytes, for a range of shapes", () => {
@@ -406,6 +465,42 @@ describe("runTool: size — every tool's output after capping is <= 1,536 bytes"
     const result = await runTool("simulate_action", "{}", ctx);
     expect(new TextEncoder().encode(canonicalJson(result.output)).length).toBeLessThanOrEqual(1_536);
     expect((result.output as { revertReasonTruncated: boolean }).revertReasonTruncated).toBe(true);
+  });
+
+  it("fix round 2, finding 1: 6 one-wei dust flows placed before the real 0.001 MON forward — the forward survives capping and sorts first", async () => {
+    // A trace shaped exactly like the risky-but-mandated demo scenario this fix protects: a long
+    // chain (18 zero-value filler frames, so `calls` gets truncated by flattenTrace's own
+    // maxTraceCalls=16 well before the interesting part) with 6 one-wei "dust" transfers, then the
+    // real 0.001 MON forward last. Without the finding-1 sort, capOutput — which always cuts from the
+    // *end* of an array — would have popped the forward (last in call order) off `valueFlows` before
+    // ever touching the worthless dust at the front.
+    const addr = (n: number): Address => getAddress(`0x${n.toString(16).padStart(40, "0")}`);
+    let node: CallFrame = { type: "CALL", from: addr(24), to: addr(25), value: toHex(1_000_000_000_000_000n), input: "0x" };
+    for (let i = 23; i >= 18; i--) {
+      node = { type: "CALL", from: addr(i), to: addr(i + 1), value: "0x1", input: "0x", calls: [node] }; // 1 wei of dust
+    }
+    for (let i = 17; i >= 0; i--) {
+      node = { type: "CALL", from: addr(i), to: addr(i + 1), value: "0x0", input: "0x", calls: [node] }; // filler
+    }
+    const reader = makeReader({ trace: vi.fn(async (): Promise<TraceResult> => ({ ok: true, frame: node })) });
+    const ctx = makeCtx(reader);
+    const result = await runTool("simulate_action", "{}", ctx);
+    const bytes = new TextEncoder().encode(canonicalJson(result.output)).length;
+    const output = result.output as { calls: unknown[]; valueFlows: Array<{ value: string }>; truncated: Record<string, number> };
+
+    // Pinned by actually running this scenario (measured, not hand-computed): both `calls` and
+    // `valueFlows` need cutting to fit, which is exactly what makes this test meaningful — if
+    // `valueFlows` were never touched, the forward's survival would prove nothing about the fix.
+    expect(bytes).toBe(1_429);
+    expect(bytes).toBeLessThanOrEqual(1_536);
+    expect(output.calls).toHaveLength(4);
+    expect(output.valueFlows).toHaveLength(5);
+    expect(output.truncated).toEqual({ calls: 12, valueFlows: 2 });
+
+    // the forward is present, and sorted first (it's the largest value) — the dust transfers that
+    // got dropped (2 of the original 6) are the ones a stable descending sort always drops last
+    expect(output.valueFlows[0]?.value).toBe("1000000000000000");
+    expect(output.valueFlows.slice(1).every((f) => f.value === "1")).toBe(true);
   });
 
   for (const name of ["get_mandate", "simulate_action", "counterparty_onchain", "erc8004_reputation"] as const) {

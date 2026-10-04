@@ -227,6 +227,85 @@ describe("flattenTrace: valueFlows is computed over ALL frames, not just the fir
   });
 });
 
+describe("flattenTrace: valueFlows sorted by value descending, ties by original frame order (fix round 2, finding 1)", () => {
+  it("sorts flows by value descending so capping always drops the smallest flows first", () => {
+    const result: TraceResult = {
+      ok: true,
+      frame: frame({
+        type: "CALL",
+        from: "0x1111111111111111111111111111111111111111",
+        calls: [
+          frame({ type: "CALL", from: "0x1111111111111111111111111111111111111111", to: "0x2222222222222222222222222222222222222222", value: "0x1" }), // 1 wei
+          frame({ type: "CALL", from: "0x1111111111111111111111111111111111111111", to: "0x3333333333333333333333333333333333333333", value: "0x64" }), // 100 wei
+          frame({ type: "CALL", from: "0x1111111111111111111111111111111111111111", to: "0x4444444444444444444444444444444444444444", value: "0xa" }), // 10 wei
+        ],
+      }),
+    };
+    const flattened = flattenTrace(result, 16);
+    const flows = flattened.valueFlows as Array<{ value: string }>;
+    expect(flows.map((f) => f.value)).toEqual(["100", "10", "1"]);
+  });
+
+  it("ties (equal value) keep their original frame order (a stable sort)", () => {
+    const result: TraceResult = {
+      ok: true,
+      frame: frame({
+        type: "CALL",
+        from: "0x1111111111111111111111111111111111111111",
+        calls: [
+          frame({ type: "CALL", from: "0x1111111111111111111111111111111111111111", to: "0x2222222222222222222222222222222222222222", value: "0x1" }),
+          frame({ type: "CALL", from: "0x1111111111111111111111111111111111111111", to: "0x3333333333333333333333333333333333333333", value: "0x1" }),
+          frame({ type: "CALL", from: "0x1111111111111111111111111111111111111111", to: "0x4444444444444444444444444444444444444444", value: "0x1" }),
+        ],
+      }),
+    };
+    const flattened = flattenTrace(result, 16);
+    const flows = flattened.valueFlows as Array<{ to: string }>;
+    expect(flows.map((f) => f.to)).toEqual([
+      getAddress("0x2222222222222222222222222222222222222222"),
+      getAddress("0x3333333333333333333333333333333333333333"),
+      getAddress("0x4444444444444444444444444444444444444444"),
+    ]);
+  });
+});
+
+describe("flattenTrace: revertReason surrogate-pair safety (fix round 2, finding 2)", () => {
+  it("a slice that lands inside a surrogate pair drops the trailing lone high surrogate", () => {
+    const message = "x".repeat(255) + "\u{1F600}"; // 257 UTF-16 units; the 256-char cut lands inside the emoji
+    const output = encodeErrorResult({
+      abi: [{ type: "error", name: "Error", inputs: [{ name: "message", type: "string" }] }],
+      errorName: "Error",
+      args: [message],
+    });
+    const result: TraceResult = {
+      ok: true,
+      frame: frame({ type: "CALL", from: "0x1111111111111111111111111111111111111111", error: "execution reverted", output }),
+    };
+    const flattened = flattenTrace(result, 16);
+    const revertReason = flattened.revertReason as string;
+    expect(revertReason).toBe("x".repeat(255));
+    expect(/[\uD800-\uDBFF]$/.test(revertReason)).toBe(false);
+    expect(flattened.revertReasonTruncated).toBe(true);
+    expect(() => JSON.stringify(flattened)).not.toThrow();
+  });
+
+  it("a revert reason that already ends exactly at 256 chars (no emoji involved) is untouched", () => {
+    const message = "y".repeat(256);
+    const output = encodeErrorResult({
+      abi: [{ type: "error", name: "Error", inputs: [{ name: "message", type: "string" }] }],
+      errorName: "Error",
+      args: [message],
+    });
+    const result: TraceResult = {
+      ok: true,
+      frame: frame({ type: "CALL", from: "0x1111111111111111111111111111111111111111", error: "execution reverted", output }),
+    };
+    const flattened = flattenTrace(result, 16);
+    expect(flattened.revertReason).toBe(message);
+    expect(flattened.revertReasonTruncated).toBe(false);
+  });
+});
+
 describe("flattenTrace: revertReason is bounded (fix round 1, finding 3)", () => {
   it("a revert reason over 256 chars is cut to 256 and revertReasonTruncated: true", () => {
     const longMessage = "x".repeat(500);

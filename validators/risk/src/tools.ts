@@ -5,7 +5,7 @@ import { z } from "zod";
 import { type ToolName } from "./findings.ts";
 import { RISK_V1 } from "./params.ts";
 import type { RiskReader } from "./reader.ts";
-import { flattenTrace, type JsonObject } from "./trace.ts";
+import { dropTrailingLoneSurrogate, flattenTrace, type JsonObject } from "./trace.ts";
 import type { JsonValue } from "./types.ts";
 
 /**
@@ -373,7 +373,10 @@ function withTruncated(value: JsonValue, drops: ReadonlyMap<string, number>): Js
  *    removing however many characters the current overage needs in one step (not one at a time — a
  *    20,000-character string must not cost 20,000 iterations), looping to correct for JSON-escaping
  *    overhead if one cut wasn't quite enough. This is what keeps the ≤ `maxBytes` guarantee even when
- *    a single string field dominates the output.
+ *    a single string field dominates the output. Every such cut also drops a trailing lone (unpaired)
+ *    UTF-16 surrogate it may have produced (fix round 2, finding 2; see
+ *    {@link import("./trace.ts").dropTrailingLoneSurrogate}) — a cut landing inside an emoji must
+ *    never leave this text, which can reach the Prompt Guard and the model, ill-formed.
  *
  * The result carries `truncated: {field: dropped, ...}` (one entry per field that lost anything —
  * element count for an array, character count for a string) only when something was actually cut;
@@ -400,8 +403,14 @@ export function capOutput(output: JsonValue, maxBytes: number): JsonValue {
     if (stringTarget === null || stringTarget.value.length === 0) break; // nothing left to cut
     const over = currentSize() - maxBytes;
     const removeChars = Math.min(stringTarget.value.length, Math.max(1, over));
-    stringTarget.set(stringTarget.value.slice(0, stringTarget.value.length - removeChars));
-    bump(stringTarget.key, removeChars);
+    const before = stringTarget.value;
+    // Fix round 2, finding 2: the slice can land inside a surrogate pair (an emoji straddling the
+    // cut), leaving a lone high surrogate at the end — drop it too, so this text (which may reach
+    // the Prompt Guard/model as JSON) is never left ill-formed. The actual drop count can therefore
+    // be one more than `removeChars`; `bump` is given the real before/after length difference.
+    const next = dropTrailingLoneSurrogate(before.slice(0, before.length - removeChars));
+    stringTarget.set(next);
+    bump(stringTarget.key, before.length - next.length);
   }
 
   return withTruncated(working, drops);
