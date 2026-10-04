@@ -1,5 +1,6 @@
 import { concatHex, numberToHex, stringToHex, toHex, type Hex } from "viem";
 import { describe, expect, it } from "vitest";
+import { RISK_V1 } from "../src/params.ts";
 import { calldataText, safeJson, untrustedBlock, type UntrustedSource } from "../src/untrusted.ts";
 
 describe("safeJson", () => {
@@ -67,25 +68,26 @@ describe("calldataText", () => {
     expect(runs).toEqual([{ offset: 9, text: "alsoshort" }]);
   });
 
-  it("caps a single long run to calldataTextMaxChars (2000) in total", () => {
+  it("caps a single long run to calldataTextMaxChars (512, fix round 1 of Task 10) in total", () => {
+    expect(RISK_V1.calldataTextMaxChars).toBe(512);
     const longText = "A".repeat(5_000);
     const data = stringToHex(longText);
     const runs = calldataText(data);
     expect(runs).toHaveLength(1);
     expect(runs[0]?.offset).toBe(0);
-    expect(runs[0]?.text).toBe("A".repeat(2_000));
+    expect(runs[0]?.text).toBe("A".repeat(512));
   });
 
   it("cuts the run that crosses the cap and drops every run after it", () => {
     const run1 = "B".repeat(10);
-    const run2 = "C".repeat(1_995);
+    const run2 = "C".repeat(507);
     const run3 = "D".repeat(10);
     const data = hex(stringToHex(run1), numberToHex(0, { size: 4 }), stringToHex(run2), numberToHex(0, { size: 4 }), stringToHex(run3));
     const runs = calldataText(data);
     expect(runs).toHaveLength(2);
     expect(runs[0]).toEqual({ offset: 0, text: run1 });
     expect(runs[1]?.offset).toBe(14);
-    expect(runs[1]?.text).toBe("C".repeat(1_990));
+    expect(runs[1]?.text).toBe("C".repeat(502));
   });
 
   it("returns no runs for calldata with no printable text", () => {

@@ -15,6 +15,12 @@
  *
  * **Token budget** (Decision 4). Every request this loop sends estimates (`estimateTokens`) at most
  * `RISK_V1.maxRequestTokens`, so it never meets Groq's 413 or the pacer's per-minute refusal:
+ * - **the invariant** (Task 10 fix round 1): the initial messages, the final instruction and
+ *   `response_format` always leave room for at least {@link MIN_TOOL_ANSWERS} tool turns at the
+ *   output cap ({@link RESERVE_TURN}). The caps make this hold for the largest request summary and
+ *   `RISK_V1.calldataTextMaxChars` (512) characters of `<` in one run, so hostile calldata can't buy a
+ *   review with no tools; initial messages that don't leave that room (only reachable with many short
+ *   runs of `<`, `>` or `&`) are never sent — `runAgent` rejects before any model call;
  * - before each tool turn, the loop stops calling tools if the tool request itself, or the *next*
  *   final call after one more tool turn at the output cap ({@link RESERVE_TURN}), would be over;
  * - inside a turn, each call runs only if the final call still fits with an answer at the cap in its
@@ -23,8 +29,6 @@
  * - a turn in which nothing ran and that would still not fit (a very long interim message) is left
  *   out of the conversation (its records are kept);
  * - a re-ask after invalid output carries the rejected answer only when that fits.
- * The one exception is initial data so large that even the first final call is over the cap; then
- * that call is still made (it is the only way to a verdict), and the pacer decides.
  * The loop also stops calling tools once the summed `usage.total` reaches `RISK_V1.maxCheckTokens`.
  *
  * **Failures.** A transient provider failure (`isTransientError`) rejects the whole run, with no
@@ -40,7 +44,7 @@ import { screen, type PromptGuard } from "./guard.ts";
 import { estimateTokens, isTransientError, ProviderError, type ChatClient, type ChatMessage, type ChatRequest, type ChatResponse } from "./llm.ts";
 import { RISK_V1 } from "./params.ts";
 import { finalMessages, initialMessages, invalidOutputMessage, type InitialData } from "./prompt.ts";
-import { runTool, TOOL_DEFINITIONS, type ToolContext } from "./tools.ts";
+import { NANSEN_TOOLS, runTool, TOOL_DEFINITIONS, type ToolContext } from "./tools.ts";
 import type { Finding, GuardResult, JsonValue, ToolCallRecord, TurnRecord } from "./types.ts";
 import { safeJson } from "./untrusted.ts";
 
@@ -122,14 +126,15 @@ function finalFits(model: string, history: readonly ChatMessage[]): boolean {
 }
 
 /**
- * A tool answer at the output cap, as `estimateTokens` counts it: `RISK_V1.toolOutputMaxBytes`
- * characters, each one that JSON escapes (a `"`, two characters once the request is serialised). A
- * capped output's own quotes and backslashes are escaped the same way, so this bounds any output at
- * the cap free of `<`, `>` and `&` (which `safeJson` writes as six-character escapes); for those, the
- * check on the real answer after the tool runs is what keeps the bound.
+ * A tool answer at the output cap: `RISK_V1.toolOutputMaxBytes` characters (Task 10 fix round 1: the
+ * ruling's size, not the earlier every-character-escaped one, which left no room for 3 answers beside
+ * the largest initial messages). A real answer at the cap measures a little more once serialised — its
+ * own quotes are escaped again (a capped 40-call trace: 1,440 characters, 1,610 serialised) — and text
+ * heavy in `<`, `>` or `&` much more, so the check on the real answer after the tool runs is what keeps
+ * the bound: a call whose real answer doesn't fit is never sent (a rare boundary case).
  */
 function reserveAnswer(id: string): ChatMessage {
-  return { role: "tool", tool_call_id: id, content: '"'.repeat(RISK_V1.toolOutputMaxBytes) };
+  return { role: "tool", tool_call_id: id, content: "x".repeat(RISK_V1.toolOutputMaxBytes) };
 }
 
 const RESERVE_ID = "call_reserve";
@@ -149,6 +154,20 @@ const RESERVE_TURN: readonly ChatMessage[] = [
   },
   reserveAnswer(RESERVE_ID),
 ];
+
+/** The invariant's floor: the initial messages always leave room for this many tool turns at the cap. */
+const MIN_TOOL_ANSWERS = 3;
+
+const INVARIANT_RESERVE: readonly ChatMessage[] = Array.from({ length: MIN_TOOL_ANSWERS }, () => RESERVE_TURN).flat();
+
+/**
+ * `ToolCallRecord.onchain` by the tool's name alone, exactly as `runTool` sets it: `false` only for the
+ * two Nansen tools, `true` for every other name, unknown ones included (Task 10 fix round 1). A
+ * `TOOL_CALL_LIMIT` output, not this flag, is what says the tool's answer was never shown to the model.
+ */
+function onchainByName(name: string): boolean {
+  return !(NANSEN_TOOLS as readonly string[]).includes(name);
+}
 
 function limitAnswer(id: string): ChatMessage {
   return { role: "tool", tool_call_id: id, content: safeJson(toolCallLimit()) };
@@ -195,9 +214,10 @@ function recordedArguments(raw: string): JsonValue {
 
 /**
  * The extra messages for a re-ask after zod rejected `raw`: the rejected answer and our fixed error
- * text when that fits, else the error text alone, else nothing (the same request again).
+ * text when that fits, else the error text alone, else nothing (the same request again). Exported for
+ * its tests; `runAgent` is its only caller.
  */
-function reaskMessages(model: string, base: readonly ChatMessage[], raw: string, error: string, citable: readonly string[]): ChatMessage[] {
+export function reaskMessages(model: string, base: readonly ChatMessage[], raw: string, error: string, citable: readonly string[]): ChatMessage[] {
   const message: ChatMessage = { role: "user", content: invalidOutputMessage(error, citable) };
   const candidates: ChatMessage[][] = [[{ role: "assistant", content: raw }, message], [message]];
   for (const extra of candidates) {
@@ -209,7 +229,8 @@ function reaskMessages(model: string, base: readonly ChatMessage[], raw: string,
 /**
  * Runs the tool loop and the final call (see the module doc). Resolves with every record of the run;
  * `findings: null` means the model's output was still invalid after its retries. Rejects on a
- * transient provider failure (no partial result), and on any failure that isn't invalid model output.
+ * transient provider failure (no partial result), on any failure that isn't invalid model output, and
+ * — before any model call — on initial messages that break the token invariant.
  */
 export async function runAgent(o: {
   llm: ChatClient;
@@ -264,8 +285,13 @@ export async function runAgent(o: {
 
   const answerLimit = (turn: ChatMessage[], call: { id: string; name: string }, args: JsonValue): void => {
     turn.push(limitAnswer(call.id));
-    toolCalls.push({ id: call.id, name: call.name, arguments: args, output: toolCallLimit(), onchain: false });
+    toolCalls.push({ id: call.id, name: call.name, arguments: args, output: toolCallLimit(), onchain: onchainByName(call.name) });
   };
+
+  // The invariant: never send initial messages that leave no room for MIN_TOOL_ANSWERS tool turns.
+  if (!finalFits(model, [...history, ...INVARIANT_RESERVE])) {
+    throw new Error(`runAgent: the initial messages leave no room for ${MIN_TOOL_ANSWERS} tool answers within maxRequestTokens; not sent`);
+  }
 
   // ---- phase 1: the tool loop ----
   let stop = false;

@@ -1,20 +1,20 @@
 import { canonicalJson } from "@attest8004/sdk";
 import type { MandateInputs, PinnedBlock, Simulation } from "@attest8004/validator-mandate";
-import { encodeErrorResult, getAddress, keccak256, toHex, type Address, type Hex } from "viem";
+import { concatHex, encodeErrorResult, getAddress, keccak256, stringToHex, toHex, type Address, type Hex } from "viem";
 import { describe, expect, it, vi } from "vitest";
-import { promptParams, runAgent } from "../src/agent.ts";
+import { promptParams, reaskMessages, runAgent } from "../src/agent.ts";
 import { findingsJsonSchema } from "../src/findings.ts";
 import type { PromptGuard } from "../src/guard.ts";
 import { estimateTokens, parseChatResponse, ProviderError, type ChatClient, type ChatMessage, type ChatRequest, type ChatResponse } from "../src/llm.ts";
 import type { NansenClient } from "../src/nansen.ts";
 import { TokenBudgetExceededError } from "../src/pacer.ts";
 import { RISK_V1 } from "../src/params.ts";
-import { initialMessages, promptHash, type InitialData } from "../src/prompt.ts";
+import { finalMessages, initialMessages, invalidOutputMessage, promptHash, type InitialData } from "../src/prompt.ts";
 import type { RiskReader } from "../src/reader.ts";
 import { initialScope, TOOL_DEFINITIONS, type ToolContext } from "../src/tools.ts";
 import type { CallFrame, TraceResult } from "../src/trace.ts";
 import type { GuardResult } from "../src/types.ts";
-import { safeJson } from "../src/untrusted.ts";
+import { calldataText, safeJson } from "../src/untrusted.ts";
 
 // ---- fixtures: a pass-through action (gate -> target -> sink), as in the risky scenario ----
 
@@ -71,6 +71,47 @@ function makeData(overrides: Partial<InitialData> = {}): InitialData {
   };
 }
 
+const UINT256_MAX = 2n ** 256n - 1n;
+const UINT64_MAX = 2n ** 64n - 1n;
+const ALL_MANDATE_REASONS = [
+  "MANDATE_MISSING",
+  "MANDATE_OWNER_CHANGED",
+  "MANDATE_EXPIRED",
+  "ACTION_EXPIRED",
+  "DEADLINE_AFTER_MANDATE",
+  "TARGET_NOT_ALLOWED",
+  "SELECTOR_NOT_ALLOWED",
+  "VALUE_OVER_TX_CAP",
+  "DAILY_CAP_EXCEEDED",
+  "SPEND_HISTORY_UNREADABLE",
+  "PERMISSION_CHANGED_AFTER_MANDATE",
+  "SIMULATION_FAILED",
+];
+
+/** The largest initial data there can be: every number at its type's maximum, a full data head, all 12 mandate-v1 reasons. */
+function largestData(text: { offset: number; text: string }[]): InitialData {
+  return {
+    request: {
+      block: UINT64_MAX,
+      chainId: 10_143,
+      gate: GATE,
+      agentId: UINT256_MAX,
+      target: TARGET,
+      value: UINT256_MAX,
+      valueMon: "115792089237316195423570985008687907853269984665640564039457.584007913129639935",
+      selector: hex("0xa9059cbb"),
+      dataLength: 16_384,
+      dataHead: hex(`0x${"ff".repeat(RISK_V1.calldataHeadBytes)}`),
+      deadline: UINT64_MAX,
+      salt: hex(`0x${"ab".repeat(32)}`),
+    },
+    calldataText: text,
+    mandateV1: { score: 0, reasons: ALL_MANDATE_REASONS },
+    pinned: { number: UINT64_MAX.toString(), timestamp: UINT64_MAX.toString() },
+    nansen: "NANSEN_API_KEY is not set",
+  };
+}
+
 function passThroughFrame(): CallFrame {
   return {
     type: "CALL",
@@ -80,6 +121,18 @@ function passThroughFrame(): CallFrame {
     input: hex("0x"),
     calls: [{ type: "CALL", from: TARGET, to: SINK, value: toHex(VALUE), input: hex("0x") }],
   };
+}
+
+/** A trace with `n` value-moving calls from the target (n = 3: well under the cap and the reservation). */
+function frameWithCalls(n: number): CallFrame {
+  const calls: CallFrame[] = Array.from({ length: n }, (_, i) => ({
+    type: "CALL",
+    from: TARGET,
+    to: addressN(i + 1),
+    value: toHex(1_000n + BigInt(i)),
+    input: hex("0x"),
+  }));
+  return { type: "CALL", from: GATE, to: TARGET, value: toHex(VALUE), input: hex("0x"), calls };
 }
 
 /** A trace with 40 value-moving calls, so `simulate_action`'s output is cut to the 1,536-byte cap. */
@@ -414,39 +467,43 @@ describe("runAgent: the tool loop", () => {
 });
 
 describe("runAgent: caps", () => {
-  it("caps tool calls at 8: 8 run, the extra call is answered TOOL_CALL_LIMIT without running, then the final call", async () => {
+  it("caps tool calls at 8: 8 run, the extra calls are answered TOOL_CALL_LIMIT without running, then the final call", async () => {
     const reader = makeReader();
-    const turn = (third: string) => toolTurn([call("get_mandate"), call("get_mandate"), call(third, third === "erc8004_reputation" ? { agentId: "1984" } : {})]);
+    const nansen = makeNansen();
+    const turn = () => toolTurn([call("get_mandate"), call("get_mandate"), call("get_mandate")]);
     const { client, requests } = scripted([
-      turn("get_mandate"),
-      turn("get_mandate"),
-      turn("erc8004_reputation"), // the third call of this turn is the 9th: over the cap
+      turn(),
+      turn(),
+      // The 7th and 8th calls run; the 9th, 10th and 11th are over the cap.
+      toolTurn([call("get_mandate"), call("get_mandate"), call("erc8004_reputation", { agentId: "1984" }), call("nansen_flows", { address: TARGET }), call("made_up_tool", "not json")]),
       textTurn(EMPTY),
     ]);
-    const result = await run({ llm: client, reader });
+    const result = await runAgent({ llm: client, guard: fakeGuard(), model: MODEL, data: makeData(), tools: { ...makeCtx(reader), nansen }, initialGuard: [] });
 
-    expect(result.toolCalls).toHaveLength(9);
+    expect(result.toolCalls).toHaveLength(11);
     expect(result.toolCalls.slice(0, 8).every((c) => c.name === "get_mandate" && c.onchain && "owner" in (c.output as object))).toBe(true);
-    const limited = result.toolCalls[8];
-    expect(limited).toEqual({
-      id: limited?.id,
-      name: "erc8004_reputation",
-      arguments: { agentId: "1984" },
-      output: { error: "TOOL_CALL_LIMIT" },
-      onchain: false,
-    });
+    const limited = result.toolCalls.slice(8);
+    // `onchain` stays name-based (fix round 1, finding 3): false only for the two Nansen tools, as runTool sets it.
+    expect(limited.map(({ id: _id, ...rest }) => rest)).toEqual([
+      { name: "erc8004_reputation", arguments: { agentId: "1984" }, output: { error: "TOOL_CALL_LIMIT" }, onchain: true },
+      { name: "nansen_flows", arguments: { address: TARGET }, output: { error: "TOOL_CALL_LIMIT" }, onchain: false },
+      { name: "made_up_tool", arguments: "not json", output: { error: "TOOL_CALL_LIMIT" }, onchain: true },
+    ]);
+    const limitedCall = limited[0];
     expect(reader.mandate).toHaveBeenCalledTimes(8);
     expect(reader.agentOwner).not.toHaveBeenCalled(); // erc8004_reputation never ran
+    expect(nansen.flows).not.toHaveBeenCalled();
 
     expect(requests).toHaveLength(4);
     const final = requests[3] as ChatRequest;
     expect(isFinalRequest(final)).toBe(true);
     expectEveryCallAnswered(final.messages);
-    expect(final.messages).toContainEqual({ role: "tool", tool_call_id: limited?.id, content: safeJson({ error: "TOOL_CALL_LIMIT" }) });
+    expect(final.messages).toContainEqual({ role: "tool", tool_call_id: limitedCall?.id, content: safeJson({ error: "TOOL_CALL_LIMIT" }) });
     // A TOOL_CALL_LIMIT answer doesn't make that tool citable.
     const instruction = final.messages.at(-1)?.content ?? "";
     expect(instruction).toContain("get_mandate");
     expect(instruction).not.toContain("erc8004_reputation");
+    expect(instruction).not.toContain("nansen_flows");
   });
 
   it("with one call per turn, the 8th call ends the loop: the 9th request is the final one", async () => {
@@ -466,7 +523,7 @@ describe("runAgent: caps", () => {
     { name: "three calls per turn", callsPerTurn: 3, content: null, stopsBeforeAsking: false },
     { name: "a long interim message with each turn", callsPerTurn: 1, content: "Planning the next step. ".repeat(150), stopsBeforeAsking: false },
     {
-      name: "2,000 characters of calldata text",
+      name: "a large first message (2,000 quote-heavy characters of text, built directly)",
       callsPerTurn: 1,
       content: null,
       data: makeData({ calldataText: [{ offset: 4, text: "a\"b".repeat(666) }] }),
@@ -497,23 +554,39 @@ describe("runAgent: caps", () => {
     expect(result.findings).toEqual([]);
   });
 
-  it("with plain outputs at the cap, a tool runs only when its answer is then sent, whatever the history size (several calls per turn)", async () => {
+  it("with answers no larger than the reservation, a tool runs only when its answer is then sent, whatever the history size (several calls per turn)", async () => {
     // Scans the history size (via the calldata text), so some run lands with less room left mid-turn
     // than one answer needs: that call must be refused before it runs, never run and then dropped.
+    const reservation = JSON.stringify("x".repeat(RISK_V1.toolOutputMaxBytes)).length; // the reserved answer, serialised
     let refusedMidTurn = 0;
-    for (let length = 0; length <= 1_800; length += 60) {
-      const reader = makeReader({ trace: vi.fn(async () => okTrace(bigFrame())) });
+    for (let length = 0; length <= 1_500; length += 50) {
+      const reader = makeReader({ trace: vi.fn(async () => okTrace(frameWithCalls(3))) });
       const { client, requests } = scripted((request) =>
         request.tools ? toolTurn([call("simulate_action"), call("simulate_action")]) : textTurn(EMPTY),
       );
       const data = makeData({ calldataText: length === 0 ? [] : [{ offset: 4, text: "t".repeat(length) }] });
       const result = await run({ llm: client, reader, data });
       const sent = result.toolCalls.filter((c) => !JSON.stringify(c.output).includes("TOOL_CALL_LIMIT"));
+      for (const c of sent) expect(JSON.stringify(safeJson(c.output)).length).toBeLessThanOrEqual(reservation);
       expect(reader.trace).toHaveBeenCalledTimes(sent.length);
       if (sent.length < result.toolCalls.length) refusedMidTurn++;
       for (const request of requests) expect(estimateTokens(request)).toBeLessThanOrEqual(RISK_V1.maxRequestTokens);
     }
     expect(refusedMidTurn).toBeGreaterThan(0);
+  });
+
+  it("with answers at the cap, every request estimates <= 7,000 at every history size (a real answer a little over the reservation is never sent when it doesn't fit)", async () => {
+    let calls = 0;
+    for (let length = 0; length <= 1_500; length += 25) {
+      const reader = makeReader({ trace: vi.fn(async () => okTrace(bigFrame())) });
+      const { client, requests } = scripted((request) => (request.tools ? toolTurn([call("simulate_action")]) : textTurn(EMPTY)));
+      const data = makeData({ calldataText: length === 0 ? [] : [{ offset: 4, text: "t".repeat(length) }] });
+      const result = await run({ llm: client, reader, data });
+      calls += result.toolCalls.length;
+      for (const request of requests) expect(estimateTokens(request)).toBeLessThanOrEqual(RISK_V1.maxRequestTokens);
+      expectEveryCallAnswered((requests.at(-1) as ChatRequest).messages);
+    }
+    expect(calls).toBeGreaterThan(0);
   });
 
   it("never sends a real answer that would push the final call over the bound (text heavy in <, > and & is 6x longer escaped): it is answered TOOL_CALL_LIMIT, unscreened", async () => {
@@ -571,6 +644,39 @@ describe("runAgent: caps", () => {
     expect(final.messages.slice(0, -1)).toEqual(requests[1]?.messages); // the history before the long turn
     expect(JSON.stringify(final.messages)).not.toContain(longContent);
     for (const request of requests) expect(estimateTokens(request)).toBeLessThanOrEqual(RISK_V1.maxRequestTokens);
+  });
+
+  it("at the worst-case calldata (512 chars of < and the largest request summary), at least 3 tool calls at the cap fit, and every request estimates <= 7,000 (fix round 1, finding 1)", async () => {
+    const text = calldataText(stringToHex("<".repeat(2_000)));
+    expect(text).toEqual([{ offset: 0, text: "<".repeat(RISK_V1.calldataTextMaxChars) }]);
+    const reader = makeReader({ trace: vi.fn(async () => okTrace(bigFrame())) });
+    const { client, requests } = scripted((request) => (request.tools ? toolTurn([call("simulate_action")]) : textTurn(EMPTY)));
+    const result = await run({ llm: client, reader, data: largestData(text) });
+
+    expect(canonicalJson(result.toolCalls[0]?.output).length).toBeGreaterThan(1_400);
+    const ran = result.toolCalls.filter((c) => !JSON.stringify(c.output).includes("TOOL_CALL_LIMIT"));
+    expect(ran.length).toBeGreaterThanOrEqual(3);
+    const estimates = requests.map((r) => estimateTokens(r));
+    for (const estimate of estimates) expect(estimate).toBeLessThanOrEqual(RISK_V1.maxRequestTokens);
+    expect(isFinalRequest(requests.at(-1) as ChatRequest)).toBe(true);
+    expect(result.findings).toEqual([]);
+  });
+
+  it("at the 512-char cap, 64 short runs of < with the largest summary leave no room for 3 answers: rejected before any model call, never sent (fails closed)", async () => {
+    const run8 = stringToHex("<".repeat(8));
+    const data = concatHex(Array.from({ length: 64 }, () => concatHex([run8, "0x00"])));
+    const text = calldataText(data);
+    expect(text).toHaveLength(64);
+    const { client, requests } = scripted([textTurn(EMPTY)]);
+    await expect(run({ llm: client, data: largestData(text) })).rejects.toThrow("room for 3 tool answers");
+    expect(requests).toHaveLength(0);
+  });
+
+  it("initial messages that don't fit are never sent: runAgent rejects before any model call", async () => {
+    const { client, requests } = scripted([textTurn(EMPTY)]);
+    const data = makeData({ calldataText: [{ offset: 0, text: "<".repeat(3_000) }] }); // past the cap: only a bug could build this
+    await expect(run({ llm: client, data })).rejects.toThrow("room for 3 tool answers");
+    expect(requests).toHaveLength(0);
   });
 
   it("stops at maxCheckTokens: once reported usage reaches 36,000, it goes straight to the final call", async () => {
@@ -655,6 +761,58 @@ describe("runAgent: invalid model output (one shared budget of 2 retries)", () =
     expect(result.final).toBeNull();
     expect(requests).toHaveLength(3);
     expect(requests.every((r) => r.tools !== undefined)).toBe(true);
+  });
+
+  it("a re-ask carries a ~6,000-char rejected answer only when it fits: carried -> error text only -> the bare request, each <= 7,000 (fix round 1, minor 6)", () => {
+    const raw = `{"findings":[{"explanation":"${"x".repeat(6_000)}"}]}`;
+    const error = "not JSON";
+    const citable = ["request", "mandate_v1_verdict", "simulate_action"];
+    const finalEstimate = (messages: ChatMessage[]): number =>
+      estimateTokens({ model: MODEL, messages, response_format: promptParams(MODEL).response_format, max_completion_tokens: RISK_V1.finalMaxCompletionTokens });
+    const baseOf = (padding: number): ChatMessage[] =>
+      finalMessages(
+        [
+          ...initialMessages(makeData()),
+          { role: "assistant", content: null, tool_calls: [{ id: "c1", type: "function", function: { name: "simulate_action", arguments: "{}" } }] },
+          { role: "tool", tool_call_id: "c1", content: "p".repeat(padding) },
+        ],
+        citable,
+      );
+    const errorMessage: ChatMessage = { role: "user", content: invalidOutputMessage(error, citable) };
+    const carriedPair: ChatMessage[] = [{ role: "assistant", content: raw }, errorMessage];
+    /** The largest padding for which `fits(padding)` holds (fits is monotone in padding). */
+    const largest = (fits: (padding: number) => boolean): number => {
+      let lo = 0;
+      let hi = 30_000;
+      while (lo < hi) {
+        const mid = Math.ceil((lo + hi) / 2);
+        if (fits(mid)) lo = mid;
+        else hi = mid - 1;
+      }
+      return lo;
+    };
+    const max = RISK_V1.maxRequestTokens;
+
+    // carried: a small history leaves room for the rejected answer and the error text.
+    const small = baseOf(0);
+    expect(finalEstimate([...small, ...carriedPair])).toBeLessThanOrEqual(max);
+    const carried = reaskMessages(MODEL, small, raw, error, citable);
+    expect(carried).toEqual(carriedPair);
+    expect(finalEstimate([...small, ...carried])).toBeLessThanOrEqual(max);
+
+    // error text only: the answer no longer fits, the error text does.
+    const errorOnlyBase = baseOf(largest((p) => finalEstimate([...baseOf(p), errorMessage]) <= max));
+    expect(finalEstimate([...errorOnlyBase, ...carriedPair])).toBeGreaterThan(max);
+    const errorOnly = reaskMessages(MODEL, errorOnlyBase, raw, error, citable);
+    expect(errorOnly).toEqual([errorMessage]);
+    expect(finalEstimate([...errorOnlyBase, ...errorOnly])).toBeLessThanOrEqual(max);
+
+    // bare: not even the error text fits; the same request is sent again.
+    const bareBase = baseOf(largest((p) => finalEstimate(baseOf(p)) <= max));
+    expect(finalEstimate([...bareBase, errorMessage])).toBeGreaterThan(max);
+    const bare = reaskMessages(MODEL, bareBase, raw, error, citable);
+    expect(bare).toEqual([]);
+    expect(finalEstimate([...bareBase, ...bare])).toBeLessThanOrEqual(max);
   });
 
   it("records the failed generation as raw when the last attempt was a json_validate_failed", async () => {

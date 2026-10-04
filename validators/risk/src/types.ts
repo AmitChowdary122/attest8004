@@ -9,8 +9,13 @@ import type { Address, Hex } from "viem";
 export type JsonValue = null | boolean | number | string | JsonValue[] | { [key: string]: JsonValue };
 
 /**
- * One tool call the agent loop made and its answer (ARCHITECTURE "Tools"). `onchain` is `false` only
- * for the two Nansen tools, which `verify` reports as `unchecked` rather than re-running.
+ * One tool call the agent loop made and its answer (ARCHITECTURE "Tools"). `onchain` is name-based:
+ * `false` only for the two Nansen tools, which `verify` reports as `unchecked` rather than re-running,
+ * and `true` for every other name, unknown ones included — whatever the call's outcome.
+ *
+ * An `output` of exactly `{error: "TOOL_CALL_LIMIT"}` means the tool's answer was never shown to the
+ * model: the call was beyond the 8-call cap, or the token budget refused it before it ran or discarded
+ * its answer after (Task 10 fix round 1). `verify` skips re-running such a record.
  *
  * Ruling R4 (controller): `arguments` holds the *parsed* JSON of the model's raw argument string when
  * that string parsed as JSON, or the raw string itself (as a `JsonValue` string) when it didn't — the

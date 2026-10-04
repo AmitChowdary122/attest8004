@@ -34,7 +34,8 @@ export const RISK_V1 = {
   maxExplanationChars: 400,
   maxSourcesPerFinding: 4,
   calldataTextMinChars: 8,
-  calldataTextMaxChars: 2_000,
+  // 512, not 2,000 (Task 10 fix round 1): the initial messages must leave room for 3 tool answers.
+  calldataTextMaxChars: 512,
   calldataHeadBytes: 132,
   maxDeadlineAheadSeconds: 3_600n,
   scores: { none: 100, low: 80, medium: 40, high: 0 },
