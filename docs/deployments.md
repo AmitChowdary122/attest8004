@@ -74,7 +74,7 @@ Every Attest8004 deployment is recorded here: chain, contract, address, the comm
   `requirements()`.
 - **Requires both validators, each under its own tag**, since this redeploy. The P3 vault below, requiring validator A
   only, is superseded; a different constructor argument (the second requirement) gives this vault a new address.
-- **Holds 0 MON.** The e2e script (`scripts/src/e2e.ts`) tops it up to 0.01 MON before a run whenever it holds less
+- **Holds 0.009 MON** after the P5 end-to-end run (it held 0 MON before). The e2e script (`scripts/src/e2e.ts`) tops it up to 0.01 MON before a run whenever it holds less
   than 0.005 MON (the three actions' values together), and checks both requirements, with their tags, in its preflight.
 - **How it was deployed:** `contracts/script/DeployDemoAgentVault.s.sol` via `script/deploy-testnet.sh DemoAgentVault`
   from commit `7380fdc` (the deploy-gas commit; the contract itself is from `47dfdf0`), through the CREATE2 factory
@@ -206,7 +206,7 @@ from the deployer on 3 Oct 2026, × 1.2, rounded up to 1k.
 On 2026-10-04, `pnpm --filter @attest8004/scripts setup-demo-agents -- --fund --fund-validator-b` topped up agent
 1984's hot key and validator B, then `pnpm --filter @attest8004/scripts set-mandate` replaced agent 1984's mandate
 with one that allowlists `DemoPassThrough` (ARCHITECTURE §5.6, §7). This is preparation for the P5 end-to-end run
-with both validators, which **has not run yet** (below). Gas limits are each the Monad `eth_estimateGas` measured
+with both validators, which ran afterwards (below). Gas limits are each the Monad `eth_estimateGas` measured
 on 4 Oct 2026, × 1.2 (the two funding transactions rounded up to the nearest 1k, as elsewhere in this file).
 
 | Step | Tx | Block | Gas limit (estimate) |
@@ -235,14 +235,9 @@ on 4 Oct 2026, × 1.2 (the two funding transactions rounded up to the nearest 1k
     model findings plus code's `PROMPT_INJECTION_SUSPECTED`; guard score 0.9996 (flagged); 12,102 tokens.
   - A safe transfer (0.001 MON to the deployer): score 100, no findings; 10,628 tokens.
 
-### P5 end-to-end run: pending
+### P5 end-to-end run
 
-The P5 end-to-end run (`pnpm --filter @attest8004/scripts e2e`: actions S, R and O, both validators) **has not run
-yet.** The permission window since the new `MandateSet` above has passed, so running it is the next step. It is
-expected to show: **S** (inside the mandate) executes; **R** (to `DemoPassThrough`) gets `mandate-v1` 100 and
-`risk-v1` 0 with a high finding, and the gate refuses it, `ScoreTooLow(validator B, requestHash R, 0, 80)`; **O**
-(an unlisted target, over the per-tx cap) is refused at validator A. `pnpm attest8004 verify` on all six verdicts
-follows. **No e2e results, verdicts or verify outputs exist yet.**
+It ran on 2026-10-04 and passed: see "Verified end-to-end run with both validators (P5)" below.
 
 ## Verified round trips
 
@@ -420,6 +415,141 @@ B's own evidence and checks agent 1984's counted spend before sending anything. 
 - **Balances after the run:** agent 1984's hot key 0.0252 MON (no run left at the 122 gwei maximum fee: top it up
   with `setup-demo-agents -- --fund`), validator A 1.9317 MON, the vault 0.006 MON.
 - Check it yourself: `pnpm attest8004 verify 0xbe4e1c24ed0255fa8d958e887b3e65bd2e067883865682f911dc01b04778bce5`
+
+## Verified end-to-end run with both validators (P5)
+
+On 2026-10-04 the operator ran `pnpm --filter @attest8004/scripts e2e` once, on the code of commit `b9f236f` (the
+next commit, `d9b23c4`, changed only docs and comments). It printed **`e2e OK`**. The full output is kept outside the
+repo; the numbers below are copied from it.
+
+Demo agent 1984's **hot key** requested validation of three actions through the **AgentRequestForwarder**, each from
+validator A (`mandate-v1`) and validator B (`risk-v1`), before either validator ran. All three are checked against
+agent 1984's P5 mandate (above):
+
+- **S:** 0.001 MON from the vault to the deployer. Safe, inside the mandate.
+- **R:** 0.001 MON to `DemoPassThrough`. Inside the mandate (an allowlisted target, under both caps), but the
+  contract forwards the payment to its sink, which nobody holds the key for.
+- **O:** 0.003 MON to the unlisted `0xFdD9ffc1e3D8E0f391C03DB8Dc25Db7D5367671F`. Outside the mandate.
+
+Both validators then ran in memory as their services do, polling `eth_getLogs` up to the finalized block. Validator A
+used reader concurrency 8 and response gas of the estimate × 1.2, capped at 400,000. Validator B had:
+- the vault and agent 1984 as its only (gate, agent) pair;
+- `openai/gpt-oss-120b` on Groq (`api.groq.com`), paced at 30 RPM and 8,000 TPM;
+- Prompt Guard `meta-llama/llama-prompt-guard-2-86m`;
+- no Nansen key (both Nansen tools reported themselves unavailable);
+- response gas of the estimate × 1.2, capped at 1,000,000.
+
+B waited for A's verdict on the same action before any model call, so each of B's pins is at or after A's response
+block.
+
+| Action | Validator A, `mandate-v1` (≥ 100) | Validator B, `risk-v1` (≥ 80) | The gate |
+|---|---|---|---|
+| S | **100**, no reasons; pinned block 68,022,827 | **100**, no findings; pinned block 68,022,864 | **executed** (block 68,023,618) |
+| R | **100**, no reasons; pinned block 68,022,862 | **0**: high `FUNDS_FORWARDED`, medium `FRESH_COUNTERPARTY`; pinned block 68,023,091 | **refused**, `ScoreTooLow(validator B, requestHash R, 0, 80)` (simulated) |
+| O | **0**: `TARGET_NOT_ALLOWED`, `VALUE_OVER_TX_CAP`, `DAILY_CAP_EXCEEDED`; pinned block 68,022,895 | **0**: high `MANDATE_VIOLATION`; pinned block 68,023,523 | **refused**, `ScoreTooLow(validator A, requestHash O, 0, 100)` (simulated) |
+
+**All six verdicts `verify` as `match`** (below). `isValidated` is false for R and O, and was true for S until S
+executed.
+
+**B's findings for R**, verbatim from its evidence (`origin: "model"`; code turned them into the score 0):
+
+- **high `FUNDS_FORWARDED`** (sources `simulate_action`, `get_mandate`): "The action forwards 0.001 MON from the gate
+  to 0xEEEB... (the allowed target) and then forwards the same amount to 0xC8702cA01e934f0568ea43B354C17ec7749d313f,
+  which is not in the mandate's allowedTargets."
+- **medium `FRESH_COUNTERPARTY`** (sources `counterparty_onchain`): "The downstream address
+  0xC8702cA01e934f0568ea43B354C17ec7749d313f has never sent a transaction (nonce 0) and has no contract code,
+  indicating a fresh EOA counterparty."
+
+This is the rubric's medium case: the sink is an address value flows to, with nonce 0 and no code at `P`. Neither
+finding is about the vault, the validators or the deployer. On S, the transfer to the deployer (an EOA that has sent
+transactions), B found nothing.
+
+**B on O** found one high `MANDATE_VIOLATION` (sources `request`, `mandate_v1_verdict`): "The action violates the
+agent's mandate: the target address is not allowed and the transfer exceeds both the per‑tx and daily caps." B runs
+on A's refusals too, to explain them. The e2e doesn't assert B's score on O, because A already refuses it.
+
+**B's three checks:**
+
+| | S | R | O |
+|---|---|---|---|
+| Model calls (final answer after) | 4 (1 attempt) | 5 (1 attempt) | 3 (1 attempt) |
+| Tokens: prompt / completion / total | 7,771 / 219 / 7,990 | 10,774 / 790 / 11,564 | 5,360 / 357 / 5,717 |
+| Tool calls | `simulate_action`, `get_mandate` | `simulate_action`, `get_mandate`, `counterparty_onchain` | `simulate_action` |
+| Guard chunks screened (flagged) | 0 (0) | 0 (0) | 0 (0) |
+| Evidence: canonical JSON / `data:` URI bytes (limit 24,576) | 5,274 / 7,061 | 8,711 / 11,645 | 5,436 / 7,277 |
+| Response gas limit (estimate) | 372,305 (310,254) | 594,521 (495,434) | 384,239 (320,199) |
+| `verify`: onchain tool calls re-run (Nansen unchecked) | 2 (0) | 3 (0) | 1 (0) |
+
+- **The model:** every call was served `openai/gpt-oss-120b`, prompt `risk-v1/4`. Groq's `system_fingerprint`
+  varied from call to call (S: `fp_0708ac49a5`, `fp_3166198c1d`, `fp_02b0d31eca`, `fp_77b12279f9`; R:
+  `fp_27194a498a`, `fp_803c0ba83d`, `fp_49bfac06f1`, `fp_4200b3f836`; O: `fp_803c0ba83d`, `fp_4200b3f836`,
+  `fp_77b12279f9`).
+- **Groq usage for the run:** 12 main-model calls, 23,905 prompt + 1,366 completion = **25,271 tokens**, and 0 guard
+  calls.
+- **Prompt Guard screened nothing on testnet.** All three actions are plain transfers (no calldata), no trace carried
+  a revert reason, and Nansen was unavailable, so no untrusted text reached the model. The recorded injected fixture
+  (above) is what shows the injection rule working.
+- **mandate-v1's counted spend:** S counts 0.002 MON (the two P4 approvals), R 0.003 MON (adding S) and O 0.004 MON
+  (adding S and R). O's 0.004 + 0.003 MON is over the 0.005 MON cap, hence `DAILY_CAP_EXCEEDED`. **R counts although
+  it never executed:** `mandate-v1` counts A's approvals, not executions.
+
+**The rest of the run:**
+- **Preflight:** agent 1984's counted spend at block 68,022,773 was 0.002 MON (2 approvals), so S and R fit under the
+  cap. The mandate was set at least 6,000 blocks earlier (block 68,005,485; latest 68,022,773). B's LLM endpoint
+  listed both models.
+- **Simulated refusals:** the owner, and agent 1985's hot key, calling the forwarder for agent 1984 (`NotAgentKey`).
+- **Restart:** freshly started validators A and B re-read the same blocks and skipped all six requests
+  (`ALREADY_RESPONDED`). The restarted B made no model or guard call. Exactly one `ValidationResponse` exists for
+  each request.
+- **Execute S:** `execute(S)` emitted `ActionConsumed(actionHash S, 1984)`, and the vault's balance fell by exactly
+  0.001 MON. A replay reverts `ActionAlreadyConsumed` (simulated).
+- **`verify` in the script:** a fresh reader per verdict (and an empty cache for `mandate-v1`).
+  - All three `mandate-v1` verdicts **match**, with the same score and `responseHash`.
+  - All three `risk-v1` verdicts **match**: the recomputed score equals the posted one, the recomputed reasons equal
+    the evidence's, and the `responseHash` is the onchain one. The model output is recorded, not re-run.
+- **Each sent transaction was read back** to confirm its sender and its explicit gas limit.
+
+| Date | Step | Tx | Block | Gas limit (estimate) |
+|---|---|---|---|---|
+| 2026-10-04 | fund the vault (+0.01 MON, deployer) | [`0xd27056ef…37d2ce9`](https://monad-testnet.socialscan.io/tx/0xd27056ef7742d04e01f838999f917309e694c66cc7f25bab639d066fa37d2ce9) | 68,022,788 | 26,000 (21,212) |
+| 2026-10-04 | forwarder.request, S → A (hot key) | [`0xe527b3bb…2972380`](https://monad-testnet.socialscan.io/tx/0xe527b3bbc4f4411e5a6e65e5fb8bd9e890f5fff6291593089284c81142972380) | 68,022,795 | 315,000 (251,903) |
+| 2026-10-04 | forwarder.request, S → B (hot key) | [`0xc966f04d…3f8bbb8`](https://monad-testnet.socialscan.io/tx/0xc966f04d7ff27ddb2d9a2a2bcd712e73df19b553f0fa870e76e2d36983f8bbb8) | 68,022,801 | 315,000 (269,037) |
+| 2026-10-04 | forwarder.request, R → A (hot key) | [`0xa3c036a0…275577b`](https://monad-testnet.socialscan.io/tx/0xa3c036a0ed075232489f46c0ac761be4beb5639836be46f92f4530aea275577b) | 68,022,806 | 315,000 (251,903) |
+| 2026-10-04 | forwarder.request, R → B (hot key) | [`0x052cf674…c412b5a`](https://monad-testnet.socialscan.io/tx/0x052cf6742a3b4ca9060bc2479ab405bb85889acd4a261c946ece8b004c412b5a) | 68,022,812 | 315,000 (251,903) |
+| 2026-10-04 | forwarder.request, O → A (hot key) | [`0x3f84f370…819c69e`](https://monad-testnet.socialscan.io/tx/0x3f84f37072e84db31dbcd8a2e57498375232fa568e1051333cc4fa97c819c69e) | 68,022,818 | 315,000 (251,903) |
+| 2026-10-04 | forwarder.request, O → B (hot key) | [`0xfb06978b…51b9177`](https://monad-testnet.socialscan.io/tx/0xfb06978b6304ceee2e69500ba5225d796c2b67911e8aaff084e312afa51b9177) | 68,022,824 | 315,000 (251,903) |
+| 2026-10-04 | validationResponse, S → 100 (validator A, `mandate-v1`) | [`0x166a1a22…4d4749c`](https://monad-testnet.socialscan.io/tx/0x166a1a223b6ccf3a9aa3e9217f1bb35c5f3546975b92740ad12056a234d4749c) | 68,022,862 | 174,686 (145,571) |
+| 2026-10-04 | validationResponse, R → 100 (validator A, `mandate-v1`) | [`0xaf444ade…e7c187d`](https://monad-testnet.socialscan.io/tx/0xaf444adec0553723b5bbd66e86df9af27845ff2459ab316a6a47111bae7c187d) | 68,022,895 | 187,419 (156,182) |
+| 2026-10-04 | validationResponse, O → 0 (validator A, `mandate-v1`) | [`0x5ec8c75c…7d94842`](https://monad-testnet.socialscan.io/tx/0x5ec8c75c75f1d455a6424f92e145493c53a90ef8898d5f27553af833c7d94842) | 68,022,928 | 208,685 (173,904) |
+| 2026-10-04 | validationResponse, S → 100 (validator B, `risk-v1`) | [`0xe5192862…dbc60db`](https://monad-testnet.socialscan.io/tx/0xe519286263a44a148dbad7a14dd4ce93afe5faf65d1116bb7756dbe05dbc60db) | 68,023,090 | 372,305 (310,254) |
+| 2026-10-04 | validationResponse, R → 0 (validator B, `risk-v1`) | [`0xbef321d7…679d68f`](https://monad-testnet.socialscan.io/tx/0xbef321d79bd3e86e83c64bdb30c4394b7254f09b2f57640a11c6f9e83679d68f) | 68,023,523 | 594,521 (495,434) |
+| 2026-10-04 | validationResponse, O → 0 (validator B, `risk-v1`) | [`0xa20b5f97…fbaca09`](https://monad-testnet.socialscan.io/tx/0xa20b5f975760900520b6f8c09dbb2c618c547cc059903c4958db73c26fbaca09) | 68,023,557 | 384,239 (320,199) |
+| 2026-10-04 | execute(S) (deployer) | [`0x2aee06f1…87dd2b0`](https://monad-testnet.socialscan.io/tx/0x2aee06f120850aef87201566d032750666c8ed42b6ec55f2026e7143e87dd2b0) | 68,023,618 | 121,000 (99,566) |
+
+- **S:** `actionHash` `0xb73a4b7836eb9692aff62c329328e40ab82a2f60221347ffcf7979d4f4daa96a` (consumed). `requestHash`
+  A `0x5e0822f21d79ebd0da439fe47ddc6e74989ef368eb42925a465f79f56b596e6e`, B
+  `0x3350a7b8f992f61e0c962ce123f3e37e9ddaf6a894ac5596a53e6a46fb0c22b0`.
+- **R:** `actionHash` `0xb3b40f105c8367899ff3c833dcd835af5f1f33f4f5ec5f0a2b51136bb9cb0d7f` (never executable).
+  `requestHash` A `0x2ec93c57d114cd83c5e2e1751a3c11feb06ccbaf111dfe2f45251ea32ef987c8`, B
+  `0x067b9b94de9ee2385e9f4a40b6dc2dfa4e35afc273bbd095cb75ea93d22f3336`.
+- **O:** `actionHash` `0x2573de85369f9d5e26367ca86e5599e1a1f02a7393a91c2d27caed9899649fd7` (never executable).
+  `requestHash` A `0x80229d3359edb87018769457a2ff30e88ee50401c443b459ea437af9bcb36b62`, B
+  `0x26fcf0d009cea733b7e9e43c20d646314c7bcfb825d226cd9deca374f01c4111`.
+- All three actions share the deadline 1,791,090,756 (2026-10-04T05:12:36Z).
+- **Gas.** Each limit is the transaction's own estimate × 1.2 (forwarder requests use the SDK default, 315,000;
+  funding is rounded up to the nearest 1k), and Monad charges the limit.
+  - B's responses cost more than A's because its evidence is larger: R's, with two findings and three tool calls, is
+    the largest (8,711 bytes).
+  - `execute(S)` costs more than P4's `execute(A)` (99,566 against 87,626 estimated) because the gate now checks two
+    requirements, each with its tag.
+- **After the run:**
+  - The vault holds 0.009 MON.
+  - Agent 1984's hot key spent at most 0.23058 MON (6 requests at the 122 gwei maximum fee), so at least 0.07686 MON
+    (two requests) is left. Top it up with `setup-demo-agents -- --fund` before another run, which needs six.
+  - Agent 1984's counted `mandate-v1` spend is 0.004 MON: the two P4 approvals, until 19:05:37 and 20:16:04 UTC on
+    4 Oct, plus this run's S and R. The e2e's preflight says when another run fits.
+- Check it yourself (read-only, public RPC by default):
+  `pnpm attest8004 verify 0x067b9b94de9ee2385e9f4a40b6dc2dfa4e35afc273bbd095cb75ea93d22f3336` (R ← B).
 
 ## Canonical contracts used (not deployed by us)
 

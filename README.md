@@ -2,7 +2,14 @@
 
 > **The missing ERC-8004 Validation layer for Monad.**
 > Built for Monad Metropolis, Track 04 (Trust, Identity & AI Infrastructure).
-> **Status: work in progress.** On Monad testnet, the ValidationRegistry, the AgentRequestForwarder, the MandateRegistry, a two-validator demo AttestGate consumer (`DemoAgentVault`, requiring both `mandate-v1` and `risk-v1`) and a demo "risky but mandated" target (`DemoPassThrough`) are live. The deterministic validator **`mandate-v1`** has run end to end against the earlier, now-superseded single-validator vault: it approved an action inside demo agent 1984's mandate, which executed, and scored 0 an action outside it, which the gate refuses (checked by simulation). Anyone can re-run those verdicts with `pnpm attest8004 verify <requestHash>` (see [Deployments](#deployments)). The agentic validator **`risk-v1`** is built and tested against recorded Groq runs (offline replay fixtures, not a testnet verdict — see [`validators/risk/test/fixtures/llm/`](./validators/risk/test/fixtures/llm/)); it and demo agent 1984 are funded on testnet, and agent 1984's mandate now allowlists `DemoPassThrough` next to the deployer. **The live end-to-end run with both validators is the next step; `risk-v1` has not yet posted a testnet verdict.** Mandates are set by the agent owner's wallet for now; passkey approval, the findings inbox and the indexer are being built. Progress is in [STATUS.md](./STATUS.md).
+> **Status: work in progress.** On Monad testnet, the ValidationRegistry, the AgentRequestForwarder, the MandateRegistry, a two-validator demo AttestGate consumer (`DemoAgentVault`, requiring both `mandate-v1` and `risk-v1`) and a demo "risky but mandated" target (`DemoPassThrough`) are live. **Both validators have run end to end on testnet** (4 Oct 2026), the deterministic **`mandate-v1`** and the agentic **`risk-v1`**:
+> - Demo agent 1984's safe payment got 100 from both and executed.
+> - A payment to `DemoPassThrough`, which the mandate allows, got 100 from `mandate-v1` but 0 from `risk-v1`, so the gate refuses it. `risk-v1` found a high `FUNDS_FORWARDED`: the contract forwards the payment to an address nobody controls.
+> - An action outside the mandate got 0 from `mandate-v1` and is refused there.
+>
+> The refusals were checked by simulation. Anyone can re-check all six verdicts with `pnpm attest8004 verify <requestHash>` (see [Deployments](#deployments)). `mandate-v1` is re-run in full. For `risk-v1`, the onchain facts and the scoring are re-checked, but the model output is recorded, not re-run.
+>
+> Mandates are set by the agent owner's wallet for now. Passkey approval, the findings inbox and the indexer are being built. Progress is in [STATUS.md](./STATUS.md).
 
 ## What
 
@@ -14,9 +21,9 @@ Attest8004 provides that answer onchain. It has five parts:
 - **Passkey-approved mandates**: an agent's operator approves what the agent may do (targets, functions, spend caps, expiry) with a passkey, verified onchain by Monad's P256 precompile at `0x0100`. Today the MandateRegistry takes the mandate from the owner's wallet; passkey approval replaces that in P6.
 - **Validator SDK** with two reference validators:
   - `mandate-v1`: deterministic, so anyone can re-run it and get the same verdict
-  - `risk-v1`: agentic, an LLM with read-only onchain tools and Nansen. Tested against recorded Groq runs, replayed
-    offline by the tests ([`validators/risk/test/fixtures/llm/`](./validators/risk/test/fixtures/llm/)); not yet
-    run live on testnet
+  - `risk-v1`: agentic, an LLM with read-only onchain tools and Nansen (unused until a key is set). It has posted
+    live verdicts on testnet, and its tests replay recorded Groq runs offline
+    ([`validators/risk/test/fixtures/llm/`](./validators/risk/test/fixtures/llm/))
 - **Private findings inbox**: detailed findings are encrypted to a key derived from the operator's passkey (Mera PRF). The key is never stored.
 - **Trust API**: an Envio HyperIndex indexer behind the SDK and the dashboard.
 
@@ -115,7 +122,13 @@ that requires A at 100 and B at 80. Agent 1984's hot key requests three actions 
 
 The script then re-checks all six verdicts with `verify` and checks that each matches. Anyone can do the same for a
 recorded verdict with `pnpm attest8004 verify <requestHash>` (above). B's three checks are paced to Groq's free tier
-and take a few minutes each.
+and take a few minutes each. The recorded run (4 Oct 2026, `e2e OK`) is in
+[docs/deployments.md](./docs/deployments.md):
+- S executed.
+- R got 0 from B, with a high `FUNDS_FORWARDED` and a medium `FRESH_COUNTERPARTY` finding.
+- O got 0 from A.
+- All six verdicts matched under `verify`.
+- B used 12 model calls and 25,271 Groq tokens.
 
 ```bash
 pnpm --filter @attest8004/scripts hot-keys                     # one hot key per demo agent into .env; prints addresses only
@@ -178,7 +191,7 @@ and 8,000 tokens a minute for the main model; Prompt Guard has its own budget), 
 | Monad testnet (10143) | `DemoAgentVault`, P2, agent 1982 (**superseded**) | [`0x7A5EC388CCbfD3B255CFa94fc2062c0807F2C4CD`](https://monad-testnet.socialscan.io/address/0x7a5ec388ccbfd3b255cfa94fc2062c0807f2c4cd) |
 | Vercel | Web app, production (the WebAuthn rpId for P6; never a preview URL) | [`attest8004.vercel.app`](https://attest8004.vercel.app) |
 
-Registry deploy tx [`0x724f31e0…cf64d03`](https://monad-testnet.socialscan.io/tx/0x724f31e0efd09993f2d73581cb742e71d4bef52c0f4f2a30cccd43d79cf64d03). A scripted register → request → response round trip on this registry (agentId 1982), a validated execute through the P2 vault ([`0x59d5987e…71e3f85`](https://monad-testnet.socialscan.io/tx/0x59d5987e1d2583def79af6af40efd60daf0fa88cc7553d6f3b31a0eab71e3f85)), the demo agents 1984 and 1985 with their hot keys, the switch to per-agent forwarder approvals with agent 1984's mandate, the P3 end-to-end run (hot key → forwarder → validator → execute, [`0x6f694020…bb1336a8`](https://monad-testnet.socialscan.io/tx/0x6f6940203907d8d759e1887953d1170015be7f0c6d27b39c4e22090bbb1336a8)), and the P4 run with `mandate-v1` (one action inside agent 1984's mandate executed, [`0xb666247e…60c84f9`](https://monad-testnet.socialscan.io/tx/0xb666247e2ac448a233c1bac336c19d65373aa908a2656b2f6e999408f60c84f9); one outside it scored 0 and refused; both re-checked with `verify`) are recorded with their transaction hashes in [docs/deployments.md](./docs/deployments.md). That file records every deployment with its chain, address, commit and date. Differences from the EIP-8004 Draft are in [docs/spec-notes.md](./docs/spec-notes.md).
+Registry deploy tx [`0x724f31e0…cf64d03`](https://monad-testnet.socialscan.io/tx/0x724f31e0efd09993f2d73581cb742e71d4bef52c0f4f2a30cccd43d79cf64d03). A scripted register → request → response round trip on this registry (agentId 1982), a validated execute through the P2 vault ([`0x59d5987e…71e3f85`](https://monad-testnet.socialscan.io/tx/0x59d5987e1d2583def79af6af40efd60daf0fa88cc7553d6f3b31a0eab71e3f85)), the demo agents 1984 and 1985 with their hot keys, the switch to per-agent forwarder approvals with agent 1984's mandate, the P3 end-to-end run (hot key → forwarder → validator → execute, [`0x6f694020…bb1336a8`](https://monad-testnet.socialscan.io/tx/0x6f6940203907d8d759e1887953d1170015be7f0c6d27b39c4e22090bbb1336a8)), the P4 run with `mandate-v1` (one action inside agent 1984's mandate executed, [`0xb666247e…60c84f9`](https://monad-testnet.socialscan.io/tx/0xb666247e2ac448a233c1bac336c19d65373aa908a2656b2f6e999408f60c84f9); one outside it scored 0 and refused; both re-checked with `verify`), and the P5 run with both validators (the safe action executed, [`0x2aee06f1…87dd2b0`](https://monad-testnet.socialscan.io/tx/0x2aee06f120850aef87201566d032750666c8ed42b6ec55f2026e7143e87dd2b0); the payment to `DemoPassThrough` got `risk-v1` 0, [`0xbef321d7…679d68f`](https://monad-testnet.socialscan.io/tx/0xbef321d79bd3e86e83c64bdb30c4394b7254f09b2f57640a11c6f9e83679d68f), and is refused; all six verdicts re-checked with `verify`) are recorded with their transaction hashes in [docs/deployments.md](./docs/deployments.md). That file records every deployment with its chain, address, commit and date. Differences from the EIP-8004 Draft are in [docs/spec-notes.md](./docs/spec-notes.md).
 
 Canonical contracts this project builds on:
 
