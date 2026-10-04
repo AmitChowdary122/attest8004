@@ -1,5 +1,5 @@
 import { readFileSync } from "node:fs";
-import { hexToBytes, type Address, type Hex } from "viem";
+import { concat, hexToBytes, toHex, type Address, type Hex } from "viem";
 import { describe, expect, it } from "vitest";
 import {
   E2E_MANDATE_TERMS,
@@ -9,6 +9,7 @@ import {
   SET_INBOX_KEY,
   approvalSchema,
   approvalSelfProblems,
+  base64UrlDecode,
   base64UrlEncode,
   describeMandate,
   e2eMandate,
@@ -94,16 +95,38 @@ describe("approvalSchema", () => {
   });
 });
 
+/**
+ * Creation authenticator data as an authenticator writes it: rpIdHash, flags, a zero sign count, then the attested
+ * credential data (AAGUID, the credential id's length and bytes, and the COSE EC2 P-256 key with x and y).
+ */
+function creationAuthData(o: { flags: number; credentialId: Uint8Array; qx: Hex; qy: Hex; rpIdHash?: Hex }): Hex {
+  const cose = concat(["0xa5010203262001215820", o.qx, "0x225820", o.qy]);
+  const length = toHex(o.credentialId.length, { size: 2 });
+  return concat([o.rpIdHash ?? RP_ID_HASH, toHex(o.flags, { size: 1 }), "0x00000000", `0x${"00".repeat(16)}`, length, toHex(o.credentialId), cose]);
+}
+
+/** k·G for small k, as known P-256 points (2G), to have a valid key other than the vector's. */
+function p256Point(k: 2n): { qx: Hex; qy: Hex } {
+  void k;
+  return {
+    qx: "0x7cf27b188d034f7e8a52380304b51ac3c08969e277f21b35a60b48fc47669978",
+    qy: "0x07775510db8ed040293d9ac69f7430dbba7dade63ce982299e04b79d227873d1",
+  };
+}
+
 describe("registration", () => {
+  const qx = (sdkVector as { passkey: { qx: Hex } }).passkey.qx;
+  const qy = (sdkVector as { passkey: { qy: Hex } }).passkey.qy;
+  const credentialId = base64UrlDecode("c2RrLXZlY3Rvcg");
   const base: PasskeyRegistration = registrationSchema.parse({
     schema: "attest8004.passkey.v1",
     rpId: RP_ID,
     credentialId: "c2RrLXZlY3Rvcg",
     transports: ["internal", "hybrid"],
     alg: -7,
-    qx: (sdkVector as { passkey: { qx: Hex } }).passkey.qx,
-    qy: (sdkVector as { passkey: { qy: Hex } }).passkey.qy,
-    authenticatorData: `${RP_ID_HASH}5d00000000`,
+    qx,
+    qy,
+    authenticatorData: creationAuthData({ flags: 0x5d, credentialId, qx, qy }),
     prfEnabled: true,
   });
 
@@ -115,10 +138,22 @@ describe("registration", () => {
     expect(registrationProblems({ ...base, rpId: "localhost" })).toEqual(["RP_ID"]);
     expect(registrationProblems({ ...base, alg: -257 })).toEqual(["ALG"]);
     expect(registrationProblems({ ...base, prfEnabled: false })).toEqual(["PRF_NOT_ENABLED"]);
-    expect(registrationProblems({ ...base, authenticatorData: `${RP_ID_HASH}0100000000` })).toEqual(["USER_NOT_VERIFIED"]);
-    expect(registrationProblems({ ...base, authenticatorData: `0x${"00".repeat(32)}0500000000` })).toEqual(["RP_ID_HASH"]);
-    const qy = `0x${(BigInt(base.qy) ^ 1n).toString(16).padStart(64, "0")}` as Hex;
-    expect(registrationProblems({ ...base, qy })).toEqual(["KEY_NOT_ON_CURVE"]);
+    expect(registrationProblems({ ...base, authenticatorData: creationAuthData({ flags: 0x59, credentialId, qx, qy }) })).toEqual(["USER_NOT_VERIFIED"]);
+    const otherSite = creationAuthData({ flags: 0x5d, credentialId, qx, qy, rpIdHash: `0x${"00".repeat(32)}` });
+    expect(registrationProblems({ ...base, authenticatorData: otherSite })).toEqual(["RP_ID_HASH"]);
+    const offCurveQy = `0x${(BigInt(base.qy) ^ 1n).toString(16).padStart(64, "0")}` as Hex;
+    // Off the curve, and so also not the attested key.
+    expect(registrationProblems({ ...base, qy: offCurveQy })).toEqual(["CREDENTIAL_DATA", "KEY_NOT_ON_CURVE"]);
+  });
+
+  it("the key and credential id must be the ones attested in the creation's authenticator data", () => {
+    const otherKey = p256Point(2n);
+    expect(registrationProblems({ ...base, qx: otherKey.qx, qy: otherKey.qy })).toEqual(["CREDENTIAL_DATA"]);
+    expect(registrationProblems({ ...base, credentialId: "b3RoZXItaWQ" })).toEqual(["CREDENTIAL_DATA"]);
+    // No attested credential data at all (the AT flag clear).
+    expect(registrationProblems({ ...base, authenticatorData: `${RP_ID_HASH}1d00000000` })).toEqual(["CREDENTIAL_DATA"]);
+    // Truncated attested data.
+    expect(registrationProblems({ ...base, authenticatorData: base.authenticatorData.slice(0, 2 + 2 * 60) as Hex })).toEqual(["CREDENTIAL_DATA"]);
   });
 
   it("the schema rejects unknown keys", () => {
@@ -139,6 +174,12 @@ describe("describeMandate", () => {
       "Plain MON transfers only (empty calldata).",
       "Valid until 2026-10-31 00:00:00 UTC.",
     ]);
+  });
+
+  it("says 'only' for plain transfers only when no other selector is allowed", () => {
+    const both = describeMandate({ ...e2eMandate({ owner, demoPassThrough: passThrough }), allowedSelectors: ["0x00000000", "0x12345678"] }, {});
+    expect(both).toContain("Plain MON transfers (empty calldata).");
+    expect(both.some((l) => l.includes("Plain MON transfers only"))).toBe(false);
   });
 
   it("warns that token amounts aren't capped, and names unknown selectors and empty lists", () => {

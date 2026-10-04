@@ -40,6 +40,6 @@ export function dailyCapShortfall(o: {
   return (
     `the run's in-mandate actions (${inMandateValues.map((value) => mon(value)).join(" + ")} = ${mon(needed)}) would exceed ` +
     `the daily cap (${mon(spend.total)} of ${mon(maxValuePerDay)} already counted); the oldest counted approval leaves ` +
-    `the 25 h window at ${leaves}, or raise the mandate's cap with set-mandate (and E2E_MANDATE in e2e.ts)`
+    `the 25 h window at ${leaves}, or approve a mandate with a higher cap at https://attest8004.vercel.app/approve (and change E2E_MANDATE_TERMS in the SDK)`
   );
 }

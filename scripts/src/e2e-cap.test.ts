@@ -65,8 +65,8 @@ describe("dailyCapShortfall", () => {
     const leaves = new Date(Number(oldest + MANDATE_V1.spendWindowSeconds) * 1000).toISOString();
     expect(message).toBe(
       `the run's in-mandate actions (0.001 MON + 0.001 MON = 0.002 MON) would exceed the daily cap (0.004 MON of 0.005 MON ` +
-        `already counted); the oldest counted approval leaves the 25 h window at ${leaves}, or raise the mandate's cap ` +
-        "with set-mandate (and E2E_MANDATE in e2e.ts)",
+        `already counted); the oldest counted approval leaves the 25 h window at ${leaves}, or approve a mandate with a ` +
+        "higher cap at https://attest8004.vercel.app/approve (and change E2E_MANDATE_TERMS in the SDK)",
     );
   });
 });

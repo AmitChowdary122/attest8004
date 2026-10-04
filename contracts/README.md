@@ -120,7 +120,7 @@ testnet deployment (status table above) matches, superseding the single-validato
 router" that actually sweeps every payment it receives straight to a fixed `sink` nobody controls
 (`address(uint160(uint256(keccak256("attest8004.demo.sink"))))`). It has no `fallback`, so a call that carries data
 has no matching function and reverts before `receive` ever runs. The story: the operator allowlists it next to the
-deployer in demo agent 1984's mandate (`set-mandate`); mandate-v1 then approves a plain transfer to it like any
+deployer in demo agent 1984's mandate (approved on `/approve`, submitted with `submit-approval`); mandate-v1 then approves a plain transfer to it like any
 other allowlisted target (within caps, simulation succeeds), while risk-v1's `simulate_action` trace sees the value
 keep moving on to `sink`, which isn't on the mandate, has no code and nonce 0 — the rubric scores that **high**, so
 the gate refuses. `script/DeployDemoPassThrough.s.sol` deploys it through the same CREATE2 factory; it is **live on

@@ -6,11 +6,14 @@
  *   2. Re-checks everything it claims before sending (`approvalProblems`): the chain and the current registry; the
  *      nonce (a stale approval says to approve again); the agent's passkey; the deployer owns the agent; the registry's
  *      own mandateHashOf and challengeFor; the rpIdHash, UP/UV flags, challenge and P-256 signature, verified locally.
- *   3. Sends setMandate(agentId, mandate, auth) from the deployer with an explicit gas limit (the SDK's estimate guard).
- *   4. Reads the mandate back field by field, checks the nonce moved by one, and runs mandate-v1's own permission-window
+ *   3. Prints the new mandate and the current one in plain words, the owner's own check of what the passkey signed
+ *      (a WebAuthn prompt shows no content). Without --confirm it stops there. With `--confirm <first 8 hex digits of
+ *      the changeHash>`, sends setMandate(agentId, mandate, auth) from the deployer with an explicit gas limit (the
+ *      SDK's estimate guard).
+ *   5. Reads the mandate back field by field, checks the nonce moved by one, and runs mandate-v1's own permission-window
  *      rule for the new mandate (no permission event after its MandateSet in the last 6,000 blocks).
  *
- * Run: pnpm --filter @attest8004/scripts submit-approval <approval.json>
+ * Run: pnpm --filter @attest8004/scripts submit-approval <approval.json> [--confirm 0x12345678]
  * A relative path is resolved against the directory you ran pnpm in. Needs DEPLOYER_PRIVATE_KEY (.env). After a new
  * mandate lands, wait 6,000 blocks (about 31 minutes) before the e2e: its preflight refuses to start sooner.
  */
@@ -21,6 +24,7 @@ import {
   DEPLOYMENTS,
   approvalSchema,
   authArgs,
+  describeMandate,
   currentMandateRegistry,
   identityRegistryAbi,
   mandateFromJson,
@@ -29,25 +33,19 @@ import {
 } from "@attest8004/sdk";
 import { MANDATE_V1 } from "@attest8004/validator-mandate";
 import { assertChain, chain, check, printTx, publicClient, requireEnv, walletFor } from "./common.ts";
-import { approvalProblems, resolveInputPath } from "./approval-plan.ts";
+import { approvalProblems, confirmationCode, confirms, parseArgs, resolveInputPath, setMandateGasCap } from "./approval-plan.ts";
 import { checkPermissionWindow } from "./permission-window.ts";
 
-/**
- * setMandate (the first set, 2 targets, with the WebAuthn verification) measured 332,399 gas in forge with Monad's
- * schedule (isolated, cold storage; Task 1 of the P6 plan, 4 Oct 2026); setting it again costs 143,049. The cap is the
- * first set × 1.3, rounded up to 1k; the limit sent is the live estimate × 1.2, never above the cap.
- */
-const GAS = { setMandate: { headroomPercent: 20, max: 433_000n } } as const;
 
 const deployment = DEPLOYMENTS[chain.id];
 const registry = getAddress(currentMandateRegistry(deployment).address);
 const identityRegistry = getAddress(deployment.identityRegistry);
 const owner = privateKeyToAccount(requireEnv("DEPLOYER_PRIVATE_KEY") as Hex);
+const ZERO32: Hex = `0x${"00".repeat(32)}`;
 
 async function main(): Promise<void> {
-  const arg = process.argv.slice(2).find((a) => a !== "--");
-  if (!arg) throw new Error("usage: submit-approval <approval.json>");
-  const file = resolveInputPath(arg, process.env);
+  const args = parseArgs(process.argv.slice(2), ["confirm"]);
+  const file = resolveInputPath(args.file, process.env);
   await assertChain();
   console.log(`MandateRegistry ${registry} (chain ${chain.id})`);
   console.log(`owner           ${owner.address} (deployer)`);
@@ -86,7 +84,28 @@ async function main(): Promise<void> {
   if (problems.length > 0) throw new Error(`refusing to send:\n  ${problems.join("\n  ")}`);
   console.log("  ok  the approval matches the chain, and its assertion verifies locally against the agent's passkey");
 
-  // 3. Send.
+  // 3. Show what the owner's transaction would set, next to what is set now.
+  const labels: Record<string, string> = {
+    [owner.address]: "the agent's owner (the deployer)",
+    [getAddress(deployment.demoPassThrough)]: "DemoPassThrough: forwards every payment to a sink nobody controls",
+    [getAddress(deployment.demoAgentVault)]: "DemoAgentVault",
+  };
+  const [current, currentHash] = await publicClient.readContract({ ...onRegistry, functionName: "getMandate", args: [agentId] });
+  console.log(`\nthe new mandate for agent ${agentId} (changeHash ${approval.changeHash}):`);
+  for (const line of describeMandate(mandate, labels)) console.log(`  ${line}`);
+  if (currentHash === ZERO32) {
+    console.log("it replaces: no mandate");
+  } else {
+    console.log(`it replaces (mandateHash ${currentHash}):`);
+    const currentMandate = { ...current, allowedTargets: [...current.allowedTargets], allowedSelectors: [...current.allowedSelectors] };
+    for (const line of describeMandate(currentMandate, labels)) console.log(`  ${line}`);
+  }
+  if (!confirms(args.flags.confirm, approval.changeHash)) {
+    console.log(`\nnot sent. If that is the mandate you approved, re-run with --confirm ${confirmationCode(approval.changeHash)}`);
+    return;
+  }
+
+  // 4. Send.
   const sent = await writeWithGasGuard({
     publicClient,
     walletClient: walletFor(owner),
@@ -94,12 +113,13 @@ async function main(): Promise<void> {
     abi: mandateRegistryAbi,
     functionName: "setMandate",
     args: [agentId, mandate, authArgs(approval.auth)],
-    gasLimit: GAS.setMandate,
+    // The limit sent is the live estimate × 1.2, never above the cap (how the cap was measured: setMandateGasCap).
+    gasLimit: { headroomPercent: 20, max: setMandateGasCap(mandate) },
     label: `setMandate ${agentId}`,
   });
   printTx(`setMandate ${agentId}`, sent);
 
-  // 4. Read back.
+  // 5. Read back.
   const [stored, storedHash, recordOwner, setAtBlock] = await publicClient.readContract({ ...onRegistry, functionName: "getMandate", args: [agentId] });
   check("the stored mandate hash is the approved changeHash", storedHash.toLowerCase() === approval.changeHash.toLowerCase(), storedHash);
   check(

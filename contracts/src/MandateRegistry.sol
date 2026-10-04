@@ -24,7 +24,9 @@ import {IIdentityRegistry} from "./interfaces/IIdentityRegistry.sol";
 ///   (`setPasskey`), it survives a transfer, and only the current owner together with the current
 ///   passkey can rotate it. Sell an agent only after rotating to the buyer's passkey.
 /// - **Revoke is the panic button:** `revokeMandate` needs the owner only, no passkey, and also
-///   bumps the nonce, which cancels every approval that is signed but not yet submitted.
+///   bumps the nonce, which cancels every approval that is signed but not yet submitted (while a
+///   mandate is set: with none set it reverts `NoMandate`, and a pending approval can only set the
+///   mandate its passkey signed).
 /// - **No recovery:** a lost passkey locks the agent's mandate, passkey and inbox key changes
 ///   (revoke still works). A timelocked owner reset is on the roadmap.
 /// Every passkey-approved change goes through `_authorize` before any write. Immutable, no admin,

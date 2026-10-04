@@ -33,6 +33,8 @@ describe("security headers (web/vercel.json)", () => {
     expect(csp.get("frame-ancestors")).toEqual(["'none'"]);
     expect(csp.get("object-src")).toEqual(["'none'"]);
     expect(csp.get("base-uri")).toEqual(["'none'"]);
+    // default-src doesn't cover form submissions.
+    expect(csp.get("form-action")).toEqual(["'none'"]);
   });
 
   it("CSP names no source other than 'self', 'none' and the testnet RPC", () => {
@@ -42,8 +44,10 @@ describe("security headers (web/vercel.json)", () => {
     }
   });
 
-  it("X-Frame-Options DENY and Referrer-Policy no-referrer", () => {
+  it("X-Frame-Options DENY, Referrer-Policy no-referrer, nosniff and a same-origin opener policy", () => {
     expect(header("X-Frame-Options")).toBe("DENY");
     expect(header("Referrer-Policy")).toBe("no-referrer");
+    expect(header("X-Content-Type-Options")).toBe("nosniff");
+    expect(header("Cross-Origin-Opener-Policy")).toBe("same-origin");
   });
 });

@@ -19,7 +19,7 @@ hex2bin() { if command -v xxd >/dev/null; then xxd -r -p; else tr 'a-f' 'A-F' | 
 # sha256 of the bytes an 0x-hex string encodes, as 0x-hex.
 sha256hex() { printf '%s' "${1#0x}" | hex2bin | sha256sum | cut -d' ' -f1 | sed 's/^/0x/'; }
 # Unpadded base64url of the bytes an 0x-hex string encodes: the challenge as clientDataJSON carries it.
-b64url() { printf '%s' "${1#0x}" | hex2bin | base64 -w0 | tr '+/' '-_' | tr -d '='; }
+b64url() { printf '%s' "${1#0x}" | hex2bin | base64 | tr -d '\n' | tr '+/' '-_' | tr -d '='; }
 
 json=$(cat "$file")
 mismatches=0

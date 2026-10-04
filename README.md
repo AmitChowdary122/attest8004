@@ -136,8 +136,13 @@ pnpm --filter @attest8004/scripts setup-demo-agents            # register agents
 pnpm --filter @attest8004/scripts setup-demo-agents -- --fund  # top agent 1984's hot key up to 8 requests (one e2e run + 2 spare), 1985's up to 4
 pnpm --filter @attest8004/scripts setup-demo-agents -- --fund-validator    # top validator A up to 2 MON
 pnpm --filter @attest8004/scripts setup-demo-agents -- --fund-validator-b  # top validator B up to 1 MON
-pnpm --filter @attest8004/scripts set-mandate                  # agent 1984's e2e mandate: the deployer and the DemoPassThrough (owner-set until P6's passkeys)
-pnpm --filter @attest8004/scripts set-mandate -- --force       # set the same mandate again: a new MandateSet baseline
+# agent 1984's e2e mandate (the deployer and the DemoPassThrough) needs two factors since P6: the owner's transaction and a passkey.
+# On https://attest8004.vercel.app/approve (Chrome, Google Password Manager): create the passkey, download the registration.
+pnpm --filter @attest8004/scripts set-passkey <registration.json>                          # dry run: prints the key and a --confirm code
+pnpm --filter @attest8004/scripts set-passkey <registration.json> --confirm <code>         # binds it to agent 1984, once
+# On /approve: preset "e2e mandate", Prepare approval, Sign with passkey, download the approval.
+pnpm --filter @attest8004/scripts submit-approval <approval.json>                          # dry run: re-checks it, shows the mandate in plain words
+pnpm --filter @attest8004/scripts submit-approval <approval.json> --confirm <code>         # setMandate from the owner
 # after a new mandate is set, wait about 31 minutes (6,000 blocks) before the e2e: it refuses to start sooner
 pnpm --filter @attest8004/scripts e2e                          # hot key -> forwarder -> mandate-v1 and risk-v1 -> gated execute; verify all six
 pnpm --filter @attest8004/scripts gated-execute                # P2: the superseded agent-1982 vault, owner requests directly
@@ -145,8 +150,8 @@ pnpm --filter @attest8004/scripts gated-execute                # P2: the superse
 
 The e2e runs both validators in-process, so **stop the `mandate-v1` and `risk-v1` services (below) before running
 it**: a running service would sign with the same validator key as the e2e, and two processes answering the same
-requests would race (each validator's pinned block also assumes one process per key). **After `set-mandate` sets a
-new mandate, wait about 31 minutes before the e2e.** `risk-v1`'s `recent_permission_events` reads the last 6,000
+requests would race (each validator's pinned block also assumes one process per key). **After `submit-approval` sets
+a new mandate, wait about 31 minutes before the e2e.** `risk-v1`'s `recent_permission_events` reads the last 6,000
 blocks, so it would show the fresh `MandateSet`, and the e2e's preflight refuses to start until it is that old.
 **After a failed run, re-run `setup-demo-agents -- --fund` before another e2e:** agent 1984's hot key is funded for 8
 requests, and a run uses 6.
@@ -233,13 +238,15 @@ At runtime, `risk-v1` calls a **Groq-hosted** model through an OpenAI-compatible
 | Library | Licence | Used for |
 |---|---|---|
 | [forge-std](https://github.com/foundry-rs/forge-std) v1.17.0 | MIT / Apache-2.0 | Foundry testing |
-| [OpenZeppelin Contracts](https://github.com/OpenZeppelin/openzeppelin-contracts) v5.7.0 | MIT | `ReentrancyGuardTransient` in AttestGate; `P256` in a toolchain test; ERC721 in a test mock; its WebAuthn library is planned for P6's passkey mandates |
+| [OpenZeppelin Contracts](https://github.com/OpenZeppelin/openzeppelin-contracts) v5.7.0 | MIT | `WebAuthn` and `P256` (through the `0x0100` precompile) in MandateRegistry v2; `ReentrancyGuardTransient` in AttestGate; `Base64` in tests; ERC721 in a test mock |
 | [viem](https://viem.sh) | MIT | TypeScript EVM client |
 | [zod](https://zod.dev) | MIT | Schema validation |
 | [Vitest](https://vitest.dev) | MIT | TypeScript tests |
 | [TypeScript](https://www.typescriptlang.org) | Apache-2.0 | Language |
 | [React](https://react.dev) | MIT | Web app |
 | [Vite](https://vite.dev) | MIT | Web build |
+| [Mera](https://mera.category.xyz) (`@category-labs/mera` 0.2.0, Category Labs) | MIT / Apache-2.0 | The `/approve` page's PRF check (`getPasskeyPrfOutput`); P7's passkey inbox |
+| [@noble/curves](https://github.com/paulmillr/noble-curves), [@noble/hashes](https://github.com/paulmillr/noble-hashes), [@scure/base](https://github.com/paulmillr/scure-base) | MIT | Mera's dependencies (bundled into the web app) |
 
 **Standards and reference code:**
 
@@ -248,7 +255,7 @@ At runtime, `risk-v1` calls a **Groq-hosted** model through an OpenAI-compatible
 - The expected values in the shared hash vectors (`packages/sdk/test/vectors.json`) are generated with Foundry's `cast`.
 - Deployment goes through the widely used deterministic deployment proxy at `0x4e59b44847b379578588920cA78FbF26c0B4956C` (Arachnid); it is called onchain, and none of its code is included here.
 
-The demo agents are registered by calling the Identity Registry's `register(string)` directly; the [agent0 SDK](https://sdk.ag0.xyz) was not used, because its latest release (1.7.1) has no defaults for Monad. This list grows as libraries are added (Envio, Mera and others).
+The demo agents are registered by calling the Identity Registry's `register(string)` directly; the [agent0 SDK](https://sdk.ag0.xyz) was not used, because its latest release (1.7.1) has no defaults for Monad. This list grows as libraries are added (Envio and others).
 
 ## License
 

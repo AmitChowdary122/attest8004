@@ -1,8 +1,18 @@
 import { readFileSync } from "node:fs";
-import { approvalSchema, type Approval } from "@attest8004/sdk";
+import { approvalSchema, type Approval, type Mandate } from "@attest8004/sdk";
 import type { Address, Hex } from "viem";
 import { describe, expect, it } from "vitest";
-import { approvalProblems, resolveInputPath, type ApprovalChainState } from "./approval-plan.ts";
+import {
+  SET_PASSKEY_GAS_CAP,
+  approvalProblems,
+  confirmationCode,
+  confirms,
+  parseAgentId,
+  parseArgs,
+  resolveInputPath,
+  setMandateGasCap,
+  type ApprovalChainState,
+} from "./approval-plan.ts";
 
 // The SDK's committed approval document: signed with a fixed test key, consistent with itself.
 const approval: Approval = approvalSchema.parse(
@@ -78,5 +88,70 @@ describe("approvalProblems", () => {
     const mandate = { ...approval.change.mandate, maxValuePerDay: "6000000000000000" };
     const tampered = { ...approval, change: { kind: "setMandate" as const, mandate } };
     expect(codes(await approvalProblems(tampered, matching()))).toContain("CHANGE_HASH_MISMATCH");
+  });
+});
+
+describe("gas caps", () => {
+  const mandate = (targets: number, selectors: number): Mandate => ({
+    allowedTargets: Array.from({ length: targets }, (_, i) => `0x${(i + 1).toString(16).padStart(40, "0")}` as Address),
+    allowedSelectors: Array.from({ length: selectors }, (_, i) => `0x${(i + 1).toString(16).padStart(8, "0")}` as Hex),
+    maxValuePerTx: 1n,
+    maxValuePerDay: 1n,
+    validUntil: 2n,
+  });
+
+  it("setPasskey's cap clears the fork-measured live cost (≈130,239) by 1.3×", () => {
+    expect(SET_PASSKEY_GAS_CAP).toBe(170_000n);
+    expect(SET_PASSKEY_GAS_CAP * 10n >= 130_239n * 13n).toBe(true);
+  });
+
+  it("setMandate's cap is 470,000 up to the e2e mandate's 3 entries, then grows 40,000 per entry", () => {
+    expect(setMandateGasCap(mandate(2, 1))).toBe(470_000n);
+    expect(setMandateGasCap(mandate(1, 1))).toBe(470_000n);
+    expect(setMandateGasCap(mandate(3, 1))).toBe(510_000n);
+    expect(setMandateGasCap(mandate(16, 16))).toBe(470_000n + 29n * 40_000n);
+    expect(setMandateGasCap(mandate(2, 1)) * 10n >= 361_300n * 13n).toBe(true);
+  });
+});
+
+describe("parseArgs", () => {
+  it("takes one positional and the known flags, each with a value", () => {
+    expect(parseArgs(["--", "file.json", "--agent", "1985", "--confirm", "0xabcdef12"], ["agent", "confirm"])).toEqual({
+      file: "file.json",
+      flags: { agent: "1985", confirm: "0xabcdef12" },
+    });
+    expect(parseArgs(["file.json"], ["confirm"])).toEqual({ file: "file.json", flags: {} });
+  });
+
+  it("refuses unknown flags, --flag=value, a flag without a value, and zero or two positionals", () => {
+    expect(() => parseArgs(["f.json", "--agnet", "1"], ["agent"])).toThrow(/unknown flag --agnet/);
+    expect(() => parseArgs(["f.json", "--agent=1985"], ["agent"])).toThrow(/unknown flag --agent=1985/);
+    expect(() => parseArgs(["f.json", "--agent"], ["agent"])).toThrow(/--agent needs a value/);
+    expect(() => parseArgs(["f.json", "--agent", "--confirm", "x"], ["agent", "confirm"])).toThrow(/--agent needs a value/);
+    expect(() => parseArgs([], ["agent"])).toThrow(/one file/);
+    expect(() => parseArgs(["a.json", "b.json"], ["agent"])).toThrow(/one file/);
+  });
+});
+
+describe("confirmation", () => {
+  const hash: Hex = "0xf935d1625a09661cd7ac71eeaac67de09df9a9a96be76c3f68b37cec44bc7601";
+
+  it("is the first 8 hex digits, and matches case-insensitively, with or without 0x", () => {
+    expect(confirmationCode(hash)).toBe("0xf935d162");
+    expect(confirms("0xf935d162", hash)).toBe(true);
+    expect(confirms("0XF935D162", hash)).toBe(true);
+    expect(confirms("f935d162", hash)).toBe(true);
+  });
+
+  it("anything else doesn't confirm", () => {
+    expect(confirms(undefined, hash)).toBe(false);
+    expect(confirms("0xf935d16", hash)).toBe(false);
+    expect(confirms("0xf935d1625a", hash)).toBe(false);
+    expect(confirms("0x00000000", hash)).toBe(false);
+  });
+
+  it("parseAgentId takes a decimal agent id only", () => {
+    expect(parseAgentId("1985")).toBe(1985n);
+    for (const bad of ["", "-1", "0x7c1", "1e3", "01", " 1"]) expect(() => parseAgentId(bad), bad).toThrow(/agent id/);
   });
 });

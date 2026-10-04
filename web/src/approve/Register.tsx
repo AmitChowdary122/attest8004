@@ -27,8 +27,9 @@ export function Register({ enabled }: { enabled: boolean }) {
     <section>
       <h2>1 · Create the agent's passkey</h2>
       <p className="muted">
-        Once per agent. In Chrome, save it to <strong>Google Password Manager</strong> so your phone has it too. The owner then binds
-        its public key with <code>set-passkey</code>.
+        Once per agent, and only if the agent has no passkey yet (step 3 shows the agent's passkey): an extra one only clutters your
+        password manager. In Chrome, save it to <strong>Google Password Manager</strong> so your phone has it too. The owner then
+        binds its public key with <code>set-passkey</code>.
       </p>
       <label>
         Name shown in your password manager
@@ -51,8 +52,13 @@ export function Register({ enabled }: { enabled: boolean }) {
             <dd>{registration.alg === -7 ? "ES256 (P-256)" : `unsupported (${registration.alg})`}</dd>
             <dt>PRF (for the Mera inbox)</dt>
             <dd>{registration.prfEnabled ? "enabled" : "not enabled"}</dd>
+            <dt>Flags</dt>
+            <dd>
+              user present {created.flags.up ? "yes" : "no"}, user verified {created.flags.uv ? "yes" : "no"}, backup eligible{" "}
+              {created.flags.be ? "yes" : "no"}, backed up {created.flags.bs ? "yes" : "no"}
+            </dd>
             <dt>Synced</dt>
-            <dd>{created.synced ? "yes" : "no: your phone won't have this passkey"}</dd>
+            <dd>{created.flags.bs ? "yes" : "no: your phone won't have this passkey"}</dd>
           </dl>
           {created.problems.length > 0 ? (
             <p className="error">This passkey can't be the agent's passkey: {created.problems.join(", ")}. Delete it in your password manager and try again.</p>

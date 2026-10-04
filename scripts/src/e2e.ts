@@ -93,6 +93,7 @@ import {
   buildRequestJson,
   computeActionHash,
   currentMandateRegistry,
+  E2E_MANDATE_TERMS,
   decodeJsonDataUri,
   encodeJsonDataUri,
   identityRegistryAbi,
@@ -222,12 +223,11 @@ const LLM_PREFLIGHT_TIMEOUT_MS = 10_000;
 /** Monad testnet's block time, measured on 3 Oct 2026: only to say about how many minutes a wait in blocks is. */
 const MS_PER_BLOCK = 305n;
 
-/** Agent 1984's e2e mandate (scripts/src/set-mandate.ts): the expected verdicts depend on exactly these values. */
-const E2E_MANDATE = {
-  allowedSelectors: ["0x00000000"],
-  maxValuePerTx: parseEther("0.002"),
-  maxValuePerDay: parseEther("0.005"),
-} as const;
+/**
+ * Agent 1984's e2e mandate terms (the SDK's E2E_MANDATE_TERMS, the /approve page's "e2e mandate" preset): the expected
+ * verdicts depend on exactly these values.
+ */
+const E2E_MANDATE = E2E_MANDATE_TERMS;
 
 const vaultAbi = [
   ...attestGateAbi,

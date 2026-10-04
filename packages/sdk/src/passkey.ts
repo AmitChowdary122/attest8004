@@ -16,6 +16,7 @@ import {
 import { z } from "zod";
 import { zAddress, zBytes32, zDecimal, zHexBytes } from "./request.ts";
 import {
+  attestedCredential,
   authenticatorFlags,
   base64UrlDecode,
   isOnP256,
@@ -283,9 +284,13 @@ export type RegistrationProblem =
   | "RP_ID_HASH"
   | "USER_NOT_PRESENT"
   | "USER_NOT_VERIFIED"
+  | "CREDENTIAL_DATA"
   | "KEY_NOT_ON_CURVE";
 
-/** Why a registration can't serve as an agent's passkey on MandateRegistry v2 (and P7's Mera inbox). Empty means usable. */
+/**
+ * Why a registration can't serve as an agent's passkey on MandateRegistry v2 (and P7's Mera inbox). Empty means usable.
+ * `CREDENTIAL_DATA`: the key or credential id isn't the one attested in the creation's authenticator data.
+ */
 export function registrationProblems(registration: PasskeyRegistration): RegistrationProblem[] {
   const problems: RegistrationProblem[] = [];
   if (registration.rpId !== RP_ID) problems.push("RP_ID");
@@ -300,6 +305,18 @@ export function registrationProblems(registration: PasskeyRegistration): Registr
     if (!flags.up) problems.push("USER_NOT_PRESENT");
     if (!flags.uv) problems.push("USER_NOT_VERIFIED");
   }
+  // The key and credential id the page took from getPublicKey() and credential.id must be the ones the authenticator
+  // attested in the same creation, so a page bug can't bind a key that doesn't belong to the passkey.
+  const attested = attestedCredential(authenticatorData);
+  const credentialMatches = (() => {
+    try {
+      return attested !== null && attested.credentialId === bytesToHex(base64UrlDecode(registration.credentialId));
+    } catch {
+      return false;
+    }
+  })();
+  const keyMatches = attested?.x?.toLowerCase() === registration.qx.toLowerCase() && attested?.y?.toLowerCase() === registration.qy.toLowerCase();
+  if (!credentialMatches || !keyMatches) problems.push("CREDENTIAL_DATA");
   if (!isOnP256(registration.qx, registration.qy)) problems.push("KEY_NOT_ON_CURVE");
   return problems;
 }
@@ -349,7 +366,7 @@ export function describeMandate(mandate: Mandate, labels: Record<string, string>
     for (const raw of mandate.allowedSelectors) {
       const sel = raw.toLowerCase();
       const token = KNOWN_TOKEN_SELECTORS[sel];
-      if (sel === "0x00000000") lines.push("Plain MON transfers only (empty calldata).");
+      if (sel === "0x00000000") lines.push(mandate.allowedSelectors.length === 1 ? "Plain MON transfers only (empty calldata)." : "Plain MON transfers (empty calldata).");
       else if (token) lines.push(`Calls ${token} (${sel}): token amounts are NOT capped by this mandate.`);
       else lines.push(`Calls the function with selector ${sel} (not a function this page knows).`);
     }

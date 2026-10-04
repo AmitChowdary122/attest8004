@@ -14,7 +14,8 @@ export function downloadJson(fileName: string, text: string): void {
   link.href = url;
   link.download = fileName;
   link.click();
-  URL.revokeObjectURL(url);
+  // Revoking at once can cancel the download in some browsers; let it start first.
+  setTimeout(() => URL.revokeObjectURL(url), 30_000);
 }
 
 /** An error as one readable line: viem's short message when there is one (its full message adds docs links and versions). */

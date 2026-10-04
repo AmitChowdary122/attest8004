@@ -21,6 +21,7 @@ export const registry: Address = getAddress(currentMandateRegistry(deployment).a
 const client = createPublicClient({ chain: monadTestnet, transport: http(RPC_URL) });
 
 export interface AgentState {
+  agentId: bigint;
   /** The block these reads were made at. */
   block: bigint;
   owner: Address;
@@ -43,6 +44,7 @@ export async function readAgent(agentId: bigint): Promise<AgentState> {
     client.readContract({ address: registry, abi: mandateRegistryAbi, functionName: "getMandate", args: [agentId], ...at }),
   ]);
   return {
+    agentId,
     block,
     owner: getAddress(owner),
     passkey: qx === ZERO32 && qy === ZERO32 ? null : { qx, qy },

@@ -1,11 +1,12 @@
 import { readdirSync, readFileSync, statSync } from "node:fs";
 import { join, relative } from "node:path";
+import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 
 // The page never reads an agent, a mandate or any other value from the URL (amendment 2 to the P6 plan), so a
 // phishing link can't pre-fill a malicious mandate. Every URL access lives in src/approve/url.ts, which only reads the
 // hostname (for the rpId guard) and checks whether a query or fragment exists in order to strip it unread.
-const SRC = new URL("../src/", import.meta.url).pathname;
+const SRC = fileURLToPath(new URL("../src/", import.meta.url));
 const URL_MODULE = "approve/url.ts";
 
 const FORBIDDEN = [

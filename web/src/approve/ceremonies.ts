@@ -18,8 +18,8 @@ import { bytesToHex, type Hex } from "viem";
 
 export interface CreatedPasskey {
   registration: PasskeyRegistration;
-  /** BS: the passkey is backed up (synced), so the phone signed in to the same Google account has it too. */
-  synced: boolean;
+  /** The creation's UP, UV, BE and BS flags; BS means backed up (synced), so the phone on the same Google account has it. */
+  flags: { up: boolean; uv: boolean; be: boolean; bs: boolean };
   problems: RegistrationProblem[];
 }
 
@@ -58,7 +58,8 @@ export async function createPasskey(userName: string): Promise<CreatedPasskey> {
     authenticatorData: bytesToHex(authenticatorData),
     prfEnabled: prf?.enabled === true,
   };
-  return { registration, synced: authenticatorFlags(authenticatorData).bs, problems: registrationProblems(registration) };
+  const { up, uv, be, bs } = authenticatorFlags(authenticatorData);
+  return { registration, flags: { up, uv, be, bs }, problems: registrationProblems(registration) };
 }
 
 /**

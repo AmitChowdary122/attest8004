@@ -172,6 +172,24 @@ export function authenticatorFlags(authenticatorData: Uint8Array): { rpIdHash: H
 }
 
 /**
+ * The attested credential data of a creation's authenticator data (WebAuthn §6.5.1): the credential id, and the x and
+ * y of its COSE EC2 key (`-2: bstr(32)`, `-3: bstr(32)`), or `null` when the AT flag is clear or the data is truncated.
+ * A key that isn't EC2 P-256 gives `x` and `y` as `null`.
+ */
+export function attestedCredential(authenticatorData: Uint8Array): { credentialId: Hex; x: Hex | null; y: Hex | null } | null {
+  if (authenticatorData.length < 55 || ((authenticatorData[32] ?? 0) & 0x40) === 0) return null;
+  const length = ((authenticatorData[53] ?? 0) << 8) | (authenticatorData[54] ?? 0);
+  const keyStart = 55 + length;
+  if (length === 0 || authenticatorData.length <= keyStart) return null;
+  const key = authenticatorData.slice(keyStart);
+  const field = (label: number): Hex | null => {
+    const at = indexOfBytes(key, Uint8Array.of(label, 0x58, 0x20));
+    return at < 0 || at + 35 > key.length ? null : bytesToHex(key.slice(at + 3, at + 35));
+  };
+  return { credentialId: bytesToHex(authenticatorData.slice(55, keyStart)), x: field(0x21), y: field(0x22) };
+}
+
+/**
  * Checks an assertion the way MandateRegistry v2 will, before anything is exported or sent: the rpIdHash, UP and UV,
  * BE/BS consistency, `"type":"webauthn.get"` and the expected challenge at their indices, low-s, and the P-256
  * signature over `authenticatorData ‖ sha256(clientDataJSON)` against `(qx, qy)` (WebCrypto). The first failing check

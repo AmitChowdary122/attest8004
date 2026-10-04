@@ -9,10 +9,12 @@
  *   2. Checks the chain: the registry is the recorded one and binds rpIdHash = sha256("attest8004.vercel.app"), the
  *      deployer owns the agent, and the agent has no passkey yet (the same key again is a no-op; another key stops:
  *      rotation needs the current passkey).
- *   3. Sends setPasskey(agentId, qx, qy) from the deployer with an explicit gas limit (the SDK's estimate guard), then
- *      reads passkeyOf back.
+ *   3. Without --confirm, stops there: it prints the key it would bind and the code to confirm it with. With
+ *      `--confirm <first 8 hex digits of qx>`, sends setPasskey(agentId, qx, qy) from the deployer with an explicit gas
+ *      limit (the SDK's estimate guard), then reads passkeyOf back. There is no undo short of rotatePasskey, which
+ *      needs this passkey, so the confirmation repeats the key.
  *
- * Run: pnpm --filter @attest8004/scripts set-passkey <registration.json> [--agent 1984]
+ * Run: pnpm --filter @attest8004/scripts set-passkey <registration.json> [--agent 1984] [--confirm 0x12345678]
  * A relative path is resolved against the directory you ran pnpm in. Needs DEPLOYER_PRIVATE_KEY (.env).
  */
 import { readFileSync } from "node:fs";
@@ -29,13 +31,10 @@ import {
   writeWithGasGuard,
 } from "@attest8004/sdk";
 import { assertChain, chain, check, printTx, publicClient, requireEnv, walletFor } from "./common.ts";
-import { resolveInputPath } from "./approval-plan.ts";
+import { SET_PASSKEY_GAS_CAP, confirmationCode, confirms, parseAgentId, parseArgs, resolveInputPath } from "./approval-plan.ts";
 
-/**
- * setPasskey measured 89,472 gas in forge with Monad's schedule (isolated, cold storage; Task 1 of the P6 plan, 4 Oct
- * 2026). The cap is that × 1.3, rounded up to 1k; the limit sent is the live estimate × 1.2, never above the cap.
- */
-const GAS = { setPasskey: { headroomPercent: 20, max: 117_000n } } as const;
+/** The limit sent is the live estimate × 1.2, never above the cap (how the cap was measured: `SET_PASSKEY_GAS_CAP`). */
+const GAS = { setPasskey: { headroomPercent: 20, max: SET_PASSKEY_GAS_CAP } } as const;
 
 const ZERO32: Hex = `0x${"00".repeat(32)}`;
 
@@ -43,17 +42,14 @@ const deployment = DEPLOYMENTS[chain.id];
 const registry = getAddress(currentMandateRegistry(deployment).address);
 const owner = privateKeyToAccount(requireEnv("DEPLOYER_PRIVATE_KEY") as Hex);
 
-function parseArgs(argv: string[]): { file: string; agentId: bigint } {
-  const rest = argv.filter((a) => a !== "--");
-  const agentAt = rest.indexOf("--agent");
-  const agentId = agentAt >= 0 ? BigInt(rest[agentAt + 1] ?? "") : (deployment.demoAgents[0] as bigint);
-  const file = rest.find((a, i) => !a.startsWith("--") && (agentAt < 0 || i !== agentAt + 1));
-  if (!file) throw new Error("usage: set-passkey <registration.json> [--agent <agentId>]");
-  return { file: resolveInputPath(file, process.env), agentId };
+function cliArgs(argv: string[]): { file: string; agentId: bigint; confirm: string | undefined } {
+  const { file, flags } = parseArgs(argv, ["agent", "confirm"]);
+  const agentId = flags.agent === undefined ? (deployment.demoAgents[0] as bigint) : parseAgentId(flags.agent);
+  return { file: resolveInputPath(file, process.env), agentId, confirm: flags.confirm };
 }
 
 async function main(): Promise<void> {
-  const { file, agentId } = parseArgs(process.argv.slice(2));
+  const { file, agentId, confirm } = cliArgs(process.argv.slice(2));
   await assertChain();
   console.log(`MandateRegistry ${registry} (chain ${chain.id})`);
   console.log(`owner           ${owner.address} (deployer)`);
@@ -84,6 +80,13 @@ async function main(): Promise<void> {
     console.log(`\nagent ${agentId} already has this passkey; nothing to send`);
   } else {
     check(`agent ${agentId} has no passkey yet (another key needs rotatePasskey with the current passkey)`, qx === ZERO32 && qy === ZERO32, `${qx} ${qy}`);
+    if (!confirms(confirm, registration.qx)) {
+      console.log(
+        `\nnot sent: this binds the key above to agent ${agentId} for good (no recovery; rotation needs this passkey).\n` +
+          `To send, re-run with --confirm ${confirmationCode(registration.qx)}`,
+      );
+      return;
+    }
     // 3. Send.
     const sent = await writeWithGasGuard({
       publicClient,
