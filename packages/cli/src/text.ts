@@ -198,7 +198,12 @@ export function riskText(report: RiskVerifyReport): string {
     report.findings.forEach((f, i) => row(i === 0 ? "findings" : "", `${oneLine(f.severity)} ${oneLine(f.code)} — ${oneLine(f.explanation)}`));
   }
 
-  const reachedTools = report.verdict === "match" || report.problems.includes("TOOL_OUTPUT_MISMATCH");
+  // The tool step ran on a match, on TOOL_OUTPUT_MISMATCH, and on a coverage gap found after the
+  // re-runs: a FINDINGS_MISMATCH with a recomputed score (steps 6-7 stop before the score exists).
+  const reachedTools =
+    report.verdict === "match" ||
+    report.problems.includes("TOOL_OUTPUT_MISMATCH") ||
+    (report.problems.includes("FINDINGS_MISMATCH") && recomputed !== null);
   const toolLines: string[] = [];
   if (!parsed) {
     toolLines.push("-");

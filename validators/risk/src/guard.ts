@@ -63,8 +63,12 @@ export function chatPromptGuard(client: ChatClient, model: string): PromptGuard 
   };
 }
 
-/** `text` split into chunks of at most `chunkChars`, each one overlapping the previous by `overlap` chars. */
-function chunkText(text: string, chunkChars: number, overlap: number): string[] {
+/**
+ * `text` split into chunks of at most `chunkChars`, each one overlapping the previous by `overlap` chars.
+ * {@link screen} records one of these chunks per field, so `verify` exports it to check that a recorded
+ * result's text is exactly one of them.
+ */
+export function chunkText(text: string, chunkChars: number, overlap: number): string[] {
   if (text.length <= chunkChars) return [text];
   const stride = chunkChars - overlap;
   const chunks: string[] = [];

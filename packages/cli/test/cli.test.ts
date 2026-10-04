@@ -463,6 +463,23 @@ describe("attest8004 CLI: risk-v1 output", () => {
     expect(text).toMatch(/1 not shown to the model.*#3 get_mandate/);
   });
 
+  it("a coverage gap found after the re-runs (FINDINGS_MISMATCH with a recomputed score) still lists the tool calls re-run", async () => {
+    const riskReport: RiskVerifyReport = { ...riskMatchReport, match: false, verdict: "mismatch", problems: ["FINDINGS_MISMATCH"] };
+    const h = harness({ tag: "risk-v1", riskReport });
+    await expect(h.run(["verify", HASH])).resolves.toBe(1);
+    const text = h.out.join("\n");
+    expect(text).toMatch(/2 re-run at block 67900000.*#0 simulate_action, #1 counterparty_onchain/);
+    expect(text).not.toContain("none re-run");
+
+    // At steps 6-7 there is no recomputed score yet, and nothing was re-run.
+    const early = harness({
+      tag: "risk-v1",
+      riskReport: { ...riskReport, recomputed: null, checkedToolCalls: [] },
+    });
+    await early.run(["verify", HASH]);
+    expect(early.out.join("\n")).toContain("none re-run: verify stopped at an earlier problem");
+  });
+
   it("a mismatch names its problem and the tool calls whose re-run differs", async () => {
     const h = harness({ tag: "risk-v1", riskReport: riskMismatchReport });
     await h.run(["verify", HASH]);

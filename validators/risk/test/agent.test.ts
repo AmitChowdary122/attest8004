@@ -2,7 +2,7 @@ import { canonicalJson } from "@attest8004/sdk";
 import type { MandateInputs, PinnedBlock, Simulation } from "@attest8004/validator-mandate";
 import { concatHex, encodeErrorResult, getAddress, keccak256, stringToHex, toHex, type Address, type Hex } from "viem";
 import { describe, expect, it, vi } from "vitest";
-import { InitialMessagesTooLargeError, MIN_TOOL_ANSWERS, promptParams, RESERVE_TURN, reaskMessages, runAgent } from "../src/agent.ts";
+import { FINAL_TOOL_CALLS_ERROR, InitialMessagesTooLargeError, MIN_TOOL_ANSWERS, promptParams, RESERVE_TURN, reaskMessages, runAgent } from "../src/agent.ts";
 import { findingsJsonSchema, SOURCE_NAMES } from "../src/findings.ts";
 import type { PromptGuard } from "../src/guard.ts";
 import { estimateTokens, parseChatResponse, ProviderError, type ChatClient, type ChatMessage, type ChatRequest, type ChatResponse } from "../src/llm.ts";
@@ -991,5 +991,35 @@ describe("runAgent: the room for 3 tool answers (fix round 1 for Task 11)", () =
     const ok = scripted([textTurn("done"), textTurn(EMPTY)]);
     await runAgent({ llm: ok.client, guard: fakeGuard(), model: MODEL, data: fits, tools: makeCtx(makeReader()), initialGuard: [] });
     expect(ok.requests.length).toBeGreaterThan(0);
+  });
+});
+
+describe("runAgent: a final answer that calls a tool (fix round 2 for Task 12)", () => {
+  it("is invalid output: never recorded as a turn (so no tool call is left without an answer), re-asked with our fixed error text, its usage still counted", async () => {
+    const stray = toolTurn([call("simulate_action")], { content: EMPTY, total: 300 });
+    const { client, requests } = scripted([textTurn("done"), stray, textTurn(EMPTY)]);
+    const result = await run({ llm: client });
+
+    expect(result.findings).toEqual([]);
+    expect(result.final).toEqual({ raw: EMPTY, attempts: 2 });
+    expect(result.turns).toHaveLength(2);
+    expect(result.turns.every((turn) => turn.toolCalls.length === 0)).toBe(true);
+    expect(result.toolCalls).toEqual([]);
+    expect(result.usage.total).toBe(200 + 300 + 200);
+    expect(requests).toHaveLength(3);
+    const reask = requests[2] as ChatRequest;
+    expect(isFinalRequest(reask)).toBe(true);
+    expect(reask.messages.at(-1)?.content).toContain(FINAL_TOOL_CALLS_ERROR);
+    expect(estimateTokens(reask)).toBeLessThanOrEqual(RISK_V1.maxRequestTokens);
+  });
+
+  it("counts against the shared budget: three of them -> findings null, no fourth final call", async () => {
+    const stray = () => toolTurn([call("get_mandate")], { content: EMPTY });
+    const { client, requests } = scripted([textTurn("done"), stray(), stray(), stray(), textTurn(EMPTY)]);
+    const result = await run({ llm: client });
+    expect(result.findings).toBeNull();
+    expect(result.final).toEqual({ raw: EMPTY, attempts: 3 });
+    expect(requests).toHaveLength(4);
+    expect(result.turns).toHaveLength(1);
   });
 });

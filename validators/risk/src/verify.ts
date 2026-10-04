@@ -26,7 +26,7 @@ import {
 import { keccak256, stringToBytes, zeroAddress, zeroHash, type Address, type Hex } from "viem";
 import { parseRiskEvidence, riskEvidence, riskParams, type RiskEvidence } from "./evidence.ts";
 import { injectionFinding, parseModelOutput, scoreOf } from "./findings.ts";
-import { parseGuardScore } from "./guard.ts";
+import { chunkText, parseGuardScore } from "./guard.ts";
 import type { NansenClient } from "./nansen.ts";
 import { RISK_V1 } from "./params.ts";
 import type { RiskAddresses, RiskReader } from "./reader.ts";
@@ -289,7 +289,7 @@ export async function verifyRiskRequest(o: { reader: RiskReader; requestHash: He
   // 6. Every untrusted text shown to the model was screened (the calldata's, and every recorded Nansen
   // label; a re-run tool's own text is added at step 9), and the classifier → code-findings rule holds
   // for the recorded results (the guard isn't re-run).
-  const recordedFields = [...calldataFields(mandateRequest.data), ...nansenFields(doc)];
+  const recordedFields = [...exactly(calldataFields(mandateRequest.data)), ...asRecorded(nansenFields(doc))];
   if (!coversAll(recordedFields, doc.classifier.results)) return report(fields, ["FINDINGS_MISMATCH"]);
   for (const result of doc.classifier.results) {
     const score = parseGuardScore(result.score);
@@ -319,7 +319,7 @@ export async function verifyRiskRequest(o: { reader: RiskReader; requestHash: He
   const { checked, mismatched, untrusted } = await rerunToolCalls(reader, doc, pairing, mandateRequest, pinned);
   const rerun = { ...scored, checkedToolCalls: checked, mismatchedToolCalls: mismatched };
   if (mismatched.length > 0) return report(rerun, ["TOOL_OUTPUT_MISMATCH"]);
-  if (!coversAll([...recordedFields, ...untrusted], doc.classifier.results)) return report(rerun, ["FINDINGS_MISMATCH"]);
+  if (!coversAll([...recordedFields, ...exactly(untrusted)], doc.classifier.results)) return report(rerun, ["FINDINGS_MISMATCH"]);
   return report(rerun, []);
 }
 
@@ -395,13 +395,37 @@ function nansenFields(doc: RiskEvidence): UntrustedField[] {
   });
 }
 
+/** A text that must have been screened, with how its classifier result must match it. */
+interface ScreenedField extends UntrustedField {
+  /**
+   * The guard's chunks of `text` for a field derived exactly as validator B screened it (the calldata's
+   * text, a re-run tool's own text): `screen` records one of them. `null` for a Nansen string read back
+   * from a recorded answer, which the output cap may have shortened after screening.
+   */
+  chunks: readonly string[] | null;
+}
+
+/** Fields derived exactly as validator B screened them: a result must be one of their guard chunks. */
+function exactly(fields: readonly UntrustedField[]): ScreenedField[] {
+  return fields.map((f) => ({ source: f.source, text: f.text, chunks: chunkText(f.text, RISK_V1.guardChunkChars, RISK_V1.guardChunkOverlap) }));
+}
+
+/** Fields read back from a recorded (capped) answer: a result's text is a substring of the field, or the field a prefix of it. */
+function asRecorded(fields: readonly UntrustedField[]): ScreenedField[] {
+  return fields.map((f) => ({ source: f.source, text: f.text, chunks: null }));
+}
+
 /**
- * Whether `result` can stand for `field`'s screening: the same source, a non-empty text, and that text
- * a substring of the field's (the guard records the highest-scoring chunk), or the field's text a prefix
- * of it (a string the output cap shortened after screening).
+ * Whether `result` can stand for `field`'s screening: the same source, a non-empty text, and, for an
+ * exactly derived field, that text one of the field's guard chunks (`screen` records the
+ * highest-scoring one, so a harmless fragment of a flagged text never matches); for a recorded Nansen
+ * string, that text a substring of the field's, or the field's text a prefix of it (a string the output
+ * cap shortened after screening).
  */
-function coversField(result: GuardResult, field: UntrustedField): boolean {
-  return result.source === field.source && result.text.length > 0 && (field.text.includes(result.text) || result.text.startsWith(field.text));
+function coversField(result: GuardResult, field: ScreenedField): boolean {
+  if (result.source !== field.source || result.text.length === 0) return false;
+  if (field.chunks !== null) return field.chunks.includes(result.text);
+  return field.text.includes(result.text) || result.text.startsWith(field.text);
 }
 
 /**
@@ -410,10 +434,10 @@ function coversField(result: GuardResult, field: UntrustedField): boolean {
  * no order is required. A maximum bipartite matching (augmenting paths), so the answer never depends on
  * the order fields or results are tried in.
  */
-function coversAll(fields: readonly UntrustedField[], results: readonly GuardResult[]): boolean {
+function coversAll(fields: readonly ScreenedField[], results: readonly GuardResult[]): boolean {
   const owner: Array<number | undefined> = new Array(results.length);
   const assign = (f: number, seen: Set<number>): boolean => {
-    const field = fields[f] as UntrustedField;
+    const field = fields[f] as ScreenedField;
     for (let r = 0; r < results.length; r++) {
       if (seen.has(r) || !coversField(results[r] as GuardResult, field)) continue;
       seen.add(r);

@@ -36,7 +36,9 @@
  * **Failures.** A transient provider failure (`isTransientError`) rejects the whole run, with no
  * partial result (Decision 6). Invalid model output — a `tool_use_failed` in the loop (the same turn
  * is re-asked), a `json_validate_failed` on the final call (the same request is re-sent), or a final
- * answer zod rejects (re-asked with our fixed error text) — shares one budget of
+ * answer zod rejects (re-asked with our fixed error text), or a final answer that calls a tool
+ * ({@link FINAL_TOOL_CALLS_ERROR}: not recorded as a turn, so the record never holds a tool call
+ * without its answer, though its usage still counts) — shares one budget of
  * `RISK_V1.invalidOutputRetries` retries (Decision 7); once it's spent, `findings` is `null`.
  * Anything else (a chain read failing inside a tool, the guard failing) rethrows.
  */
@@ -62,6 +64,14 @@ export interface AgentResult {
   findings: Finding[] | null;
   usage: { prompt: number; completion: number; total: number };
 }
+
+/**
+ * Our fixed error text for a final answer that calls a tool: the final request offers no tools, so such
+ * an answer is invalid output (it counts against the shared retry budget and is re-asked with this
+ * text). It is never recorded as a turn, so the evidence never holds a tool call without its answer
+ * (`verify` requires every recorded tool call to be answered exactly once).
+ */
+export const FINAL_TOOL_CALLS_ERROR = "the final answer called a tool, but the final answer has no tools";
 
 /** The answer to a call that is not run (Decision 21); a fresh object each time, so no two records share one. */
 function toolCallLimit(): JsonValue {
@@ -295,7 +305,8 @@ export async function runAgent(o: {
   };
 
   /** One model call: the response (recorded), or the provider's failed generation for invalid output. */
-  const ask = async (request: ChatRequest): Promise<{ response: ChatResponse } | { invalid: string }> => {
+  /** One model call: the response (its usage counted), or the provider's failed generation for invalid output. Records nothing. */
+  const complete = async (request: ChatRequest): Promise<{ response: ChatResponse } | { invalid: string }> => {
     let response: ChatResponse;
     try {
       response = await llm.complete(request);
@@ -304,11 +315,26 @@ export async function runAgent(o: {
       if (error instanceof ProviderError && error.kind === "invalid_output") return { invalid: error.failedGeneration ?? "" };
       throw error;
     }
-    turns.push(turnRecord(response));
     usage.prompt += response.usage.prompt;
     usage.completion += response.usage.completion;
     usage.total += response.usage.total;
     return { response };
+  };
+
+  /** A tool-loop call: every response is recorded. */
+  const ask = async (request: ChatRequest): Promise<{ response: ChatResponse } | { invalid: string }> => {
+    const answer = await complete(request);
+    if ("response" in answer) turns.push(turnRecord(answer.response));
+    return answer;
+  };
+
+  /** A final call: recorded too, except an answer that calls a tool, which is invalid output ({@link FINAL_TOOL_CALLS_ERROR}). */
+  const askFinal = async (request: ChatRequest): Promise<{ response: ChatResponse } | { invalid: string } | { calledTool: string }> => {
+    const answer = await complete(request);
+    if (!("response" in answer)) return answer;
+    if (answer.response.toolCalls.length > 0) return { calledTool: answer.response.content ?? "" };
+    turns.push(turnRecord(answer.response));
+    return answer;
   };
 
   const answerLimit = (turn: ChatMessage[], call: { id: string; name: string }, args: JsonValue): void => {
@@ -377,10 +403,15 @@ export async function runAgent(o: {
   let attempts = 0;
   for (;;) {
     attempts++;
-    const answer = await ask(finalRequest(model, [...base, ...extra]));
+    const answer = await askFinal(finalRequest(model, [...base, ...extra]));
     if ("invalid" in answer) {
       if (budgetSpent()) return result({ raw: answer.invalid, attempts }, null);
       continue; // re-send the same request
+    }
+    if ("calledTool" in answer) {
+      if (budgetSpent()) return result({ raw: answer.calledTool, attempts }, null);
+      extra = reaskMessages(model, base, answer.calledTool, FINAL_TOOL_CALLS_ERROR, citable);
+      continue;
     }
     const raw = answer.response.content ?? "";
     const parsed = parseModelOutput(raw, called);

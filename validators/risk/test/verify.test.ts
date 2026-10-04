@@ -274,6 +274,17 @@ describe("verifyRiskRequest: an honest verdict", () => {
     expect(await verify(rhB)).toMatchObject({ verdict: "match", recomputed: { score: 40 } });
   });
 
+  it("calldata text longer than one guard chunk: the recorded (highest-scoring) chunk covers it", async () => {
+    const text = `${"x".repeat(420)} ${INJECTION}`;
+    const { rhB, doc } = await honest({ steps: riskyRun(), data: calldataWith(text) });
+    const [result] = doc.classifier.results;
+    expect(result).toMatchObject({ source: "calldata_text", flagged: true });
+    // The second chunk (from 360) is the flagged one, not the start of the text.
+    expect(text.startsWith(result!.text)).toBe(false);
+    expect(text.includes(result!.text)).toBe(true);
+    expect(await verify(rhB)).toMatchObject({ verdict: "match", recomputed: { reasons: ["FUNDS_FORWARDED", PROMPT_INJECTION_SUSPECTED] } });
+  });
+
   it("an answer never shown to the model (TOOL_CALL_LIMIT) needs no classifier result", async () => {
     reader.traceResult = revertingTrace("a benign revert reason");
     const calls = Array.from({ length: RISK_V1.maxToolCalls + 2 }, () => toolCall("simulate_action"));
@@ -457,6 +468,51 @@ describe("verifyRiskRequest: tampering is a mismatch", () => {
     const moved = clone(doc);
     moved.classifier.results[0]!.source = "tool:simulate_action";
     post(rhB, moved);
+    expectProblem(await verify(rhB), "FINDINGS_MISMATCH");
+  });
+
+  it("a result whose text is a fragment, not one of the field's guard chunks → FINDINGS_MISMATCH", async () => {
+    // A harmless fragment of a flagged calldata text, recorded with a genuine low score.
+    const text = `${"x".repeat(420)} ${INJECTION}`;
+    const calldata = await honest({ steps: riskyRun(), data: calldataWith(text) });
+    const fragment = clone(calldata.doc);
+    fragment.classifier.results[0] = { source: "calldata_text", text: "x".repeat(300), score: "0.00038913910975679755", flagged: false };
+    fragment.findings = fragment.findings.filter((f) => f.origin === "model");
+    fragment.reasons = ["FUNDS_FORWARDED"];
+    post(calldata.rhB, fragment);
+    expectProblem(await verify(calldata.rhB), "FINDINGS_MISMATCH");
+
+    // The same for a simulation's revert reason.
+    reader.traceResult = revertingTrace(`harmless prefix; ${INJECTION}`);
+    const revert = await honest({ steps: steps([toolCall("simulate_action")]) });
+    const cut = clone(revert.doc);
+    cut.classifier.results[0] = { source: "tool:simulate_action", text: "harmless prefix", score: "0.00038913910975679755", flagged: false };
+    cut.findings = [];
+    cut.reasons = [];
+    cut.score = 100;
+    post(revert.rhB, cut);
+    expectProblem(await verify(revert.rhB), "FINDINGS_MISMATCH");
+  });
+
+  it("each field needs its own result: two identical revert reasons with one result dropped → FINDINGS_MISMATCH", async () => {
+    reader.traceResult = revertingTrace("a benign revert reason");
+    const { rhB, doc } = await honest({ steps: steps([toolCall("simulate_action")], [toolCall("simulate_action")]) });
+    expect(doc.classifier.results.map((r) => r.text)).toEqual(["a benign revert reason", "a benign revert reason"]);
+    expect((await verify(rhB)).verdict).toBe("match");
+    const one = clone(doc);
+    one.classifier.results.pop();
+    post(rhB, one);
+    expectProblem(await verify(rhB), "FINDINGS_MISMATCH");
+  });
+
+  it("each Nansen label needs its own result: two identical labels with one result dropped → FINDINGS_MISMATCH", async () => {
+    const profile = { available: true, labels: [{ label: "Same label", category: "a", kind: [] }, { label: "Same label", category: "b", kind: [] }], firstFunder: null };
+    const { rhB, doc } = await honest({ steps: steps([toolCall("nansen_counterparty_profile", { address: PASS_THROUGH })]), nansen: availableNansen([profile]) });
+    expect(doc.classifier.results).toHaveLength(2);
+    expect((await verify(rhB)).verdict).toBe("match");
+    const one = clone(doc);
+    one.classifier.results.pop();
+    post(rhB, one);
     expectProblem(await verify(rhB), "FINDINGS_MISMATCH");
   });
 
