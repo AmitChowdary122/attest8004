@@ -118,18 +118,21 @@ and take a few minutes each.
 ```bash
 pnpm --filter @attest8004/scripts hot-keys                     # one hot key per demo agent into .env; prints addresses only
 pnpm --filter @attest8004/scripts setup-demo-agents            # register agents, approve the forwarder per agent, set each agent's key
-pnpm --filter @attest8004/scripts setup-demo-agents -- --fund  # top agent 1984's hot key up to 12 requests (two e2e runs), 1985's up to 4
+pnpm --filter @attest8004/scripts setup-demo-agents -- --fund  # top agent 1984's hot key up to 8 requests (one e2e run + 2 spare), 1985's up to 4
 pnpm --filter @attest8004/scripts setup-demo-agents -- --fund-validator    # top validator A up to 2 MON
 pnpm --filter @attest8004/scripts setup-demo-agents -- --fund-validator-b  # top validator B up to 1 MON
 pnpm --filter @attest8004/scripts set-mandate                  # agent 1984's e2e mandate: the deployer and the DemoPassThrough (owner-set until P6's passkeys)
 pnpm --filter @attest8004/scripts set-mandate -- --force       # set the same mandate again: a new MandateSet baseline
+# after a new mandate is set, wait about 31 minutes (6,000 blocks) before the e2e: it refuses to start sooner
 pnpm --filter @attest8004/scripts e2e                          # hot key -> forwarder -> mandate-v1 and risk-v1 -> gated execute; verify all six
 pnpm --filter @attest8004/scripts gated-execute                # P2: the superseded agent-1982 vault, owner requests directly
 ```
 
 The e2e runs both validators in-process, so **stop the `mandate-v1` and `risk-v1` services (below) before running
 it**: a running service would sign with the same validator key as the e2e, and two processes answering the same
-requests would race (each validator's pinned block also assumes one process per key).
+requests would race (each validator's pinned block also assumes one process per key). **After `set-mandate` sets a
+new mandate, wait about 31 minutes before the e2e.** `risk-v1`'s `recent_permission_events` reads the last 6,000
+blocks, so it would show the fresh `MandateSet`, and the e2e's preflight refuses to start until it is that old.
 
 To run validator A as a long-lived `mandate-v1` service (it needs
 `VALIDATOR_A_PRIVATE_KEY` and `MONAD_TESTNET_RPC_URL`; the optional `MANDATE_V1_*` settings are in `.env.example`):

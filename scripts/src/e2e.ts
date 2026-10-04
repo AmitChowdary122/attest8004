@@ -16,9 +16,12 @@
  *      keccak256("risk-v1")), the forwarder, the per-token approval (and no blanket approval), agent 1984's registered
  *      hot key and its mandate (the e2e mandate: the deployer and the DemoPassThrough, unexpired, set by the agent's
  *      current owner), the DemoPassThrough and its sink, both validators' keys against DEPLOYMENTS.validators, the
- *      balances (A at least 1 MON, B at least 0.5 MON, the hot key 6 forwarded requests at the current max fee), the
- *      LLM settings, and agent 1984's counted spend: S and R must both still fit under the daily cap, or the run
- *      stops before sending anything.
+ *      balances (A at least 1 MON, B at least 0.5 MON, the hot key 6 forwarded requests at the current max fee, the
+ *      deployer the vault's top-up plus the fund's and execute(S)'s gas with a 50% margin), the mandate's age (set at
+ *      least 6,000 blocks ago, about 31 minutes, so risk-v1's recent_permission_events doesn't show its MandateSet),
+ *      the LLM settings and a zero-token GET /models on B's endpoint (the key works and both models are listed;
+ *      never a completion), and agent 1984's counted spend: S and R must both still fit under the daily cap. Any
+ *      failure stops the run before it sends anything.
  *   2. Fund the vault up to 0.01 MON if it holds less than the three actions' values together (0.005 MON).
  *   3. Build S, R and O, all expiring 1,800 s after the latest block.
  *   4. Simulate (never send) two refused requests: the owner, and agent 1985's hot key, calling the forwarder for
@@ -30,12 +33,15 @@
  *      Groq's free tier, so each of its checks takes a few minutes; it waits for A's verdict on the same action
  *      first). A: S 100 and R 100 with no reasons; O 0 with [TARGET_NOT_ALLOWED, VALUE_OVER_TX_CAP], plus
  *      DAILY_CAP_EXCEEDED when its own evidence's spend (which must count S and R) plus 0.003 MON is over the
- *      0.005 MON daily cap. B: S at least 80; R 0 with at least one high finding; O answered. Every finding is printed.
+ *      0.005 MON daily cap. B: S at least 80; R 0 with at least one high finding; O answered. Both validators'
+ *      evidence (A's reasons; B's findings, models, tokens and sizes) is printed before any score is asserted.
  *   7. Simulate execute(R): ScoreTooLow(validator B, R's request to B, 0, 80); and execute(O): ScoreTooLow(validator A,
  *      O's request to A, 0, 100). Freshly started validators re-read the same blocks and must skip all 6
  *      (ALREADY_RESPONDED), validator B without a single model or guard call; exactly one response exists for each.
- *   8. awaitVerdict and isValidated confirm S; the deployer submits execute(S) (permissionless). Check the
- *      ActionConsumed event, the vault's balance and consumed(); a replay must be refused (ActionAlreadyConsumed).
+ *      The restart may take at most 5 minutes, and never past S's deadline minus 120 s (left for execute(S)).
+ *   8. awaitVerdict and isValidated confirm S; the deployer submits execute(S) (permissionless), never with less
+ *      than 60 s before S's deadline. Check the ActionConsumed event, the vault's balance and consumed(); a replay
+ *      must be refused (ActionAlreadyConsumed).
  *   9. verifyRequest re-runs A's three verdicts at their pinned blocks, and verifyRiskRequest re-checks B's three
  *      from their public evidence (the score from the recorded findings, every onchain tool call re-run at the
  *      pinned block, A's verdict there; the model output is recorded, not re-run). All six must match.
@@ -131,6 +137,7 @@ import {
 } from "@attest8004/validator-risk";
 import { assertChain, chain, check, mon, printTx, publicClient, requireAddress, requireEnv, walletFor } from "./common.ts";
 import { dailyCapShortfall, expectedReasonsO } from "./e2e-cap.ts";
+import { checkModelsEndpoint, deployerNeed, deployerShortfall, executeTimeLeft, permissionWindowWait, restartBudget } from "./e2e-preflight.ts";
 
 /**
  * Explicit gas limits (Monad charges for the limit): Monad testnet eth_estimateGas x 1.2, rounded up to 1k.
@@ -199,9 +206,20 @@ const REQUESTS = 6n;
 const TIMEOUT_MS = 25 * 60_000;
 /**
  * The restarted validators only re-read the same blocks and skip, but by then the head is some 5,000 blocks past the
- * first request (0.3 s blocks), about 50 eth_getLogs windows each.
+ * first request (0.3 s blocks), about 50 eth_getLogs windows each. Capped further so EXECUTE_MARGIN_SECONDS still
+ * remain before S's deadline.
  */
 const RESTART_TIMEOUT_MS = 300_000;
+/** The restart check stops this long before S's deadline, leaving the time for execute(S). */
+const EXECUTE_MARGIN_SECONDS = 120n;
+/** execute(S) is never sent with less than this left before S's deadline. */
+const EXECUTE_MIN_SECONDS = 60n;
+/** The deployer must hold the vault top-up plus the fund's and execute(S)'s gas at the max fee, with this much on the gas. */
+const DEPLOYER_GAS_MARGIN_PERCENT = 50;
+/** The zero-token LLM endpoint check (GET /models) gives up after this long. */
+const LLM_PREFLIGHT_TIMEOUT_MS = 10_000;
+/** Monad testnet's block time, measured on 3 Oct 2026: only to say about how many minutes a wait in blocks is. */
+const MS_PER_BLOCK = 305n;
 
 /** Agent 1984's e2e mandate (scripts/src/set-mandate.ts): the expected verdicts depend on exactly these values. */
 const E2E_MANDATE = {
@@ -340,22 +358,23 @@ async function checkSent(label: string, hash: Hash, from: Address, gasLimit: big
 }
 
 /**
- * Polls `validator` until it has an outcome for every one of `requestHashes`, `giveUpAt` passes, or `stop` aborts
- * (the other validator failed). Outcomes for other requests (anyone may ask either validator) are left to the
- * validator; a request it gives up on fails the run.
+ * Polls `validator` until it has an outcome for every one of `requestHashes`, `giveUpAt` passes (`budget` names it
+ * in the error), or `stop` aborts (the other validator failed). Outcomes for other requests (anyone may ask either
+ * validator) are left to the validator; a request it gives up on fails the run.
  */
 async function pollUntilAll(
   name: string,
   validator: ValidatorBase,
   requestHashes: readonly Hex[],
   giveUpAt: number,
+  budget: string,
   stop: AbortSignal,
 ): Promise<Map<Hex, Outcome>> {
   const wanted = new Set(requestHashes.map(lower));
   const found = new Map<Hex, Outcome>();
   for (;;) {
     if (stop.aborted) throw new Error(`${name}: stopped, since the other validator failed`);
-    if (Date.now() > giveUpAt) throw new Error(`${name}: no outcome for every request before the deadline (${found.size}/${wanted.size})`);
+    if (Date.now() > giveUpAt) throw new Error(`${name}: no outcome for every request within ${budget} (${found.size}/${wanted.size})`);
     const { outcomes, caughtUp, retryAfterMs } = await validator.pollOnce();
     for (const outcome of outcomes) {
       const key = lower(outcome.requestHash);
@@ -378,12 +397,13 @@ async function pollUntilAll(
 async function pollAll(
   jobs: readonly { name: string; validator: ValidatorBase; requestHashes: readonly Hex[] }[],
   timeoutMs: number,
+  budget: string,
 ): Promise<Map<Hex, Outcome>> {
   const stop = new AbortController();
   const giveUpAt = Date.now() + timeoutMs;
   const results = await Promise.all(
     jobs.map((job) =>
-      pollUntilAll(job.name, job.validator, job.requestHashes, giveUpAt, stop.signal).catch((error: unknown) => {
+      pollUntilAll(job.name, job.validator, job.requestHashes, giveUpAt, budget, stop.signal).catch((error: unknown) => {
         stop.abort();
         throw error;
       }),
@@ -557,6 +577,8 @@ async function main(): Promise<void> {
     validatorABalance,
     validatorBBalance,
     hotBalance,
+    ownerBalance,
+    vaultBalance,
     fees,
     latest,
   ] = await Promise.all([
@@ -579,6 +601,8 @@ async function main(): Promise<void> {
     publicClient.getBalance({ address: validatorA.address }),
     publicClient.getBalance({ address: validatorB.address }),
     publicClient.getBalance({ address: hotKey.address }),
+    publicClient.getBalance({ address: owner.address }),
+    publicClient.getBalance({ address: vault }),
     publicClient.estimateFeesPerGas(),
     publicClient.getBlock(),
   ]);
@@ -660,6 +684,53 @@ async function main(): Promise<void> {
   check(`validator B holds at least ${mon(MIN_VALIDATOR_B_BALANCE)}`, validatorBBalance >= MIN_VALIDATOR_B_BALANCE, mon(validatorBBalance));
   const requestsCost = REQUESTS * DEFAULT_GAS.forwarderRequest * fees.maxFeePerGas;
   check(`the hot key can pay for ${REQUESTS} requests (${mon(requestsCost)})`, hotBalance >= requestsCost, mon(hotBalance));
+  // The deployer pays for the vault's top-up (if any) and execute(S).
+  const deployerCost = deployerNeed({
+    vaultBalance,
+    fundBelow: FUND_BELOW,
+    fundTarget: FUND_TARGET,
+    fundGas: GAS.fund,
+    executeGas: GAS.execute,
+    maxFeePerGas: fees.maxFeePerGas,
+    marginPercent: DEPLOYER_GAS_MARGIN_PERCENT,
+  });
+  const deployerShort = deployerShortfall({ held: ownerBalance, need: deployerCost, marginPercent: DEPLOYER_GAS_MARGIN_PERCENT });
+  if (deployerShort !== null) throw new Error(`check failed: ${deployerShort}`);
+  check(
+    `the deployer can pay for the vault top-up and execute(S) (${mon(deployerCost.total)} with a ${DEPLOYER_GAS_MARGIN_PERCENT}% gas margin)`,
+    ownerBalance >= deployerCost.total,
+    mon(ownerBalance),
+  );
+  // risk-v1's recent_permission_events would show a MandateSet from the last window: S could get a finding for it.
+  const permissionWait = permissionWindowWait({
+    agentId,
+    latestBlock: latest.number,
+    setAtBlock,
+    windowBlocks: MANDATE_V1.permissionWindowBlocks,
+    msPerBlock: MS_PER_BLOCK,
+  });
+  if (permissionWait !== null) throw new Error(`check failed: ${permissionWait}`);
+  check(
+    `the mandate was set at least ${MANDATE_V1.permissionWindowBlocks} blocks ago (block ${setAtBlock}, latest ${latest.number})`,
+    latest.number - setAtBlock >= MANDATE_V1.permissionWindowBlocks,
+    String(latest.number - setAtBlock),
+  );
+  // Validator B's endpoint and key, without spending a token: GET /models, never a completion.
+  const endpoint = await checkModelsEndpoint({
+    baseUrl: LLM.baseUrl,
+    apiKey: LLM.apiKey,
+    models: [LLM.model, RISK_V1.guardModel],
+    fetch,
+    timeoutMs: LLM_PREFLIGHT_TIMEOUT_MS,
+  });
+  if (!endpoint.ok) throw new Error(`check failed: ${endpoint.message}`);
+  check(
+    endpoint.listed
+      ? `B's LLM endpoint answered GET /models and lists ${LLM.model} and ${RISK_V1.guardModel}`
+      : "B's LLM endpoint answered GET /models (its answer isn't a model listing, so the models weren't checked)",
+    true,
+    "",
+  );
 
   // The daily cap, before anything is sent: agent 1984's counted spend as mandate-v1 reads it (the same collector),
   // at the finalized head. S and R must both still fit under the cap (A checks R with S's approval counted), or
@@ -681,7 +752,6 @@ async function main(): Promise<void> {
   // 2. Fund the vault if it can't cover all three actions (each is simulated at its own pinned block, before S executes).
   const txs: Record<string, Hash> = {};
   const ownerWallet = walletFor(owner);
-  const vaultBalance = await publicClient.getBalance({ address: vault });
   let fundGas: { estimate: bigint; limit: bigint } | undefined;
   if (vaultBalance < FUND_BELOW) {
     const sent = await sendWithGasGuard({
@@ -791,6 +861,7 @@ async function main(): Promise<void> {
       { name: "B", validator: riskValidator(firstBlock, "B", { llm: mainModel.client, guard: guardModel.client }), requestHashes: hashesB },
     ],
     TIMEOUT_MS,
+    `the shared ${TIMEOUT_MS / 60_000}-minute deadline`,
   );
   const outcome = (label: Label, side: Side) => outcomes.get(hashOf(label, side));
   // Each validator answered each of its requests (a decline is printed with its reason); the scores are checked
@@ -839,38 +910,22 @@ async function main(): Promise<void> {
     return found;
   };
 
-  // A: S and R pass cleanly; O's reasons follow from O's own spend, which counts S and R.
+  // Both validators' verdicts and evidence are printed first, before any score is asserted, so a failed check
+  // still leaves everything on screen: A's reasons, and B's findings, models, tokens and sizes.
   console.log(`\n${MANDATE_V1.tag} verdicts (validator A)`);
-  for (const [label, score] of [
-    ["S", 100],
-    ["R", 100],
-  ] as const) {
+  const mandateDocs = new Map<Label, ReturnType<typeof postedMandateEvidence>>();
+  for (const label of LABELS) {
     const evidence = postedMandateEvidence(`${label} <- A`, verdictOf(label, "A").responseURI);
-    console.log(`  ${label} <- A: score ${verdictOf(label, "A").response}, reasons ${json(evidence.reasons)}`);
-    check(`A on ${label}: ${score}, reasons []`, verdictOf(label, "A").response === score && json(evidence.reasons) === "[]", json(evidence.reasons));
+    mandateDocs.set(label, evidence);
+    console.log(
+      `  ${label} <- A: score ${verdictOf(label, "A").response}, reasons ${json(evidence.reasons)}, counted spend ${json(evidence.spend?.total)}`,
+    );
   }
-  const evidenceOA = postedMandateEvidence("O <- A", verdictOf("O", "A").responseURI);
-  console.log(`  O <- A: score ${verdictOf("O", "A").response}, reasons ${json(evidenceOA.reasons)}`);
-  check("A on O: 0", verdictOf("O", "A").response === 0, String(verdictOf("O", "A").response));
-  const spendTotalO = evidenceOA.spend?.total;
-  check("O <- A's evidence: a readable spend total", typeof spendTotalO === "string" && /^(0|[1-9]\d*)$/.test(spendTotalO), json(evidenceOA.spend));
-  for (const label of ["S", "R"] as const) {
-    const spent = evidenceOA.spend?.entries?.find((entry) => entry.requestHash.toLowerCase() === hashOf(label, "A"));
-    check(`O <- A's evidence: its spend counts ${label}`, spent?.counted === true, json(evidenceOA.spend));
-  }
-  const reasonsO = expectedReasonsO({ spendTotal: BigInt(spendTotalO as string), value: VALUE_O, maxValuePerDay: E2E_MANDATE.maxValuePerDay });
-  check(
-    `O <- A's evidence: reasons ${json(reasonsO)} (spend ${mon(BigInt(spendTotalO as string))} + ${mon(VALUE_O)}, cap ${mon(E2E_MANDATE.maxValuePerDay)})`,
-    json(evidenceOA.reasons) === json(reasonsO),
-    json(evidenceOA.reasons),
-  );
 
-  // B: every finding, the model it was served by, the tokens, the tools and the size; then the scores.
   console.log(`\n${RISK_V1.tag} verdicts (validator B)`);
   const riskDocs = new Map<Label, ReturnType<typeof postedRiskEvidence>>();
   for (const label of LABELS) {
-    const verdict = verdictOf(label, "B");
-    const evidence = postedRiskEvidence(`${label} <- B`, verdict.responseURI);
+    const evidence = postedRiskEvidence(`${label} <- B`, verdictOf(label, "B").responseURI);
     riskDocs.set(label, evidence);
     const { doc } = evidence;
     const gas = responseGas.get(hashOf(label, "B"));
@@ -895,6 +950,51 @@ async function main(): Promise<void> {
       // The explanation is the model's text: printed as a JSON string, so it can't carry terminal control characters.
       console.log(`    finding [${finding.severity}] ${finding.code} (${finding.origin}; sources ${json(finding.sources)}): ${json(finding.explanation)}`);
     }
+  }
+  console.log(
+    `  B's model calls this run: main ${mainModel.stats.calls} (served ${json(mainModel.stats.servedModels)}, ${mainModel.stats.usage.total} tokens), ` +
+      `guard ${guardModel.stats.calls} (served ${json(guardModel.stats.servedModels)}, ${guardModel.stats.usage.total} tokens)`,
+  );
+  const mandateDoc = (label: Label) => {
+    const found = mandateDocs.get(label);
+    if (!found) throw new Error(`no evidence recorded for ${label} <- A`);
+    return found;
+  };
+  const riskDoc = (label: Label) => {
+    const found = riskDocs.get(label);
+    if (!found) throw new Error(`no evidence recorded for ${label} <- B`);
+    return found.doc;
+  };
+
+  // A: S and R pass cleanly; O's reasons follow from O's own spend, which counts S and R.
+  console.log(`\n${MANDATE_V1.tag} checks`);
+  for (const [label, score] of [
+    ["S", 100],
+    ["R", 100],
+  ] as const) {
+    const { reasons } = mandateDoc(label);
+    check(`A on ${label}: ${score}, reasons []`, verdictOf(label, "A").response === score && json(reasons) === "[]", json(reasons));
+  }
+  const evidenceOA = mandateDoc("O");
+  check("A on O: 0", verdictOf("O", "A").response === 0, String(verdictOf("O", "A").response));
+  const spendTotalO = evidenceOA.spend?.total;
+  check("O <- A's evidence: a readable spend total", typeof spendTotalO === "string" && /^(0|[1-9]\d*)$/.test(spendTotalO), json(evidenceOA.spend));
+  for (const label of ["S", "R"] as const) {
+    const spent = evidenceOA.spend?.entries?.find((entry) => entry.requestHash.toLowerCase() === hashOf(label, "A"));
+    check(`O <- A's evidence: its spend counts ${label}`, spent?.counted === true, json(evidenceOA.spend));
+  }
+  const reasonsO = expectedReasonsO({ spendTotal: BigInt(spendTotalO as string), value: VALUE_O, maxValuePerDay: E2E_MANDATE.maxValuePerDay });
+  check(
+    `O <- A's evidence: reasons ${json(reasonsO)} (spend ${mon(BigInt(spendTotalO as string))} + ${mon(VALUE_O)}, cap ${mon(E2E_MANDATE.maxValuePerDay)})`,
+    json(evidenceOA.reasons) === json(reasonsO),
+    json(evidenceOA.reasons),
+  );
+
+  // B: each verdict ran on A's verdict for the same action; then the scores.
+  console.log(`\n${RISK_V1.tag} checks`);
+  for (const label of LABELS) {
+    const doc = riskDoc(label);
+    const verdict = verdictOf(label, "B");
     check(`${label} <- B's evidence: the score is the posted ${verdict.response}`, doc.score === verdict.response, String(doc.score));
     check(
       `${label} <- B's evidence: it ran on A's verdict on the same action (${verdictOf(label, "A").response})`,
@@ -903,17 +1003,13 @@ async function main(): Promise<void> {
     );
   }
   check(`B on S: at least ${MIN_SCORE_B}`, verdictOf("S", "B").response >= MIN_SCORE_B, String(verdictOf("S", "B").response));
-  const findingsR = riskDocs.get("R")?.doc.findings ?? [];
+  const findingsR = riskDoc("R").findings;
   check(
     "B on R: 0, with at least one high finding",
     verdictOf("R", "B").response === 0 && findingsR.some((finding) => finding.severity === "high"),
     json({ score: verdictOf("R", "B").response, findings: findingsR.map((finding) => `${finding.severity} ${finding.code}`) }),
   );
   console.log(`  B on O: ${verdictOf("O", "B").response} (not asserted: B runs on O to explain A's refusal)`);
-  console.log(
-    `  B's model calls this run: main ${mainModel.stats.calls} (served ${json(mainModel.stats.servedModels)}, ${mainModel.stats.usage.total} tokens), ` +
-      `guard ${guardModel.stats.calls} (served ${json(guardModel.stats.servedModels)}, ${guardModel.stats.usage.total} tokens)`,
-  );
 
   // 7. The gate refuses R at B and O at A (A's requirement is checked first).
   console.log("\nrefusals (simulated)");
@@ -923,6 +1019,15 @@ async function main(): Promise<void> {
   check("isValidated(O) is false", !(await client.isValidated({ gate: vault, action: actions.O })), "true");
 
   console.log("\nrestart (fresh validators re-read the same blocks)");
+  // The restart check must leave execute(S) its time before S's deadline (chain time).
+  const restartAt = await publicClient.getBlock();
+  const restart = restartBudget({
+    deadline: actions.S.deadline,
+    now: restartAt.timestamp,
+    executeMarginSeconds: EXECUTE_MARGIN_SECONDS,
+    maxMs: RESTART_TIMEOUT_MS,
+  });
+  if (!restart.ok) throw new Error(`check failed: ${restart.message}`);
   const restartModel = counted(llm);
   const restartGuard = counted(guardClient);
   const again = await pollAll(
@@ -934,7 +1039,8 @@ async function main(): Promise<void> {
         requestHashes: hashesB,
       },
     ],
-    RESTART_TIMEOUT_MS,
+    restart.ms,
+    `the restart's ${restart.ms} ms (S's deadline minus ${EXECUTE_MARGIN_SECONDS} s for execute(S), at most ${RESTART_TIMEOUT_MS} ms)`,
   );
   for (const label of LABELS) {
     for (const side of ["A", "B"] as const) {
@@ -967,6 +1073,8 @@ async function main(): Promise<void> {
 
   // 8. Anyone may execute the approved action.
   console.log("\nexecute S");
+  const tooLate = executeTimeLeft({ deadline: actions.S.deadline, now: (await publicClient.getBlock()).timestamp, minSeconds: EXECUTE_MIN_SECONDS });
+  if (tooLate !== null) throw new Error(`check failed: ${tooLate}`);
   check("isValidated(S) before execute (both verdicts, both tags)", await client.isValidated({ gate: vault, action: actions.S }), "false");
   const executed = await writeWithGasGuard({
     publicClient,

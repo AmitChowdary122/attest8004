@@ -13,7 +13,7 @@
  *      baseline mandate-v1 orders permission events against (after an owner-intended permission
  *      change, say).
  *   2. Otherwise calls setMandate(1984, mandate) from the deployer (the agent's current owner),
- *      with a literal gas limit.
+ *      with an explicit gas limit: the fresh estimate x 1.2, capped at 306,000.
  *   3. Reads getMandate(1984) back and checks every field (the targets exactly [deployer,
  *      DemoPassThrough], in that order) and that owner == deployer, then checks
  *      the same thing mandate-v1 itself would check before trusting this mandate: no permission
@@ -27,8 +27,10 @@
  * Run: pnpm --filter @attest8004/scripts set-mandate [-- --force]   (Node loads ../.env into the environment)
  *
  * Re-runnable: step 2 is skipped once the stored hash matches the constants below (unless --force).
- * Step 3's permission-window check runs either way. Needs DEPLOYER_PRIVATE_KEY. Every transaction has a
- * literal gas limit and goes through the SDK's estimate guard.
+ * Step 3's permission-window check runs either way. Needs DEPLOYER_PRIVATE_KEY. Every transaction has an
+ * explicit gas limit and goes through the SDK's estimate guard. After a new mandate is set, wait about 31
+ * minutes (6,000 blocks) before the e2e: its preflight refuses to start sooner (risk-v1's
+ * recent_permission_events would show the fresh MandateSet).
  */
 import { getAbiItem, getAddress, parseEther, type AbiEvent, type Address, type Hex } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
@@ -44,13 +46,15 @@ import { assertChain, chain, check, printTx, publicClient, requireEnv, walletFor
 import { permissionChangedMessage, shouldSendMandate } from "./set-mandate-plan.ts";
 
 /**
- * Explicit gas limit: Monad testnet eth_estimateGas on 3 Oct 2026 x 1.2, rounded up to 1k.
- * setMandate(1984, mandate) with the P4 constants (one target, the first mandate set) estimated
- * 254,362. Replacing that mandate with the P5 one (two targets) costs less, since most of its slots
- * are already non-zero: in forge with Monad gas, the first set measured 243,901 execution gas and
- * the one-to-two-target replacement 118,165 (4 Oct 2026). The guard re-checks a fresh estimate.
+ * Explicit gas limit, as the guard's evidence-sized policy: the fresh estimate x 1.2, rounded up, and
+ * never above 306,000 (Monad charges the whole limit, so a literal sized for the costliest case
+ * overpays every other one). setMandate(1984, mandate) with the P4 constants (one target, the first
+ * mandate set) estimated 254,362 on Monad testnet (3 Oct 2026); 306,000 is that x 1.2, rounded up
+ * to 1k. Replacing that mandate with the P5 one (two targets) costs less, since most of its slots are
+ * already non-zero: in forge with Monad gas, the first set measured 243,901 execution gas and the
+ * one-to-two-target replacement 118,165 (4 Oct 2026).
  */
-const GAS = { setMandate: 306_000n } as const;
+const GAS = { setMandate: { headroomPercent: 20, max: 306_000n } } as const;
 
 /**
  * mandate-v1's own permission-change window (constraints N = 6,000 blocks, about 30 min): it fails

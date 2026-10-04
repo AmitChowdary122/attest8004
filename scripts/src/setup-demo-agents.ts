@@ -13,7 +13,7 @@
  *   4. Estimates forwarder.request from each hot key (a representative request JSON v1) and checks
  *      it against DEFAULT_GAS.forwarderRequest.
  *   5. Only with --fund: tops each hot key up to its agent's FUNDED_REQUESTS requests at the current
- *      max fee (agent 1984: 12, two P5 e2e runs of 6 requests each; agent 1985: 4).
+ *      max fee (agent 1984: 8, one P5 e2e run of 6 requests and 2 spare; agent 1985: 4).
  *   6. Only with --fund-validator: tops validator A up to VALIDATOR_FUND_TARGET.
  *   7. Only with --fund-validator-b: tops validator B (`risk-v1`, DEPLOYMENTS.validators.riskV1) up
  *      to VALIDATOR_B_FUND_TARGET, then reads its balance back.
@@ -67,11 +67,11 @@ const GAS = {
 
 /**
  * Each agent's hot key holds enough MON for this many forwarded requests, at the current max fee:
- * agent 1984's for two P5 e2e runs (each requests three actions from both validators, 6 requests),
- * agent 1985's for a few (the e2e only simulates a request from it).
+ * agent 1984's for one P5 e2e run (three actions from both validators, 6 requests) and 2 spare, so
+ * the deployer keeps its margin; agent 1985's for a few (the e2e only simulates a request from it).
  */
 const FUNDED_REQUESTS: ReadonlyMap<bigint, bigint> = new Map([
-  [1984n, 12n],
+  [1984n, 8n],
   [1985n, 4n],
 ]);
 
