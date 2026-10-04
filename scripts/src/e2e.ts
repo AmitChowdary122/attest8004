@@ -1,40 +1,60 @@
 /**
- * End to end on Monad testnet with the `mandate-v1` validator (SPEC §4.4 and §4.5, GAMEPLAN P4): demo agent
- * 1984's hot key requests validation of two actions through the AgentRequestForwarder. Validator A, running
- * `mandate-v1`, approves the one inside the agent's mandate and refuses the one outside it. The approved action
- * executes through the DemoAgentVault, the gate refuses the other, and `verify` re-runs both verdicts from chain
- * data alone.
+ * End to end on Monad testnet with both reference validators (SPEC §4.4 to §4.6, GAMEPLAN P5): demo agent 1984's
+ * hot key requests validation of three actions through the AgentRequestForwarder, each from validator A (`mandate-v1`,
+ * deterministic) and validator B (`risk-v1`, agentic: onchain tools at a pinned block, a Groq-hosted model through an
+ * OpenAI-compatible endpoint, Prompt Guard screening, code-derived score). The two-validator DemoAgentVault requires A
+ * at 100 under `mandate-v1`, then B at 80 under `risk-v1`, and checks them in that order.
  *
- *   1. Preflight: the vault (agent 1984, validator A at 100), the forwarder, the per-token approval (and no blanket
- *      approval), agent 1984's registered hot key and its mandate (the e2e mandate, unexpired, set by the agent's
- *      current owner), the balances of validator A and the hot key, and agent 1984's counted spend: A must still
- *      fit under the daily cap, or the run stops before sending anything.
- *   2. Fund the vault with 0.01 MON if it holds less than both actions' values together.
- *   3. Build two actions, both expiring in 10 minutes. A sends 0.001 MON to the deployer, inside the mandate. B sends
- *      0.003 MON to an address no mandate lists, so it breaks two rules: the target and the per-tx cap.
+ *   S  0.001 MON to the deployer: inside the mandate and safe. A 100, B at least 80: it executes.
+ *   R  0.001 MON to the DemoPassThrough, which the mandate allowlists but which forwards every payment to SINK, an
+ *      address nobody controls. A 100 (allowlisted target, plain transfer, within the caps, the simulation
+ *      succeeds); B 0 with a high finding (the value leaves for an address outside the mandate). Refused at B.
+ *   O  0.003 MON to an address no mandate lists (P4's out-of-mandate action). A 0; B runs anyway, to explain why.
+ *      Refused at A, the first requirement.
+ *
+ *   1. Preflight: the vault (agent 1984; requirements exactly A at 100 with keccak256("mandate-v1"), then B at 80 with
+ *      keccak256("risk-v1")), the forwarder, the per-token approval (and no blanket approval), agent 1984's registered
+ *      hot key and its mandate (the e2e mandate: the deployer and the DemoPassThrough, unexpired, set by the agent's
+ *      current owner), the DemoPassThrough and its sink, both validators' keys against DEPLOYMENTS.validators, the
+ *      balances (A at least 1 MON, B at least 0.5 MON, the hot key 6 forwarded requests at the current max fee), the
+ *      LLM settings, and agent 1984's counted spend: S and R must both still fit under the daily cap, or the run
+ *      stops before sending anything.
+ *   2. Fund the vault up to 0.01 MON if it holds less than the three actions' values together (0.005 MON).
+ *   3. Build S, R and O, all expiring 1,800 s after the latest block.
  *   4. Simulate (never send) two refused requests: the owner, and agent 1985's hot key, calling the forwarder for
  *      agent 1984.
- *   5. Agent 1984's hot key requests validation of A, then of B, through the forwarder (Attest8004Client).
- *   6. One MandateValidator polls from A's block until it has answered both. A gets 100 with no reasons. B gets 0
- *      with [TARGET_NOT_ALLOWED, VALUE_OVER_TX_CAP], plus DAILY_CAP_EXCEEDED when its own evidence's spend (which
- *      must count A) plus 0.003 MON is over the 0.005 MON daily cap. Right after, execute(B) is
- *      simulated, and the gate refuses it (ScoreTooLow). A freshly started validator re-reads the same blocks and
- *      must not post again.
- *   7. awaitVerdict and isValidated confirm A's verdict; the deployer submits execute(A) (permissionless).
- *   8. Check the ActionConsumed event, the vault's balance and consumed(); a replay must be refused.
- *   9. verifyRequest re-runs both verdicts at their pinned blocks with a fresh reader. Both must match: the same
- *      score and the same responseHash.
+ *   5. Agent 1984's hot key requests validation of S, R and O through the forwarder (Attest8004Client), from A then B
+ *      for each action: 6 requests, before either validator runs.
+ *   6. Both validators run in this process as their services run them, from the first request's block, and poll
+ *      concurrently until each has answered its three, with one shared 25-minute deadline (risk-v1 is paced to
+ *      Groq's free tier, so each of its checks takes a few minutes; it waits for A's verdict on the same action
+ *      first). A: S 100 and R 100 with no reasons; O 0 with [TARGET_NOT_ALLOWED, VALUE_OVER_TX_CAP], plus
+ *      DAILY_CAP_EXCEEDED when its own evidence's spend (which must count S and R) plus 0.003 MON is over the
+ *      0.005 MON daily cap. B: S at least 80; R 0 with at least one high finding; O answered. Every finding is printed.
+ *   7. Simulate execute(R): ScoreTooLow(validator B, R's request to B, 0, 80); and execute(O): ScoreTooLow(validator A,
+ *      O's request to A, 0, 100). Freshly started validators re-read the same blocks and must skip all 6
+ *      (ALREADY_RESPONDED), validator B without a single model or guard call; exactly one response exists for each.
+ *   8. awaitVerdict and isValidated confirm S; the deployer submits execute(S) (permissionless). Check the
+ *      ActionConsumed event, the vault's balance and consumed(); a replay must be refused (ActionAlreadyConsumed).
+ *   9. verifyRequest re-runs A's three verdicts at their pinned blocks, and verifyRiskRequest re-checks B's three
+ *      from their public evidence (the score from the recorded findings, every onchain tool call re-run at the
+ *      pinned block, A's verdict there; the model output is recorded, not re-run). All six must match.
  *
  * Run: pnpm --filter @attest8004/scripts e2e   (Node loads ../.env into the environment)
+ * Stop both validator services first: this process signs with validator A's and validator B's keys, and two
+ * processes answering the same requests would race (each validator's pinned block also assumes one process per key).
  *
- * Keys come from environment variables and are never printed, nor is the RPC URL. Every transaction carries an
- * explicit gas limit, checked against a fresh estimate before it is sent, and the script reads each sent
- * transaction back to confirm the limit it carried. Refusals are simulated, never sent.
+ * Keys come from environment variables and are never printed, nor is the RPC URL, the LLM endpoint's URL or its key
+ * (only its host). Every transaction carries an explicit gas limit, checked against a fresh estimate before it is
+ * sent, and the script reads each sent transaction back to confirm the limit it carried. Refusals are simulated,
+ * never sent. Each run makes three risk-v1 checks, about 20,000 tokens each of the main model's 200,000 a day.
  *
- * Each run adds an approved 0.001 MON to agent 1984's daily spend (0.005 MON cap, 25 h window on approval
- * time). B's spend includes it, so from the third run in any 25 h B also gets DAILY_CAP_EXCEEDED, which the script
- * expects from B's own evidence. A fits under the cap for five runs in any 25 h; the preflight stops a sixth before
- * it sends anything and says when the oldest counted approval leaves the window.
+ * Each run adds an approved 0.001 MON (S, executed) to agent 1984's daily spend (0.005 MON cap, 25 h window on
+ * approval time), and an approved 0.001 MON (R, never executed) until R's deadline passes. O's spend counts both, so
+ * O also gets DAILY_CAP_EXCEEDED whenever anything earlier is counted, which the script expects from O's own
+ * evidence. With nothing else counted, S and R fit under the cap for four runs in any 25 h (at least 30 minutes
+ * apart, so the last run's R no longer counts); the preflight stops a fifth before it sends anything and says when
+ * the oldest counted approval leaves the window.
  */
 import {
   BaseError,
@@ -45,6 +65,7 @@ import {
   parseEther,
   parseEventLogs,
   slice,
+  stringToBytes,
   toBytes,
   zeroHash,
   type Abi,
@@ -63,10 +84,13 @@ import {
   attestGateAbi,
   blockWindows,
   buildAction,
+  buildRequestJson,
   computeActionHash,
   decodeJsonDataUri,
+  encodeJsonDataUri,
   identityRegistryAbi,
   mandateRegistryAbi,
+  requestHashOfJson,
   sendWithGasGuard,
   validationRegistryAbi,
   validationResponseEvent,
@@ -74,8 +98,10 @@ import {
   writeWithGasGuard,
   type Action,
   type Outcome,
+  type RequestedValidation,
   type ValidatorBase,
   type ValidatorChain,
+  type Verdict,
 } from "@attest8004/sdk";
 import {
   MANDATE_V1,
@@ -88,42 +114,94 @@ import {
   viemMandateReader,
   type VerifyReport,
 } from "@attest8004/validator-mandate";
+import {
+  RISK_V1,
+  RatePacer,
+  RiskValidator,
+  chatPromptGuard,
+  nansenClient,
+  openAiCompatibleClient,
+  parseRiskEvidence,
+  riskAddressesFor,
+  verifyRiskRequest,
+  viemRiskReader,
+  type ChatClient,
+  type RiskEvidence,
+  type RiskVerifyReport,
+} from "@attest8004/validator-risk";
 import { assertChain, chain, check, mon, printTx, publicClient, requireAddress, requireEnv, walletFor } from "./common.ts";
-import { dailyCapShortfall, expectedReasonsB } from "./e2e-cap.ts";
+import { dailyCapShortfall, expectedReasonsO } from "./e2e-cap.ts";
 
 /**
  * Explicit gas limits (Monad charges for the limit): Monad testnet eth_estimateGas x 1.2, rounded up to 1k.
- * fund 21,212 and execute 87,626 (P2, and again on 3 Oct 2026 in P3). The forwarded request uses the SDK's
- * DEFAULT_GAS.forwarderRequest.
+ * fund 21,212 (P2, and again on 3 Oct 2026 in P3). execute was 87,626 through the one-requirement P3 vault (P4).
+ * This vault also checks each verdict's tag, and reads a second verdict: in forge with Monad gas (cold, 4 Oct 2026)
+ * the second requirement added 12,631, so about 100,300, and 121,000 with the headroom. Provisional until this run
+ * prints the live estimate. The forwarded requests use the SDK's DEFAULT_GAS.forwarderRequest.
  */
 const GAS = {
   fund: 26_000n,
-  execute: 106_000n,
+  execute: 121_000n,
 } as const;
 
 /**
- * The service's response limit (validators/mandate/src/main.ts): mandate-v1's evidence varies in size with the
- * mandate and the agent's activity, so each response gets its own estimate x 1.2, capped at 400,000.
+ * Validator A's response limit, as its service sends them (validators/mandate/src/main.ts): mandate-v1's evidence
+ * varies in size with the mandate and the agent's activity, so each response gets its own estimate x 1.2, capped at
+ * 400,000.
  */
-const RESPONSE_GAS = { headroomPercent: 20, max: 400_000n } as const;
-/** The service's admission defaults (validators/mandate/src/config.ts): 20 requests per agent per hour, 10,000,000 gas a day. */
-const ADMISSION = {
+const MANDATE_RESPONSE_GAS = { headroomPercent: 20, max: 400_000n } as const;
+/** Validator A's admission defaults (validators/mandate/src/config.ts): 20 requests per agent per hour, 10,000,000 gas a day. */
+const MANDATE_ADMISSION = {
   maxRequestsPerAgent: 20,
   agentWindowSeconds: 3_600n,
   dailyGasBudget: 10_000_000n,
-  maxGasPerResponse: RESPONSE_GAS.max,
+  maxGasPerResponse: MANDATE_RESPONSE_GAS.max,
 } as const;
-/** JSON-RPC requests each mandate reader keeps in flight at once, as the service does. */
+/**
+ * Validator B's response limit, as its service sends them (validators/risk/src/main.ts and config.ts): risk-v1's
+ * evidence is bigger (typically 8 to 12 KB), so the estimate x 1.2, capped at 1,000,000.
+ */
+const RISK_RESPONSE_GAS = { headroomPercent: 20, max: 1_000_000n } as const;
+/** Validator B's admission defaults (validators/risk/src/config.ts): mandate-v1's limits, 1,000,000 gas per response. */
+const RISK_ADMISSION = {
+  maxRequestsPerAgent: 20,
+  agentWindowSeconds: 3_600n,
+  dailyGasBudget: 10_000_000n,
+  maxGasPerResponse: RISK_RESPONSE_GAS.max,
+} as const;
+/** The main model's free-tier pacing (validators/risk/src/config.ts), unless RISK_V1_LLM_* override it as for the service. */
+const LLM_PACING_DEFAULTS = { requestsPerMinute: 30, tokensPerMinute: 8_000 } as const;
+/** Prompt Guard's own pacer (validators/risk/src/main.ts): Groq's free tier for llama-prompt-guard-2-86m. */
+const GUARD_PACING = { requestsPerMinute: 30, tokensPerMinute: 15_000 } as const;
+/** JSON-RPC requests each validator's reader keeps in flight at once, as the services do. */
 const READER_CONCURRENCY = 8;
 
-const VALUE_A = parseEther("0.001");
-const VALUE_B = parseEther("0.003");
-/** B's target: an address no mandate lists, derived from a fixed label so every run sends B to the same place. */
+const VALUE_S = parseEther("0.001");
+const VALUE_R = parseEther("0.001");
+const VALUE_O = parseEther("0.003");
+/** O's target: an address no mandate lists, derived from a fixed label so every run sends O to the same place (P4's B). */
 const UNLISTED = getAddress(slice(keccak256(toBytes("attest8004.e2e.unlisted")), 12));
-const FUND_VALUE = parseEther("0.01");
-const MIN_VALIDATOR_BALANCE = parseEther("1");
-const MIN_SCORE = 100;
-const TIMEOUT_MS = 180_000;
+/** Where the DemoPassThrough forwards every payment: `address(uint160(uint256(keccak256("attest8004.demo.sink"))))`. */
+const SINK = getAddress(slice(keccak256(toBytes("attest8004.demo.sink")), 12));
+/** The vault is topped up to this much when it holds less than FUND_BELOW. */
+const FUND_TARGET = parseEther("0.01");
+/** The three actions' values together: each is simulated at its own pinned block, before S executes. */
+const FUND_BELOW = VALUE_S + VALUE_R + VALUE_O;
+const MIN_VALIDATOR_A_BALANCE = parseEther("1");
+const MIN_VALIDATOR_B_BALANCE = parseEther("0.5");
+const MIN_SCORE_A = 100;
+const MIN_SCORE_B = 80;
+/** Every action expires this long after the latest block (well inside both validators' 3,600 s horizon). */
+const DEADLINE_SECONDS = 1_800n;
+/** The forwarded requests the hot key pays for: three actions, each from both validators. */
+const REQUESTS = 6n;
+/** One deadline for both validators to answer all six (risk-v1's three checks take a few minutes each). */
+const TIMEOUT_MS = 25 * 60_000;
+/**
+ * The restarted validators only re-read the same blocks and skip, but by then the head is some 5,000 blocks past the
+ * first request (0.3 s blocks), about 50 eth_getLogs windows each.
+ */
+const RESTART_TIMEOUT_MS = 300_000;
 
 /** Agent 1984's e2e mandate (scripts/src/set-mandate.ts): the expected verdicts depend on exactly these values. */
 const E2E_MANDATE = {
@@ -143,25 +221,62 @@ const vaultAbi = [
     "error ReentrancyGuardReentrantCall()",
   ]),
 ] as const;
+const passThroughAbi = parseAbi(["function sink() view returns (address)"]);
 
 const deployment = DEPLOYMENTS[chain.id];
 const addresses = mandateAddressesFor(chain.id);
+const riskAddresses = riskAddressesFor(chain.id);
 const registry = getAddress(deployment.validationRegistry);
 const forwarder = getAddress(deployment.agentRequestForwarder);
 const mandateRegistry = getAddress(deployment.mandateRegistry);
 const vault = getAddress(deployment.demoAgentVault);
+const passThrough = getAddress(deployment.demoPassThrough);
 const identityRegistry = getAddress(deployment.identityRegistry);
 const [agentId, otherAgentId] = deployment.demoAgents as readonly [bigint, bigint];
 
 const owner = privateKeyToAccount(requireEnv("DEPLOYER_PRIVATE_KEY") as Hex);
 const hotKey = privateKeyToAccount(requireEnv("DEMO_AGENT_1_HOT_PRIVATE_KEY") as Hex);
 const otherHotKey = requireAddress("DEMO_AGENT_2_HOT_ADDRESS");
-const validator = privateKeyToAccount(requireEnv("VALIDATOR_A_PRIVATE_KEY") as Hex);
+const validatorA = privateKeyToAccount(requireEnv("VALIDATOR_A_PRIVATE_KEY") as Hex);
+const validatorB = privateKeyToAccount(requireEnv("VALIDATOR_B_PRIVATE_KEY") as Hex);
 if (requireAddress("DEMO_AGENT_1_HOT_ADDRESS") !== hotKey.address) {
   throw new Error("DEMO_AGENT_1_HOT_ADDRESS does not match DEMO_AGENT_1_HOT_PRIVATE_KEY");
 }
-if (process.env.VALIDATOR_A_ADDRESS && getAddress(process.env.VALIDATOR_A_ADDRESS) !== validator.address) {
-  throw new Error("VALIDATOR_A_ADDRESS does not match VALIDATOR_A_PRIVATE_KEY");
+for (const [name, account] of [
+  ["VALIDATOR_A", validatorA],
+  ["VALIDATOR_B", validatorB],
+] as const) {
+  const address = process.env[`${name}_ADDRESS`];
+  if (address && getAddress(address) !== account.address) throw new Error(`${name}_ADDRESS does not match ${name}_PRIVATE_KEY`);
+}
+
+/** A setting as validator B's service reads it (validators/risk/src/config.ts): trimmed, and blank counts as unset. */
+const setting = (name: string): string | undefined => process.env[name]?.trim() || undefined;
+const requiredSetting = (name: string): string => {
+  const value = setting(name);
+  if (value === undefined) throw new Error(`${name} is not set (expected in .env)`);
+  return value;
+};
+/** Validator B's model endpoint, as its service reads it. Never printed but the host. */
+const LLM = {
+  baseUrl: requiredSetting("LLM_BASE_URL"),
+  apiKey: requiredSetting("LLM_API_KEY"),
+  model: requiredSetting("LLM_MODEL"),
+} as const;
+
+/** A positive decimal integer from the environment, or `fallback` when unset; the value itself is never echoed. */
+function positiveEnv(name: string, fallback: number): number {
+  const value = setting(name);
+  if (value === undefined) return fallback;
+  if (!/^[1-9][0-9]*$/.test(value) || !Number.isSafeInteger(Number(value))) throw new Error(`${name} must be a positive decimal integer`);
+  return Number(value);
+}
+const LLM_PACING = {
+  requestsPerMinute: positiveEnv("RISK_V1_LLM_REQUESTS_PER_MINUTE", LLM_PACING_DEFAULTS.requestsPerMinute),
+  tokensPerMinute: positiveEnv("RISK_V1_LLM_TOKENS_PER_MINUTE", LLM_PACING_DEFAULTS.tokensPerMinute),
+};
+if (LLM_PACING.tokensPerMinute < RISK_V1.maxRequestTokens) {
+  throw new Error(`RISK_V1_LLM_TOKENS_PER_MINUTE must be at least ${RISK_V1.maxRequestTokens}, the largest request risk-v1 sends`);
 }
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -169,6 +284,10 @@ const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 const json = (value: unknown, space?: number) =>
   JSON.stringify(value, (_k, v: unknown) => (typeof v === "bigint" ? v.toString() : v), space);
 const lower = (hash: Hex) => hash.toLowerCase() as Hex;
+
+const LABELS = ["S", "R", "O"] as const;
+type Label = (typeof LABELS)[number];
+type Side = "A" | "B";
 
 type Call = { address: Address; abi: Abi; functionName: string; args: readonly unknown[] };
 
@@ -196,6 +315,23 @@ async function expectRevert(label: string, call: Call, account: Address, errorNa
   check(`${label} reverts ${errorName} (simulated)`, name === errorName, detail);
 }
 
+/** Simulates execute(action) and checks the gate refuses it with ScoreTooLow(validator, requestHash, score, minScore). */
+async function expectScoreTooLow(label: string, action: Action, validator: Address, requestHash: Hex, score: number, minScore: number) {
+  const refusal = await revertOf(`execute(${label})`, { address: vault, abi: vaultAbi, functionName: "execute", args: [action] }, owner.address);
+  const [refusedValidator, refusedHash, refusedScore, refusedMin] = refusal.args;
+  check(
+    `the gate refuses ${label}: ScoreTooLow(${validator}, ${requestHash}, ${score}, ${minScore}) (simulated)`,
+    refusal.name === "ScoreTooLow" &&
+      typeof refusedValidator === "string" &&
+      getAddress(refusedValidator) === validator &&
+      typeof refusedHash === "string" &&
+      lower(refusedHash as Hex) === requestHash &&
+      refusedScore === score &&
+      refusedMin === minScore,
+    refusal.detail,
+  );
+}
+
 /** Confirms a sent transaction carried exactly the explicit limit, and came from `from`. */
 async function checkSent(label: string, hash: Hash, from: Address, gasLimit: bigint): Promise<void> {
   const tx = await publicClient.getTransaction({ hash });
@@ -204,44 +340,64 @@ async function checkSent(label: string, hash: Hash, from: Address, gasLimit: big
 }
 
 /**
- * Polls `validator` until it has an outcome for every one of `requestHashes`, or times out. Outcomes for other
- * requests (anyone may ask validator A) are left to the validator; a request it gives up on fails the run.
+ * Polls `validator` until it has an outcome for every one of `requestHashes`, `giveUpAt` passes, or `stop` aborts
+ * (the other validator failed). Outcomes for other requests (anyone may ask either validator) are left to the
+ * validator; a request it gives up on fails the run.
  */
-async function pollUntilAll(validator: ValidatorBase, requestHashes: readonly Hex[]): Promise<Map<Hex, Outcome>> {
+async function pollUntilAll(
+  name: string,
+  validator: ValidatorBase,
+  requestHashes: readonly Hex[],
+  giveUpAt: number,
+  stop: AbortSignal,
+): Promise<Map<Hex, Outcome>> {
   const wanted = new Set(requestHashes.map(lower));
   const found = new Map<Hex, Outcome>();
-  const giveUpAt = Date.now() + TIMEOUT_MS;
   for (;;) {
+    if (stop.aborted) throw new Error(`${name}: stopped, since the other validator failed`);
+    if (Date.now() > giveUpAt) throw new Error(`${name}: no outcome for every request before the deadline (${found.size}/${wanted.size})`);
     const { outcomes, caughtUp, retryAfterMs } = await validator.pollOnce();
     for (const outcome of outcomes) {
       const key = lower(outcome.requestHash);
       if (!wanted.has(key)) continue;
-      if (outcome.kind === "gave-up") throw new Error(`the validator gave up on ${outcome.requestHash}: ${outcome.error}`);
-      found.set(key, outcome);
+      if (outcome.kind === "gave-up") throw new Error(`${name} gave up on ${outcome.requestHash}: ${outcome.error}`);
+      // A retry after a failed cycle re-reads from the failed request's block, so a request answered earlier in that
+      // block comes back as ALREADY_RESPONDED: the response this run saw is the outcome that counts.
+      if (found.get(key)?.kind !== "responded") found.set(key, outcome);
     }
     if (found.size === wanted.size) return found;
-    if (Date.now() > giveUpAt) throw new Error(`no outcome for every request within ${TIMEOUT_MS} ms (${found.size}/${wanted.size})`);
-    if (retryAfterMs !== undefined) await sleep(retryAfterMs);
+    if (retryAfterMs !== undefined) await sleep(Math.max(0, Math.min(retryAfterMs, giveUpAt - Date.now() + 1)));
     else if (caughtUp) await sleep(500);
   }
+}
+
+/**
+ * Polls every validator concurrently until each has an outcome for all of its requests, under one shared deadline.
+ * The first failure stops the others at their next cycle (a risk-v1 check already running finishes first).
+ */
+async function pollAll(
+  jobs: readonly { name: string; validator: ValidatorBase; requestHashes: readonly Hex[] }[],
+  timeoutMs: number,
+): Promise<Map<Hex, Outcome>> {
+  const stop = new AbortController();
+  const giveUpAt = Date.now() + timeoutMs;
+  const results = await Promise.all(
+    jobs.map((job) =>
+      pollUntilAll(job.name, job.validator, job.requestHashes, giveUpAt, stop.signal).catch((error: unknown) => {
+        stop.abort();
+        throw error;
+      }),
+    ),
+  );
+  return new Map(results.flatMap((found) => [...found]));
 }
 
 /** What each response cost: Monad's estimate for its exact arguments, and the limit the validator actually sent. */
 const responseGas = new Map<Hex, { estimate: bigint; limit: bigint }>();
 
-/**
- * Validator A as the service runs it (validators/mandate/src/main.ts), from just before `fromBlock`, in memory:
- * the evidence-sized response limit, a reader at concurrency 8, the vault for agent 1984 as its only (gate, agent)
- * pair and a fresh admission policy with the service's defaults. Its chain port is wrapped only to record each response's gas.
- */
-function mandateValidator(fromBlock: bigint, name: string): MandateValidator {
-  const port = viemValidatorChain({
-    publicClient,
-    walletClient: walletFor(validator),
-    validationRegistry: registry,
-    gasLimit: RESPONSE_GAS,
-  });
-  const measured: ValidatorChain = {
+/** `port`, wrapped only to record each response's gas: a fresh estimate first, then the service's own send. */
+function measured(port: ValidatorChain, from: Address): ValidatorChain {
+  return {
     ...port,
     async respond(response) {
       const { requestHash, response: score, responseURI, responseHash, tag } = response;
@@ -250,33 +406,135 @@ function mandateValidator(fromBlock: bigint, name: string): MandateValidator {
         abi: validationRegistryAbi,
         functionName: "validationResponse",
         args: [requestHash, score, responseURI, responseHash, tag],
-        account: validator.address,
+        account: from,
       });
       const sent = await port.respond(response);
       responseGas.set(lower(requestHash), { estimate, limit: sent.gasLimit });
       return sent;
     },
   };
+}
+
+/** Prints a validator's log entries, indented and labelled. Entries never carry keys or URLs. */
+const logAs = (name: string) => (entry: Record<string, unknown>) => console.log(`    ${name}: ${json(entry)}`);
+
+/**
+ * Validator A as its service runs it (validators/mandate/src/main.ts), from just before `fromBlock`, in memory: the
+ * evidence-sized response limit, a reader at concurrency 8, the vault for agent 1984 as its only (gate, agent) pair
+ * and a fresh admission policy with the service's defaults.
+ */
+function mandateValidator(fromBlock: bigint, name: string): MandateValidator {
+  const port = viemValidatorChain({
+    publicClient,
+    walletClient: walletFor(validatorA),
+    validationRegistry: registry,
+    gasLimit: MANDATE_RESPONSE_GAS,
+  });
   return new MandateValidator({
-    chain: measured,
+    chain: measured(port, validatorA.address),
     cursor: new MemoryCursorStore(fromBlock - 1n),
     reader: viemMandateReader({ publicClient, addresses, concurrency: READER_CONCURRENCY }),
     addresses,
     mandateRegistryDeployBlock: deployment.mandateRegistryDeployBlock,
     gates: [{ gate: vault, agentId }],
-    admission: new Admission(ADMISSION),
-    log: (entry) => console.log(`    ${name}: ${json(entry)}`),
+    admission: new Admission(MANDATE_ADMISSION),
+    log: logAs(name),
   });
 }
 
-/** The evidence document a response posted, decoded from its inline `data:` URI. */
-function postedEvidence(
+/** A chat client's calls (each `complete()`, before it is sent) and what its answers report, for the run's totals. */
+interface ClientStats {
+  calls: number;
+  servedModels: string[];
+  usage: { prompt: number; completion: number; total: number };
+}
+
+/** `client`, wrapped only to count its calls and add up the usage its answers report. */
+function counted(client: ChatClient): { client: ChatClient; stats: ClientStats } {
+  const stats: ClientStats = { calls: 0, servedModels: [], usage: { prompt: 0, completion: 0, total: 0 } };
+  return {
+    stats,
+    client: {
+      host: client.host,
+      async complete(request) {
+        stats.calls += 1;
+        const response = await client.complete(request);
+        stats.usage.prompt += response.usage.prompt;
+        stats.usage.completion += response.usage.completion;
+        stats.usage.total += response.usage.total;
+        if (!stats.servedModels.includes(response.servedModel)) stats.servedModels.push(response.servedModel);
+        return response;
+      },
+    },
+  };
+}
+
+/** Nansen for validator B's two offchain tools, as the service builds it: unavailable without NANSEN_API_KEY. */
+const nansen = nansenClient({ apiKey: setting("NANSEN_API_KEY") });
+
+/**
+ * Validator B as its service runs it (validators/risk/src/main.ts), from just before `fromBlock`, in memory: the
+ * evidence-sized response limit (capped at 1,000,000), a risk reader at concurrency 8, validator A from
+ * DEPLOYMENTS as the prerequisite, the vault for agent 1984 as its only (gate, agent) pair, a fresh admission policy
+ * with the service's defaults, the main model and Prompt Guard through their own paced clients, and Nansen from
+ * NANSEN_API_KEY (unavailable without it).
+ */
+function riskValidator(fromBlock: bigint, name: string, clients: { llm: ChatClient; guard: ChatClient }): RiskValidator {
+  const port = viemValidatorChain({
+    publicClient,
+    walletClient: walletFor(validatorB),
+    validationRegistry: registry,
+    gasLimit: RISK_RESPONSE_GAS,
+  });
+  return new RiskValidator({
+    chain: measured(port, validatorB.address),
+    cursor: new MemoryCursorStore(fromBlock - 1n),
+    reader: viemRiskReader({ publicClient, addresses: riskAddresses, concurrency: READER_CONCURRENCY }),
+    addresses: riskAddresses,
+    mandateValidator: getAddress(deployment.validators.mandateV1),
+    gates: [{ gate: vault, agentId }],
+    admission: new Admission(RISK_ADMISSION),
+    llm: clients.llm,
+    guard: chatPromptGuard(clients.guard, RISK_V1.guardModel),
+    nansen,
+    model: LLM.model,
+    log: logAs(name),
+  });
+}
+
+/** The evidence document a response posted, as decoded text from its inline `data:` URI. */
+function evidenceText(label: string, responseURI: string): string {
+  const decoded = decodeJsonDataUri(responseURI, MAX_EVIDENCE_URI_BYTES);
+  if (!decoded.ok) throw new Error(`${label}'s response URI is not inline JSON: ${decoded.reason}`);
+  return decoded.text;
+}
+
+/** A `mandate-v1` evidence document, read only for the fields the run checks. */
+function postedMandateEvidence(
   label: string,
   responseURI: string,
 ): { reasons?: unknown; spend?: { total?: unknown; entries?: { requestHash: string; counted: boolean }[] } } {
-  const decoded = decodeJsonDataUri(responseURI, MAX_EVIDENCE_URI_BYTES);
-  if (!decoded.ok) throw new Error(`${label}'s response URI is not inline JSON: ${decoded.reason}`);
-  return JSON.parse(decoded.text) as ReturnType<typeof postedEvidence>;
+  return JSON.parse(evidenceText(label, responseURI)) as ReturnType<typeof postedMandateEvidence>;
+}
+
+/** A `risk-v1` evidence document, parsed strictly, with its size: canonical JSON bytes and the `data:` URI's length. */
+function postedRiskEvidence(label: string, responseURI: string): { doc: RiskEvidence; jsonBytes: number; uriBytes: number } {
+  const text = evidenceText(label, responseURI);
+  const parsed = parseRiskEvidence(text);
+  if (!parsed.ok) throw new Error(`${label}'s evidence is not risk-v1 evidence: ${parsed.error}`);
+  return { doc: parsed.doc, jsonBytes: stringToBytes(text).length, uriBytes: stringToBytes(responseURI).length };
+}
+
+/** The forwarder's estimate for the request the SDK is about to send, from the hot key (the SDK checks it again). */
+async function estimateRequest(action: Action, validator: Address): Promise<bigint> {
+  const request = buildRequestJson({ chainId: chain.id, gate: vault, validator, action });
+  return publicClient.estimateContractGas({
+    address: forwarder,
+    abi: agentRequestForwarderAbi,
+    functionName: "request",
+    args: [validator, agentId, encodeJsonDataUri(request).uri, requestHashOfJson(request)],
+    account: hotKey.address,
+  });
 }
 
 async function main(): Promise<void> {
@@ -294,7 +552,10 @@ async function main(): Promise<void> {
     agentOwner,
     agentKey,
     [mandate, mandateHash, mandateOwner, setAtBlock],
-    validatorBalance,
+    passThroughCode,
+    passThroughSink,
+    validatorABalance,
+    validatorBBalance,
     hotBalance,
     fees,
     latest,
@@ -313,26 +574,57 @@ async function main(): Promise<void> {
     publicClient.readContract({ address: identityRegistry, abi: identityRegistryAbi, functionName: "ownerOf", args: [agentId] }),
     publicClient.readContract({ address: forwarder, abi: agentRequestForwarderAbi, functionName: "agentKeyOf", args: [agentId] }),
     publicClient.readContract({ address: mandateRegistry, abi: mandateRegistryAbi, functionName: "getMandate", args: [agentId] }),
-    publicClient.getBalance({ address: validator.address }),
+    publicClient.getCode({ address: passThrough }),
+    publicClient.readContract({ address: passThrough, abi: passThroughAbi, functionName: "sink" }),
+    publicClient.getBalance({ address: validatorA.address }),
+    publicClient.getBalance({ address: validatorB.address }),
     publicClient.getBalance({ address: hotKey.address }),
     publicClient.estimateFeesPerGas(),
     publicClient.getBlock(),
   ]);
+
+  // Validator B's two model clients, each with its own free-tier pacer, as the service builds them. Built before
+  // anything is sent, so a malformed LLM_BASE_URL stops the run here; nothing is called until B's first check.
+  const llm = openAiCompatibleClient({ baseUrl: LLM.baseUrl, apiKey: LLM.apiKey, pacer: new RatePacer(LLM_PACING) });
+  const guardClient = openAiCompatibleClient({ baseUrl: LLM.baseUrl, apiKey: LLM.apiKey, pacer: new RatePacer(GUARD_PACING) });
 
   console.log(`DemoAgentVault        ${vault} (chain ${chain.id})`);
   console.log(`AgentRequestForwarder ${forwarder}`);
   console.log(`ValidationRegistry    ${registry}`);
   console.log(`MandateRegistry       ${mandateRegistry}`);
   console.log(`agent                 ${agentId}, owner ${owner.address} (deployer), hot key ${hotKey.address}`);
-  console.log(`validator             ${validator.address} (validator A, ${MANDATE_V1.tag})`);
+  console.log(`validator A           ${validatorA.address} (${MANDATE_V1.tag})`);
+  console.log(`validator B           ${validatorB.address} (${RISK_V1.tag})`);
+  console.log(`B's model             ${LLM.model} at ${llm.host}; guard ${RISK_V1.guardModel}`);
+  console.log(`B's pacing            main ${LLM_PACING.requestsPerMinute} RPM / ${LLM_PACING.tokensPerMinute} TPM, guard ${GUARD_PACING.requestsPerMinute} RPM / ${GUARD_PACING.tokensPerMinute} TPM`);
+  console.log(`B's Nansen            ${nansen.available ? "available" : `unavailable (${nansen.reason})`}`);
+  console.log(`pass-through          ${passThrough} (forwards to sink ${SINK})`);
   console.log(`unlisted target       ${UNLISTED}\n`);
   console.log("preflight");
+  check(
+    `validator A's key is the recorded validator A (${deployment.validators.mandateV1})`,
+    validatorA.address === getAddress(deployment.validators.mandateV1),
+    validatorA.address,
+  );
+  check(
+    `validator B's key is the recorded validator B (${deployment.validators.riskV1})`,
+    validatorB.address === getAddress(deployment.validators.riskV1),
+    validatorB.address,
+  );
   check("vault reads the ValidationRegistry", getAddress(vaultRegistry) === registry, vaultRegistry);
   check(`vault is bound to agent ${agentId}`, vaultAgent === agentId, String(vaultAgent));
-  const [requirement] = requirements;
+  const [requirementA, requirementB] = requirements;
   check(
-    `vault requires exactly validator A at ${MIN_SCORE}`,
-    requirements.length === 1 && requirement?.validator === validator.address && requirement.minScore === MIN_SCORE,
+    `vault requires exactly validator A at ${MIN_SCORE_A} under ${MANDATE_V1.tag}, then validator B at ${MIN_SCORE_B} under ${RISK_V1.tag}`,
+    requirements.length === 2 &&
+      requirementA !== undefined &&
+      getAddress(requirementA.validator) === validatorA.address &&
+      requirementA.minScore === MIN_SCORE_A &&
+      requirementA.tagHash === keccak256(toBytes(MANDATE_V1.tag)) &&
+      requirementB !== undefined &&
+      getAddress(requirementB.validator) === validatorB.address &&
+      requirementB.minScore === MIN_SCORE_B &&
+      requirementB.tagHash === keccak256(toBytes(RISK_V1.tag)),
     json(requirements),
   );
   check("forwarder serves the ValidationRegistry", getAddress(forwarderRegistry) === registry, forwarderRegistry);
@@ -351,69 +643,84 @@ async function main(): Promise<void> {
     mandateOwner,
   );
   check(`the mandate is unexpired (valid until ${mandate.validUntil})`, mandate.validUntil > latest.timestamp, `latest block time ${latest.timestamp}`);
+  const targets = mandate.allowedTargets.map((target) => getAddress(target));
   check(
-    "the mandate is the e2e one: the deployer only, plain transfers, 0.002 MON per tx, 0.005 MON per day",
-    mandate.allowedTargets.length === 1 &&
-      getAddress(mandate.allowedTargets[0] as Address) === owner.address &&
+    "the mandate is the e2e one: the deployer and the DemoPassThrough only, plain transfers, 0.002 MON per tx, 0.005 MON per day",
+    targets.length === 2 &&
+      targets.includes(owner.address) &&
+      targets.includes(passThrough) &&
       json(mandate.allowedSelectors.map((s) => s.toLowerCase())) === json(E2E_MANDATE.allowedSelectors) &&
       mandate.maxValuePerTx === E2E_MANDATE.maxValuePerTx &&
       mandate.maxValuePerDay === E2E_MANDATE.maxValuePerDay,
     json(mandate),
   );
-  check(`validator A holds at least ${mon(MIN_VALIDATOR_BALANCE)}`, validatorBalance >= MIN_VALIDATOR_BALANCE, mon(validatorBalance));
-  const requestsCost = 2n * DEFAULT_GAS.forwarderRequest * fees.maxFeePerGas;
-  check(`the hot key can pay for 2 requests (${mon(requestsCost)})`, hotBalance >= requestsCost, mon(hotBalance));
+  check("the DemoPassThrough has code", passThroughCode !== undefined && passThroughCode !== "0x", "no code");
+  check(`the DemoPassThrough forwards to ${SINK}`, getAddress(passThroughSink) === SINK, passThroughSink);
+  check(`validator A holds at least ${mon(MIN_VALIDATOR_A_BALANCE)}`, validatorABalance >= MIN_VALIDATOR_A_BALANCE, mon(validatorABalance));
+  check(`validator B holds at least ${mon(MIN_VALIDATOR_B_BALANCE)}`, validatorBBalance >= MIN_VALIDATOR_B_BALANCE, mon(validatorBBalance));
+  const requestsCost = REQUESTS * DEFAULT_GAS.forwarderRequest * fees.maxFeePerGas;
+  check(`the hot key can pay for ${REQUESTS} requests (${mon(requestsCost)})`, hotBalance >= requestsCost, mon(hotBalance));
 
   // The daily cap, before anything is sent: agent 1984's counted spend as mandate-v1 reads it (the same collector),
-  // at the finalized head. A must still fit under the cap, or every later check would fail.
+  // at the finalized head. S and R must both still fit under the cap (A checks R with S's approval counted), or
+  // every later check would fail.
   const spendReader = viemMandateReader({ publicClient, addresses, concurrency: READER_CONCURRENCY });
   const spendHead = await spendReader.finalized();
-  const spend = await collectSpend({ reader: spendReader, validator: validator.address, agentId, pinned: spendHead, cache: new Map() });
+  const spend = await collectSpend({ reader: spendReader, validator: validatorA.address, agentId, pinned: spendHead, cache: new Map() });
   if ("unreadable" in spend) throw new Error(`check failed: agent ${agentId}'s spend is unreadable at block ${spendHead.number} (${spend.unreadable})`);
-  const counted = spend.entries.filter((entry) => entry.counted).length;
-  console.log(`  agent ${agentId}'s counted ${MANDATE_V1.tag} spend at block ${spendHead.number}: ${mon(spend.total)} (${counted} approval(s))`);
-  const shortfall = dailyCapShortfall({ spend, value: VALUE_A, maxValuePerDay: mandate.maxValuePerDay });
+  const counted0 = spend.entries.filter((entry) => entry.counted).length;
+  console.log(`  agent ${agentId}'s counted ${MANDATE_V1.tag} spend at block ${spendHead.number}: ${mon(spend.total)} (${counted0} approval(s))`);
+  const shortfall = dailyCapShortfall({ spend, inMandateValues: [VALUE_S, VALUE_R], maxValuePerDay: mandate.maxValuePerDay });
   if (shortfall !== null) throw new Error(`check failed: ${shortfall}`);
   check(
-    `A (${mon(VALUE_A)}) fits under the daily cap (${mon(spend.total)} of ${mon(mandate.maxValuePerDay)} counted)`,
-    spend.total + VALUE_A <= mandate.maxValuePerDay,
+    `S and R (${mon(VALUE_S + VALUE_R)}) fit under the daily cap (${mon(spend.total)} of ${mon(mandate.maxValuePerDay)} counted)`,
+    spend.total + VALUE_S + VALUE_R <= mandate.maxValuePerDay,
     mon(spend.total),
   );
 
-  // 2. Fund the vault if it can't cover both actions (each is simulated at its own pinned block, before A executes).
+  // 2. Fund the vault if it can't cover all three actions (each is simulated at its own pinned block, before S executes).
   const txs: Record<string, Hash> = {};
   const ownerWallet = walletFor(owner);
-  if ((await publicClient.getBalance({ address: vault })) < VALUE_A + VALUE_B) {
+  const vaultBalance = await publicClient.getBalance({ address: vault });
+  let fundGas: { estimate: bigint; limit: bigint } | undefined;
+  if (vaultBalance < FUND_BELOW) {
     const sent = await sendWithGasGuard({
       publicClient,
       walletClient: ownerWallet,
       to: vault,
-      value: FUND_VALUE,
+      value: FUND_TARGET - vaultBalance,
       gasLimit: GAS.fund,
       label: "fund vault",
     });
     printTx("fund vault", sent);
+    await checkSent("fund vault", sent.hash, owner.address, GAS.fund);
     txs.fund = sent.hash;
+    fundGas = { estimate: sent.estimate, limit: sent.gasLimit };
   }
   const balanceBefore = await publicClient.getBalance({ address: vault });
   console.log(`  vault balance ${mon(balanceBefore)}`);
+  check(`the vault holds at least ${mon(FUND_BELOW)}`, balanceBefore >= FUND_BELOW, mon(balanceBefore));
 
   // 3. The actions.
-  const deadline = (await publicClient.getBlock()).timestamp + 600n;
-  const actionA = buildAction({ agentId, target: owner.address, value: VALUE_A, deadline });
-  const actionB = buildAction({ agentId, target: UNLISTED, value: VALUE_B, deadline });
-  const actionHashA = computeActionHash({ chainId: chain.id, gate: vault, action: actionA });
-  const actionHashB = computeActionHash({ chainId: chain.id, gate: vault, action: actionB });
+  const deadline = (await publicClient.getBlock()).timestamp + DEADLINE_SECONDS;
+  const actions: Record<Label, Action> = {
+    S: buildAction({ agentId, target: owner.address, value: VALUE_S, deadline }),
+    R: buildAction({ agentId, target: passThrough, value: VALUE_R, deadline }),
+    O: buildAction({ agentId, target: UNLISTED, value: VALUE_O, deadline }),
+  };
+  const actionHashes = Object.fromEntries(
+    LABELS.map((label) => [label, computeActionHash({ chainId: chain.id, gate: vault, action: actions[label] })]),
+  ) as Record<Label, Hex>;
 
   // 4. Only the agent's own key may request through the forwarder.
   console.log("\nforwarder refusals");
   const forwarded = (args: readonly unknown[]) =>
     ({ address: forwarder, abi: agentRequestForwarderAbi, functionName: "request", args }) as const;
-  const sample = [validator.address, agentId, "data:application/json,{}", actionHashA] as const;
+  const sample = [validatorA.address, agentId, "data:application/json,{}", actionHashes.S] as const;
   await expectRevert("the owner calling forwarder.request", forwarded(sample), owner.address, "NotAgentKey");
   await expectRevert(`agent ${otherAgentId}'s hot key requesting for agent ${agentId}`, forwarded(sample), otherHotKey, "NotAgentKey");
 
-  // 5. The hot key requests validation of both actions through the forwarder, before any validator runs.
+  // 5. The hot key requests validation of every action from A, then B, through the forwarder, before any validator runs.
   console.log("\nrequests (agent hot key -> forwarder -> registry)");
   const client = new Attest8004Client({
     publicClient,
@@ -421,201 +728,346 @@ async function main(): Promise<void> {
     validationRegistry: registry,
     forwarder,
   });
-  const request = async (label: "A" | "B", action: Action) => {
-    const [requested] = await client.requestValidation({ gate: vault, validators: [validator.address], action });
-    if (!requested) throw new Error(`requestValidation returned nothing for ${label}`);
-    txs[`request${label}`] = requested.txHash;
-    console.log(`forwarder.request (${label})  ${requested.txHash}  block ${requested.blockNumber}`);
-    return requested;
+  const validatorOf: Record<Side, Address> = { A: validatorA.address, B: validatorB.address };
+  const requests = new Map<string, RequestedValidation & { estimate: bigint }>();
+  for (const label of LABELS) {
+    for (const side of ["A", "B"] as const) {
+      const estimate = await estimateRequest(actions[label], validatorOf[side]);
+      check(
+        `${label} -> ${side}: the forwarder's estimate is within DEFAULT_GAS.forwarderRequest`,
+        estimate <= DEFAULT_GAS.forwarderRequest,
+        `${estimate} > ${DEFAULT_GAS.forwarderRequest}`,
+      );
+      const [requested] = await client.requestValidation({ gate: vault, validators: [validatorOf[side]], action: actions[label] });
+      if (!requested) throw new Error(`requestValidation returned nothing for ${label} -> ${side}`);
+      requests.set(`${label}${side}`, { ...requested, estimate });
+      txs[`request${label}${side}`] = requested.txHash;
+      console.log(
+        `forwarder.request (${label} -> ${side})  ${requested.txHash}  block ${requested.blockNumber}, gas limit ${DEFAULT_GAS.forwarderRequest} (estimate ${estimate})`,
+      );
+    }
+  }
+  const req = (label: Label, side: Side) => {
+    const found = requests.get(`${label}${side}`);
+    if (!found) throw new Error(`no request recorded for ${label} -> ${side}`);
+    return found;
   };
-  const requestedA = await request("A", actionA);
-  const requestedB = await request("B", actionB);
-  const hashA = lower(requestedA.requestHash);
-  const hashB = lower(requestedB.requestHash);
-  for (const [label, action, requested] of [
-    ["A", actionA, requestedA],
-    ["B", actionB, requestedB],
-  ] as const) {
-    const [onchainRequestHash, status] = await Promise.all([
-      publicClient.readContract({ address: vault, abi: vaultAbi, functionName: "requestHashOf", args: [action, validator.address] }),
-      publicClient.readContract({
-        address: registry,
-        abi: validationRegistryAbi,
-        functionName: "getValidationStatus",
-        args: [requested.requestHash],
-      }),
-    ]);
-    check(`${label}: the SDK's requestHash equals the vault's`, requested.requestHash === onchainRequestHash, onchainRequestHash);
-    check(
-      `${label}: the registry recorded validator A and agent ${agentId}`,
-      status[0] === validator.address && status[1] === agentId,
-      `${status[0]}, ${status[1]}`,
-    );
-    await checkSent(`${label}'s request`, requested.txHash, hotKey.address, DEFAULT_GAS.forwarderRequest);
+  const hashOf = (label: Label, side: Side) => lower(req(label, side).requestHash);
+  for (const label of LABELS) {
+    for (const side of ["A", "B"] as const) {
+      const requested = req(label, side);
+      const [onchainRequestHash, status] = await Promise.all([
+        publicClient.readContract({ address: vault, abi: vaultAbi, functionName: "requestHashOf", args: [actions[label], validatorOf[side]] }),
+        publicClient.readContract({
+          address: registry,
+          abi: validationRegistryAbi,
+          functionName: "getValidationStatus",
+          args: [requested.requestHash],
+        }),
+      ]);
+      check(`${label} -> ${side}: the SDK's requestHash equals the vault's`, requested.requestHash === onchainRequestHash, onchainRequestHash);
+      check(
+        `${label} -> ${side}: the registry recorded validator ${side} and agent ${agentId}`,
+        status[0] === validatorOf[side] && status[1] === agentId,
+        `${status[0]}, ${status[1]}`,
+      );
+      await checkSent(`${label} -> ${side}'s request`, requested.txHash, hotKey.address, DEFAULT_GAS.forwarderRequest);
+    }
   }
+  const firstBlock = req("S", "A").blockNumber;
+  const hashesA = LABELS.map((label) => hashOf(label, "A"));
+  const hashesB = LABELS.map((label) => hashOf(label, "B"));
 
-  // 6. mandate-v1 answers both; the gate refuses B; a restarted validator doesn't answer again.
-  console.log(`\nvalidator (${MANDATE_V1.tag} on the SDK's ValidatorBase, polling eth_getLogs up to the finalized block)`);
-  const outcomes = await pollUntilAll(mandateValidator(requestedA.blockNumber, "validator"), [hashA, hashB]);
-  const outcomeA = outcomes.get(hashA);
-  const outcomeB = outcomes.get(hashB);
-  check("A: responded 100", outcomeA?.kind === "responded" && outcomeA.score === 100, json(outcomeA));
-  check("B: responded 0", outcomeB?.kind === "responded" && outcomeB.score === 0, json(outcomeB));
-  if (outcomeA?.kind !== "responded" || outcomeB?.kind !== "responded") throw new Error("unreachable");
-
-  const refusal = await revertOf("execute(B)", { address: vault, abi: vaultAbi, functionName: "execute", args: [actionB] }, owner.address);
-  const [refusedValidator, refusedHash, refusedScore, refusedMin] = refusal.args;
-  check(
-    "the gate refuses B: ScoreTooLow (simulated)",
-    refusal.name === "ScoreTooLow" &&
-      typeof refusedValidator === "string" &&
-      getAddress(refusedValidator) === validator.address &&
-      typeof refusedHash === "string" &&
-      lower(refusedHash as Hex) === hashB &&
-      refusedScore === 0 &&
-      refusedMin === MIN_SCORE,
-    refusal.detail,
+  // 6. Both validators answer their three, concurrently.
+  console.log(
+    `\nvalidators (${MANDATE_V1.tag} and ${RISK_V1.tag} on the SDK's ValidatorBase, polling eth_getLogs up to the finalized block; ` +
+      `${RISK_V1.tag} waits for ${MANDATE_V1.tag}'s verdict on the same action, then takes a few minutes per check)`,
   );
-  check("isValidated(B) is false", !(await client.isValidated({ gate: vault, action: actionB })), "true");
-
-  for (const [label, outcome] of [
-    ["A", outcomeA],
-    ["B", outcomeB],
-  ] as const) {
-    const gas = responseGas.get(lower(outcome.requestHash));
-    if (!gas) throw new Error(`no gas recorded for ${label}'s response`);
-    txs[`response${label}`] = outcome.txHash;
-    console.log(`validationResponse (${label}) ${outcome.txHash}  block ${outcome.blockNumber}, gas limit ${gas.limit} (estimate ${gas.estimate})`);
-    check(`${label}'s response limit is at most ${RESPONSE_GAS.max}`, gas.limit <= RESPONSE_GAS.max, String(gas.limit));
-    await checkSent(`${label}'s response`, outcome.txHash, validator.address, gas.limit);
+  const mainModel = counted(llm);
+  const guardModel = counted(guardClient);
+  const outcomes = await pollAll(
+    [
+      { name: "A", validator: mandateValidator(firstBlock, "A"), requestHashes: hashesA },
+      { name: "B", validator: riskValidator(firstBlock, "B", { llm: mainModel.client, guard: guardModel.client }), requestHashes: hashesB },
+    ],
+    TIMEOUT_MS,
+  );
+  const outcome = (label: Label, side: Side) => outcomes.get(hashOf(label, side));
+  // Each validator answered each of its requests (a decline is printed with its reason); the scores are checked
+  // below, after each verdict's evidence is printed, so a wrong score still shows why.
+  console.log("\nresponses");
+  const pairs = LABELS.flatMap((label) => (["A", "B"] as const).map((side) => [label, side] as const));
+  for (const [label, side] of pairs) {
+    const found = outcome(label, side);
+    check(`${side} answered ${label}`, found?.kind === "responded", json(found));
   }
 
-  const [verdictA, verdictB] = await Promise.all([
-    client.awaitVerdict({ requestHash: hashA, fromBlock: requestedA.blockNumber, timeoutMs: 60_000 }),
-    client.awaitVerdict({ requestHash: hashB, fromBlock: requestedB.blockNumber, timeoutMs: 60_000 }),
-  ]);
-  for (const [label, verdict, score] of [
-    ["A", verdictA, 100],
-    ["B", verdictB, 0],
-  ] as const) {
+  // Every response, read back: who sent it, its limit, and Monad's estimate for it; then the SDK's awaitVerdict for
+  // each, scanning from its request's block (all six at once: B's responses land minutes after the requests).
+  for (const [label, side] of pairs) {
+    const found = outcome(label, side);
+    if (found?.kind !== "responded") throw new Error("unreachable");
+    const gas = responseGas.get(lower(found.requestHash));
+    if (!gas) throw new Error(`no gas recorded for ${label} -> ${side}'s response`);
+    const max = side === "A" ? MANDATE_RESPONSE_GAS.max : RISK_RESPONSE_GAS.max;
+    txs[`response${label}${side}`] = found.txHash;
+    console.log(
+      `validationResponse (${label} <- ${side}) ${found.txHash}  block ${found.blockNumber}, gas limit ${gas.limit} (estimate ${gas.estimate})`,
+    );
+    check(`${label} <- ${side}'s response limit is at most ${max}`, gas.limit <= max, String(gas.limit));
+    await checkSent(`${label} <- ${side}'s response`, found.txHash, validatorOf[side], gas.limit);
+  }
+  const awaited = await Promise.all(
+    pairs.map(([label, side]) => client.awaitVerdict({ requestHash: hashOf(label, side), fromBlock: req(label, side).blockNumber, timeoutMs: 60_000 })),
+  );
+  const verdicts = new Map<string, Verdict>();
+  for (const [i, [label, side]] of pairs.entries()) {
+    const found = outcome(label, side);
+    const verdict = awaited[i];
+    if (found?.kind !== "responded" || verdict === undefined) throw new Error("unreachable");
+    const tag = side === "A" ? MANDATE_V1.tag : RISK_V1.tag;
     check(
-      `awaitVerdict ${label}: ${score} from validator A, tag ${MANDATE_V1.tag}`,
-      verdict.response === score && verdict.validator === validator.address && verdict.tag === MANDATE_V1.tag,
+      `awaitVerdict ${label} <- ${side}: ${found.score} from validator ${side}, tag ${tag}`,
+      verdict.response === found.score && verdict.validator === validatorOf[side] && verdict.tag === tag,
       json({ response: verdict.response, validator: verdict.validator, tag: verdict.tag }),
     );
+    verdicts.set(`${label}${side}`, verdict);
   }
-  const evidenceA = postedEvidence("A", verdictA.responseURI);
-  const evidenceB = postedEvidence("B", verdictB.responseURI);
-  check("A's evidence: reasons []", json(evidenceA.reasons) === "[]", json(evidenceA.reasons));
-  const spendTotalB = evidenceB.spend?.total;
-  check("B's evidence: a readable spend total", typeof spendTotalB === "string" && /^(0|[1-9]\d*)$/.test(spendTotalB), json(evidenceB.spend));
-  const spentA = evidenceB.spend?.entries?.find((entry) => entry.requestHash.toLowerCase() === hashA);
-  check("B's evidence: its spend counts A", spentA?.counted === true, json(evidenceB.spend));
-  const reasonsB = expectedReasonsB({ spendTotal: BigInt(spendTotalB as string), value: VALUE_B, maxValuePerDay: E2E_MANDATE.maxValuePerDay });
+  const verdictOf = (label: Label, side: Side) => {
+    const found = verdicts.get(`${label}${side}`);
+    if (!found) throw new Error(`no verdict recorded for ${label} <- ${side}`);
+    return found;
+  };
+
+  // A: S and R pass cleanly; O's reasons follow from O's own spend, which counts S and R.
+  console.log(`\n${MANDATE_V1.tag} verdicts (validator A)`);
+  for (const [label, score] of [
+    ["S", 100],
+    ["R", 100],
+  ] as const) {
+    const evidence = postedMandateEvidence(`${label} <- A`, verdictOf(label, "A").responseURI);
+    console.log(`  ${label} <- A: score ${verdictOf(label, "A").response}, reasons ${json(evidence.reasons)}`);
+    check(`A on ${label}: ${score}, reasons []`, verdictOf(label, "A").response === score && json(evidence.reasons) === "[]", json(evidence.reasons));
+  }
+  const evidenceOA = postedMandateEvidence("O <- A", verdictOf("O", "A").responseURI);
+  console.log(`  O <- A: score ${verdictOf("O", "A").response}, reasons ${json(evidenceOA.reasons)}`);
+  check("A on O: 0", verdictOf("O", "A").response === 0, String(verdictOf("O", "A").response));
+  const spendTotalO = evidenceOA.spend?.total;
+  check("O <- A's evidence: a readable spend total", typeof spendTotalO === "string" && /^(0|[1-9]\d*)$/.test(spendTotalO), json(evidenceOA.spend));
+  for (const label of ["S", "R"] as const) {
+    const spent = evidenceOA.spend?.entries?.find((entry) => entry.requestHash.toLowerCase() === hashOf(label, "A"));
+    check(`O <- A's evidence: its spend counts ${label}`, spent?.counted === true, json(evidenceOA.spend));
+  }
+  const reasonsO = expectedReasonsO({ spendTotal: BigInt(spendTotalO as string), value: VALUE_O, maxValuePerDay: E2E_MANDATE.maxValuePerDay });
   check(
-    `B's evidence: reasons ${json(reasonsB)} (spend ${mon(BigInt(spendTotalB as string))} + ${mon(VALUE_B)}, cap ${mon(E2E_MANDATE.maxValuePerDay)})`,
-    json(evidenceB.reasons) === json(reasonsB),
-    json(evidenceB.reasons),
+    `O <- A's evidence: reasons ${json(reasonsO)} (spend ${mon(BigInt(spendTotalO as string))} + ${mon(VALUE_O)}, cap ${mon(E2E_MANDATE.maxValuePerDay)})`,
+    json(evidenceOA.reasons) === json(reasonsO),
+    json(evidenceOA.reasons),
   );
 
-  console.log("\nrestart (a fresh validator re-reads the same blocks)");
-  const again = await pollUntilAll(mandateValidator(requestedA.blockNumber, "restarted"), [hashA, hashB]);
-  for (const [label, hash] of [
-    ["A", hashA],
-    ["B", hashB],
-  ] as const) {
-    const outcome = again.get(hash);
+  // B: every finding, the model it was served by, the tokens, the tools and the size; then the scores.
+  console.log(`\n${RISK_V1.tag} verdicts (validator B)`);
+  const riskDocs = new Map<Label, ReturnType<typeof postedRiskEvidence>>();
+  for (const label of LABELS) {
+    const verdict = verdictOf(label, "B");
+    const evidence = postedRiskEvidence(`${label} <- B`, verdict.responseURI);
+    riskDocs.set(label, evidence);
+    const { doc } = evidence;
+    const gas = responseGas.get(hashOf(label, "B"));
+    const flagged = doc.classifier.results.filter((result) => result.flagged).length;
+    console.log(`  ${label} <- B: score ${doc.score}, reasons ${json(doc.reasons)}, pinned block ${doc.block.number}`);
+    console.log(`    prerequisite: ${MANDATE_V1.tag} ${doc.prerequisite.score} on ${doc.prerequisite.requestHash}, reasons ${json(doc.prerequisite.reasons)}`);
+    console.log(
+      `    model: requested ${doc.llm.model} at ${doc.llm.host}, served ${json(doc.llm.servedModels)}, fingerprints ${json(doc.llm.systemFingerprints)}, ` +
+        `prompt ${doc.llm.promptVersion}, ${doc.modelOutputs.length} model call(s), final answer after ${doc.finalOutput.attempts} attempt(s)`,
+    );
+    console.log(`    tokens: prompt ${doc.llm.usage.prompt}, completion ${doc.llm.usage.completion}, total ${doc.llm.usage.total}`);
+    console.log(
+      `    tools: ${doc.toolCalls.length} call(s) ${json(doc.toolCalls.map((call) => call.name))}; nansen ${doc.tools.nansen.available ? "available" : `unavailable (${doc.tools.nansen.reason})`}; ` +
+        `guard: ${doc.classifier.results.length} chunk(s) screened, ${flagged} flagged`,
+    );
+    console.log(
+      `    evidence: ${evidence.jsonBytes} bytes of canonical JSON (limit ${RISK_V1.maxEvidenceBytes}), data: URI ${evidence.uriBytes} bytes; ` +
+        `response gas limit ${gas?.limit} (estimate ${gas?.estimate})`,
+    );
+    if (doc.findings.length === 0) console.log("    findings: none");
+    for (const finding of doc.findings) {
+      // The explanation is the model's text: printed as a JSON string, so it can't carry terminal control characters.
+      console.log(`    finding [${finding.severity}] ${finding.code} (${finding.origin}; sources ${json(finding.sources)}): ${json(finding.explanation)}`);
+    }
+    check(`${label} <- B's evidence: the score is the posted ${verdict.response}`, doc.score === verdict.response, String(doc.score));
     check(
-      `the restarted validator skips ${label}: ALREADY_RESPONDED`,
-      outcome?.kind === "skipped" && outcome.reason === "ALREADY_RESPONDED",
-      json(outcome),
+      `${label} <- B's evidence: it ran on A's verdict on the same action (${verdictOf(label, "A").response})`,
+      lower(doc.prerequisite.requestHash) === hashOf(label, "A") && doc.prerequisite.score === verdictOf(label, "A").response,
+      json(doc.prerequisite),
     );
   }
+  check(`B on S: at least ${MIN_SCORE_B}`, verdictOf("S", "B").response >= MIN_SCORE_B, String(verdictOf("S", "B").response));
+  const findingsR = riskDocs.get("R")?.doc.findings ?? [];
+  check(
+    "B on R: 0, with at least one high finding",
+    verdictOf("R", "B").response === 0 && findingsR.some((finding) => finding.severity === "high"),
+    json({ score: verdictOf("R", "B").response, findings: findingsR.map((finding) => `${finding.severity} ${finding.code}`) }),
+  );
+  console.log(`  B on O: ${verdictOf("O", "B").response} (not asserted: B runs on O to explain A's refusal)`);
+  console.log(
+    `  B's model calls this run: main ${mainModel.stats.calls} (served ${json(mainModel.stats.servedModels)}, ${mainModel.stats.usage.total} tokens), ` +
+      `guard ${guardModel.stats.calls} (served ${json(guardModel.stats.servedModels)}, ${guardModel.stats.usage.total} tokens)`,
+  );
+
+  // 7. The gate refuses R at B and O at A (A's requirement is checked first).
+  console.log("\nrefusals (simulated)");
+  await expectScoreTooLow("R", actions.R, validatorB.address, hashOf("R", "B"), 0, MIN_SCORE_B);
+  await expectScoreTooLow("O", actions.O, validatorA.address, hashOf("O", "A"), 0, MIN_SCORE_A);
+  check("isValidated(R) is false", !(await client.isValidated({ gate: vault, action: actions.R })), "true");
+  check("isValidated(O) is false", !(await client.isValidated({ gate: vault, action: actions.O })), "true");
+
+  console.log("\nrestart (fresh validators re-read the same blocks)");
+  const restartModel = counted(llm);
+  const restartGuard = counted(guardClient);
+  const again = await pollAll(
+    [
+      { name: "A (restarted)", validator: mandateValidator(firstBlock, "A (restarted)"), requestHashes: hashesA },
+      {
+        name: "B (restarted)",
+        validator: riskValidator(firstBlock, "B (restarted)", { llm: restartModel.client, guard: restartGuard.client }),
+        requestHashes: hashesB,
+      },
+    ],
+    RESTART_TIMEOUT_MS,
+  );
+  for (const label of LABELS) {
+    for (const side of ["A", "B"] as const) {
+      const found = again.get(hashOf(label, side));
+      check(
+        `the restarted validator ${side} skips ${label}: ALREADY_RESPONDED`,
+        found?.kind === "skipped" && found.reason === "ALREADY_RESPONDED",
+        json(found),
+      );
+    }
+  }
+  check(
+    "the restarted validator B made no model or guard call",
+    restartModel.stats.calls === 0 && restartGuard.stats.calls === 0,
+    `main ${restartModel.stats.calls}, guard ${restartGuard.stats.calls}`,
+  );
   const head = await publicClient.getBlockNumber();
   const responses = [];
-  for (const window of blockWindows(requestedA.blockNumber, head)) {
+  for (const window of blockWindows(firstBlock, head)) {
     responses.push(
-      ...(await publicClient.getLogs({ address: registry, event: validationResponseEvent, args: { requestHash: [hashA, hashB] }, ...window })),
+      ...(await publicClient.getLogs({ address: registry, event: validationResponseEvent, args: { requestHash: [...hashesA, ...hashesB] }, ...window })),
     );
   }
-  for (const [label, hash] of [
-    ["A", hashA],
-    ["B", hashB],
-  ] as const) {
-    const count = responses.filter((log) => log.args.requestHash?.toLowerCase() === hash).length;
-    check(`exactly one ValidationResponse for ${label}`, count === 1, String(count));
+  for (const label of LABELS) {
+    for (const side of ["A", "B"] as const) {
+      const count = responses.filter((log) => log.args.requestHash?.toLowerCase() === hashOf(label, side)).length;
+      check(`exactly one ValidationResponse for ${label} <- ${side}`, count === 1, String(count));
+    }
   }
 
-  // 7. Anyone may execute the approved action.
-  console.log("\nexecute A");
-  check("isValidated(A) before execute", await client.isValidated({ gate: vault, action: actionA }), "false");
+  // 8. Anyone may execute the approved action.
+  console.log("\nexecute S");
+  check("isValidated(S) before execute (both verdicts, both tags)", await client.isValidated({ gate: vault, action: actions.S }), "false");
   const executed = await writeWithGasGuard({
     publicClient,
     walletClient: ownerWallet,
     address: vault,
     abi: vaultAbi,
     functionName: "execute",
-    args: [actionA],
+    args: [actions.S],
     gasLimit: GAS.execute,
     label: "execute",
   });
-  printTx("execute (A)", executed);
+  printTx("execute (S)", executed);
   txs.execute = executed.hash;
   await checkSent("execute", executed.hash, owner.address, GAS.execute);
 
-  // 8. Effects, and a replay.
   const consumedLogs = parseEventLogs({ abi: vaultAbi, eventName: "ActionConsumed", logs: executed.receipt.logs }).filter(
     (log) => getAddress(log.address) === vault,
   );
   check(
-    `ActionConsumed(actionHash A, ${agentId}) emitted by the vault`,
-    consumedLogs.length === 1 && consumedLogs[0]?.args.actionHash === actionHashA && consumedLogs[0].args.agentId === agentId,
+    `ActionConsumed(actionHash S, ${agentId}) emitted by the vault`,
+    consumedLogs.length === 1 && consumedLogs[0]?.args.actionHash === actionHashes.S && consumedLogs[0].args.agentId === agentId,
     `${consumedLogs.length} log(s)`,
   );
   const balanceAfter = await publicClient.getBalance({ address: vault });
-  check("vault balance fell by exactly A's value", balanceBefore - balanceAfter === VALUE_A, `${balanceBefore} -> ${balanceAfter}`);
-  const consumed = await publicClient.readContract({ address: vault, abi: vaultAbi, functionName: "consumed", args: [actionHashA] });
-  check("consumed(actionHash A) is true", consumed, String(consumed));
-  await expectRevert("a replay of A", { address: vault, abi: vaultAbi, functionName: "execute", args: [actionA] }, owner.address, "ActionAlreadyConsumed");
-  check("isValidated(A) after execute is false", !(await client.isValidated({ gate: vault, action: actionA })), "true");
+  check("vault balance fell by exactly S's value", balanceBefore - balanceAfter === VALUE_S, `${balanceBefore} -> ${balanceAfter}`);
+  const consumed = await publicClient.readContract({ address: vault, abi: vaultAbi, functionName: "consumed", args: [actionHashes.S] });
+  check("consumed(actionHash S) is true", consumed, String(consumed));
+  await expectRevert("a replay of S", { address: vault, abi: vaultAbi, functionName: "execute", args: [actions.S] }, owner.address, "ActionAlreadyConsumed");
+  check("isValidated(S) after execute is false", !(await client.isValidated({ gate: vault, action: actions.S })), "true");
 
-  // 9. verify re-runs each verdict at its pinned block, from chain data alone.
-  console.log("\nverify (a fresh reader and an empty cache per verdict)");
-  const reports: Record<string, VerifyReport> = {};
-  for (const [label, hash, verdict] of [
-    ["A", hashA, verdictA],
-    ["B", hashB, verdictB],
-  ] as const) {
+  // 9. verify: A's verdicts re-run at their pinned blocks; B's re-checked from their evidence and the chain.
+  console.log(`\nverify ${MANDATE_V1.tag} (a fresh reader and an empty cache per verdict)`);
+  const reportsA: Partial<Record<Label, VerifyReport>> = {};
+  for (const label of LABELS) {
+    const verdict = verdictOf(label, "A");
     const report = await verifyRequest({
       reader: viemMandateReader({ publicClient, addresses, concurrency: READER_CONCURRENCY }),
-      requestHash: hash,
+      requestHash: hashOf(label, "A"),
       ...verifyContextFor(chain.id),
     });
-    reports[label] = report;
+    reportsA[label] = report;
     const detail = json({ verdict: report.verdict, problems: report.problems, differingKeys: report.differingKeys });
-    check(`verify ${label}: match (P = block ${report.pinnedBlock})`, report.verdict === "match", detail);
+    check(`verify ${label} <- A: match (P = block ${report.pinnedBlock})`, report.verdict === "match", detail);
     check(
-      `verify ${label}: the recomputed score equals the posted ${verdict.response}`,
+      `verify ${label} <- A: the recomputed score equals the posted ${verdict.response}`,
       report.recomputed?.score === verdict.response && report.posted.score === verdict.response,
       json(report.recomputed),
     );
     check(
-      `verify ${label}: the recomputed responseHash equals the onchain one`,
+      `verify ${label} <- A: the recomputed responseHash equals the onchain one`,
       report.recomputed?.responseHash === lower(verdict.responseHash),
       `${report.recomputed?.responseHash} vs ${verdict.responseHash}`,
     );
   }
   check(
-    `verify B: the recomputed reasons are ${json(reasonsB)}`,
-    json(reports.B?.recomputed?.reasons) === json(reasonsB),
-    json(reports.B?.recomputed?.reasons),
+    `verify O <- A: the recomputed reasons are ${json(reasonsO)}`,
+    json(reportsA.O?.recomputed?.reasons) === json(reasonsO),
+    json(reportsA.O?.recomputed?.reasons),
   );
 
+  console.log(`\nverify ${RISK_V1.tag} (a fresh reader per verdict; model output: recorded, not re-run)`);
+  const riskContext = { ...verifyContextFor(chain.id), addresses: riskAddresses, mandateValidator: getAddress(deployment.validators.mandateV1) };
+  const reportsB: Partial<Record<Label, RiskVerifyReport>> = {};
+  for (const label of LABELS) {
+    const verdict = verdictOf(label, "B");
+    const report = await verifyRiskRequest({
+      reader: viemRiskReader({ publicClient, addresses: riskAddresses, concurrency: READER_CONCURRENCY }),
+      requestHash: hashOf(label, "B"),
+      context: riskContext,
+    });
+    reportsB[label] = report;
+    const detail = json({ verdict: report.verdict, problems: report.problems, mismatchedToolCalls: report.mismatchedToolCalls });
+    check(
+      `verify ${label} <- B: match (P = block ${report.pinnedBlock}; ${report.checkedToolCalls.length} onchain tool call(s) re-run, ` +
+        `${report.uncheckedToolCalls.length} Nansen call(s) unchecked)`,
+      report.verdict === "match",
+      detail,
+    );
+    check(
+      `verify ${label} <- B: the recomputed score equals the posted ${verdict.response}`,
+      report.recomputed?.score === verdict.response && report.posted.score === verdict.response,
+      json(report.recomputed),
+    );
+    check(
+      `verify ${label} <- B: the recomputed reasons are the evidence's`,
+      json(report.recomputed?.reasons) === json(riskDocs.get(label)?.doc.reasons),
+      json(report.recomputed?.reasons),
+    );
+    check(
+      `verify ${label} <- B: the responseHash is the onchain one`,
+      report.posted.responseHash === lower(verdict.responseHash),
+      `${report.posted.responseHash} vs ${verdict.responseHash}`,
+    );
+  }
+
   console.log("\ne2e OK");
-  const gasOf = (hash: Hex) => {
-    const gas = responseGas.get(hash);
-    return { estimate: gas?.estimate.toString(), limit: gas?.limit.toString() };
+  const gasOf = (label: Label, side: Side) => {
+    const gas = responseGas.get(hashOf(label, side));
+    return { estimate: gas?.estimate, limit: gas?.limit };
   };
+  const perAction = <T>(f: (label: Label) => T) => Object.fromEntries(LABELS.map((label) => [label, f(label)])) as Record<Label, T>;
   console.log(
     json(
       {
@@ -624,29 +1076,52 @@ async function main(): Promise<void> {
         forwarder,
         validationRegistry: registry,
         mandateRegistry,
+        passThrough,
+        sink: SINK,
         agentId,
         hotKey: hotKey.address,
-        validator: validator.address,
-        actions: {
-          A: { target: actionA.target, value: actionA.value, actionHash: actionHashA, requestHash: hashA },
-          B: { target: actionB.target, value: actionB.value, actionHash: actionHashB, requestHash: hashB },
-        },
+        validators: { A: validatorA.address, B: validatorB.address },
+        actions: perAction((label) => ({
+          target: actions[label].target,
+          value: actions[label].value,
+          deadline: actions[label].deadline,
+          actionHash: actionHashes[label],
+          requestHash: { A: hashOf(label, "A"), B: hashOf(label, "B") },
+        })),
+        verdicts: perAction((label) => {
+          const evidence = riskDocs.get(label);
+          return {
+            A: { score: verdictOf(label, "A").response, pinnedBlock: reportsA[label]?.pinnedBlock },
+            B: {
+              score: verdictOf(label, "B").response,
+              reasons: evidence?.doc.reasons,
+              findings: evidence?.doc.findings.map((finding) => ({ code: finding.code, severity: finding.severity, origin: finding.origin })),
+              pinnedBlock: evidence?.doc.block.number,
+              servedModels: evidence?.doc.llm.servedModels,
+              usage: evidence?.doc.llm.usage,
+              toolCalls: evidence?.doc.toolCalls.map((call) => call.name),
+              evidenceBytes: evidence?.jsonBytes,
+              uriBytes: evidence?.uriBytes,
+            },
+          };
+        }),
         blocks: {
-          requestA: requestedA.blockNumber,
-          requestB: requestedB.blockNumber,
-          responseA: outcomeA.blockNumber,
-          responseB: outcomeB.blockNumber,
+          requests: perAction((label) => ({ A: req(label, "A").blockNumber, B: req(label, "B").blockNumber })),
+          responses: perAction((label) => ({ A: verdictOf(label, "A").blockNumber, B: verdictOf(label, "B").blockNumber })),
           execute: executed.receipt.blockNumber,
-          pinnedA: reports.A?.pinnedBlock,
-          pinnedB: reports.B?.pinnedBlock,
         },
         txs,
         gas: {
-          forwarderRequest: { limit: DEFAULT_GAS.forwarderRequest },
-          validationResponse: { A: gasOf(hashA), B: gasOf(hashB) },
+          ...(fundGas ? { fund: fundGas } : {}),
+          forwarderRequest: perAction((label) => ({
+            A: { limit: DEFAULT_GAS.forwarderRequest, estimate: req(label, "A").estimate },
+            B: { limit: DEFAULT_GAS.forwarderRequest, estimate: req(label, "B").estimate },
+          })),
+          validationResponse: perAction((label) => ({ A: gasOf(label, "A"), B: gasOf(label, "B") })),
           execute: { limit: GAS.execute, estimate: executed.estimate },
         },
-        verify: { A: reports.A?.verdict, B: reports.B?.verdict },
+        llm: { host: llm.host, model: LLM.model, main: mainModel.stats, guard: guardModel.stats, nansen: nansen.available },
+        verify: perAction((label) => ({ A: reportsA[label]?.verdict, B: reportsB[label]?.verdict })),
       },
       2,
     ),

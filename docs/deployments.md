@@ -74,8 +74,8 @@ Every Attest8004 deployment is recorded here: chain, contract, address, the comm
   `requirements()`.
 - **Requires both validators, each under its own tag**, since this redeploy. The P3 vault below, requiring validator A
   only, is superseded; a different constructor argument (the second requirement) gives this vault a new address.
-- **Holds 0 MON.** The e2e script (`scripts/src/e2e.ts`) funds it before a run; its logic still assumes a
-  single-requirement vault (Task 14 updates it for the second validator).
+- **Holds 0 MON.** The e2e script (`scripts/src/e2e.ts`) tops it up to 0.01 MON before a run whenever it holds less
+  than 0.005 MON (the three actions' values together), and checks both requirements, with their tags, in its preflight.
 - **How it was deployed:** `contracts/script/DeployDemoAgentVault.s.sol` via `script/deploy-testnet.sh DemoAgentVault`
   from commit `7380fdc` (the deploy-gas commit; the contract itself is from `47dfdf0`), through the CREATE2 factory
   with salt `keccak256("attest8004.DemoAgentVault.v1")`. The broadcast record is

@@ -102,26 +102,34 @@ pnpm --filter @attest8004/scripts roundtrip   # register agent -> validationRequ
 ```
 
 The end-to-end path is scripted too. These scripts act as our demo agents, so they only run with our deployer's,
-validator A's and the demo agents' keys; they show how the recorded testnet runs were made. The e2e runs validator A
-as `mandate-v1`. Agent 1984's hot key requests two actions: one inside the agent's mandate, which scores 100 and
-executes, and one outside it (an unlisted target, over the per-tx cap), which scores 0 and the gate refuses. The
-script then re-runs both verdicts with `verify` and checks that each matches. Anyone can do the same for a recorded
-verdict with `pnpm attest8004 verify <requestHash>` (above).
+both validators' and the demo agents' keys; they show how the recorded testnet runs were made. The e2e runs validator
+A as `mandate-v1` and validator B as `risk-v1`, which calls the model at `LLM_BASE_URL` (Groq today). It uses the vault
+that requires A at 100 and B at 80. Agent 1984's hot key requests three actions from both validators:
+- **S:** a payment to the deployer, inside the mandate. A scores 100 and B at least 80, so it executes.
+- **R:** a payment to the `DemoPassThrough`. The mandate allows this target, so A scores 100, but the contract forwards
+  every payment to an address nobody controls. B scores 0 with a high finding, and the gate refuses R at B.
+- **O:** a payment to an unlisted target, over the per-tx cap. A scores 0, and the gate refuses O at A. B still runs and
+  explains why.
+
+The script then re-checks all six verdicts with `verify` and checks that each matches. Anyone can do the same for a
+recorded verdict with `pnpm attest8004 verify <requestHash>` (above). B's three checks are paced to Groq's free tier
+and take a few minutes each.
 
 ```bash
 pnpm --filter @attest8004/scripts hot-keys                     # one hot key per demo agent into .env; prints addresses only
 pnpm --filter @attest8004/scripts setup-demo-agents            # register agents, approve the forwarder per agent, set each agent's key
-pnpm --filter @attest8004/scripts setup-demo-agents -- --fund  # top each hot key up to four requests
-pnpm --filter @attest8004/scripts setup-demo-agents -- --fund-validator  # top validator A up to 2 MON
-pnpm --filter @attest8004/scripts set-mandate                  # agent 1984's e2e mandate (owner-set until P6's passkeys)
+pnpm --filter @attest8004/scripts setup-demo-agents -- --fund  # top agent 1984's hot key up to 12 requests (two e2e runs), 1985's up to 4
+pnpm --filter @attest8004/scripts setup-demo-agents -- --fund-validator    # top validator A up to 2 MON
+pnpm --filter @attest8004/scripts setup-demo-agents -- --fund-validator-b  # top validator B up to 1 MON
+pnpm --filter @attest8004/scripts set-mandate                  # agent 1984's e2e mandate: the deployer and the DemoPassThrough (owner-set until P6's passkeys)
 pnpm --filter @attest8004/scripts set-mandate -- --force       # set the same mandate again: a new MandateSet baseline
-pnpm --filter @attest8004/scripts e2e                          # hot key -> forwarder -> mandate-v1 -> gated execute; verify both
+pnpm --filter @attest8004/scripts e2e                          # hot key -> forwarder -> mandate-v1 and risk-v1 -> gated execute; verify all six
 pnpm --filter @attest8004/scripts gated-execute                # P2: the superseded agent-1982 vault, owner requests directly
 ```
 
-The e2e runs validator A in-process, so **stop the `mandate-v1` service (below) before running it**: both sign with
-validator A's key, and two processes answering the same requests would race (the pinned block also assumes one process
-per key).
+The e2e runs both validators in-process, so **stop the `mandate-v1` and `risk-v1` services (below) before running
+it**: a running service would sign with the same validator key as the e2e, and two processes answering the same
+requests would race (each validator's pinned block also assumes one process per key).
 
 To run validator A as a long-lived `mandate-v1` service (it needs
 `VALIDATOR_A_PRIVATE_KEY` and `MONAD_TESTNET_RPC_URL`; the optional `MANDATE_V1_*` settings are in `.env.example`):

@@ -1,56 +1,72 @@
 import { MANDATE_V1, type SpendEntry } from "@attest8004/validator-mandate";
 import { getAddress, keccak256, parseEther, toHex } from "viem";
 import { describe, expect, it } from "vitest";
-import { dailyCapShortfall, expectedReasonsB } from "./e2e-cap.ts";
+import { dailyCapShortfall, expectedReasonsO } from "./e2e-cap.ts";
 
 const CAP = parseEther("0.005");
-const A = parseEther("0.001");
-const B = parseEther("0.003");
-const GATE = getAddress("0x23bfbd12545ccd1501dda1b65a54518fd6212a96");
+const S = parseEther("0.001");
+const R = parseEther("0.001");
+const O = parseEther("0.003");
+const GATE = getAddress("0x12fab3e3ca810cc44bd9f537613a230a2be8d614");
 
 function entry(n: number, approvedAt: bigint, counted = true): SpendEntry {
   return {
     requestHash: keccak256(toHex(`approval ${n}`)),
     approvedAt,
     gate: GATE,
-    value: A,
-    deadline: approvedAt + 600n,
+    value: S,
+    deadline: approvedAt + 1_800n,
     consumed: counted,
     counted,
   };
 }
 
-describe("expectedReasonsB", () => {
+describe("expectedReasonsO", () => {
+  // O's own evidence counts S and R (both approved, their deadlines still ahead), plus every earlier counted approval.
   it.each([
-    { runs: 1, spend: "0.001", reasons: ["TARGET_NOT_ALLOWED", "VALUE_OVER_TX_CAP"] },
-    { runs: 2, spend: "0.002", reasons: ["TARGET_NOT_ALLOWED", "VALUE_OVER_TX_CAP"] },
-    { runs: 3, spend: "0.003", reasons: ["TARGET_NOT_ALLOWED", "VALUE_OVER_TX_CAP", "DAILY_CAP_EXCEEDED"] },
-    { runs: 5, spend: "0.005", reasons: ["TARGET_NOT_ALLOWED", "VALUE_OVER_TX_CAP", "DAILY_CAP_EXCEEDED"] },
-  ])("run $runs in 25 h (B's spend $spend MON): $reasons", ({ spend, reasons }) => {
-    expect(expectedReasonsB({ spendTotal: parseEther(spend), value: B, maxValuePerDay: CAP })).toEqual(reasons);
+    { prior: "0", spend: "0.002", reasons: ["TARGET_NOT_ALLOWED", "VALUE_OVER_TX_CAP"] },
+    { prior: "0.001", spend: "0.003", reasons: ["TARGET_NOT_ALLOWED", "VALUE_OVER_TX_CAP", "DAILY_CAP_EXCEEDED"] },
+    { prior: "0.003", spend: "0.005", reasons: ["TARGET_NOT_ALLOWED", "VALUE_OVER_TX_CAP", "DAILY_CAP_EXCEEDED"] },
+  ])("earlier spend $prior MON (O's spend $spend MON): $reasons", ({ spend, reasons }) => {
+    expect(expectedReasonsO({ spendTotal: parseEther(spend), value: O, maxValuePerDay: CAP })).toEqual(reasons);
   });
 
-  it("adds DAILY_CAP_EXCEEDED only past the cap, never at it (mandate-v1 fails spend + value > cap)", () => {
-    expect(expectedReasonsB({ spendTotal: CAP - B, value: B, maxValuePerDay: CAP })).not.toContain("DAILY_CAP_EXCEEDED");
-    expect(expectedReasonsB({ spendTotal: CAP - B + 1n, value: B, maxValuePerDay: CAP })).toContain("DAILY_CAP_EXCEEDED");
+  it("expected O reasons add DAILY_CAP_EXCEEDED when spend + 0.003 > cap", () => {
+    // At the cap exactly, mandate-v1 still passes the daily rule (it fails spend + value > cap).
+    expect(expectedReasonsO({ spendTotal: CAP - O, value: O, maxValuePerDay: CAP })).toEqual(["TARGET_NOT_ALLOWED", "VALUE_OVER_TX_CAP"]);
+    expect(expectedReasonsO({ spendTotal: CAP - O + 1n, value: O, maxValuePerDay: CAP })).toEqual([
+      "TARGET_NOT_ALLOWED",
+      "VALUE_OVER_TX_CAP",
+      "DAILY_CAP_EXCEEDED",
+    ]);
   });
 });
 
 describe("dailyCapShortfall", () => {
-  it("is null while A still fits, up to exactly the cap", () => {
-    const entries = [1, 2, 3, 4].map((n) => entry(n, 1_790_000_000n + BigInt(n)));
-    expect(dailyCapShortfall({ spend: { total: 4n * A, entries }, value: A, maxValuePerDay: CAP })).toBeNull();
-    expect(dailyCapShortfall({ spend: { total: 0n, entries: [] }, value: A, maxValuePerDay: CAP })).toBeNull();
+  it("two in-mandate actions must both fit: spend 0.003 + 0.001 + 0.001 = 0.005 fits, 0.004 doesn't", () => {
+    const three = [1, 2, 3].map((n) => entry(n, 1_790_000_000n + BigInt(n)));
+    expect(dailyCapShortfall({ spend: { total: parseEther("0.003"), entries: three }, inMandateValues: [S, R], maxValuePerDay: CAP })).toBeNull();
+    const four = [1, 2, 3, 4].map((n) => entry(n, 1_790_000_000n + BigInt(n)));
+    expect(dailyCapShortfall({ spend: { total: parseEther("0.004"), entries: four }, inMandateValues: [S, R], maxValuePerDay: CAP })).not.toBeNull();
   });
 
-  it("names the cap and when the oldest counted approval leaves the 25 h window, and how to raise the cap", () => {
+  it("is null with no counted spend, and counts every in-mandate value (not just the first)", () => {
+    expect(dailyCapShortfall({ spend: { total: 0n, entries: [] }, inMandateValues: [S, R], maxValuePerDay: CAP })).toBeNull();
+    // S alone would fit at 0.004, but S and R together don't.
+    const four = [1, 2, 3, 4].map((n) => entry(n, 1_790_000_000n + BigInt(n)));
+    expect(dailyCapShortfall({ spend: { total: parseEther("0.004"), entries: four }, inMandateValues: [S], maxValuePerDay: CAP })).toBeNull();
+    expect(dailyCapShortfall({ spend: { total: parseEther("0.004"), entries: four }, inMandateValues: [S, R], maxValuePerDay: CAP })).not.toBeNull();
+  });
+
+  it("names the values, the cap, when the oldest counted approval leaves the 25 h window, and how to raise the cap", () => {
     const oldest = 1_790_000_000n;
-    const entries = [entry(1, oldest + 50n), entry(2, oldest - 10n, false), entry(3, oldest), entry(4, oldest + 70n), entry(5, oldest + 90n)];
-    const message = dailyCapShortfall({ spend: { total: 5n * A, entries }, value: A, maxValuePerDay: CAP });
+    const entries = [entry(1, oldest + 50n), entry(2, oldest - 10n, false), entry(3, oldest), entry(4, oldest + 70n)];
+    const message = dailyCapShortfall({ spend: { total: 4n * S, entries }, inMandateValues: [S, R], maxValuePerDay: CAP });
     const leaves = new Date(Number(oldest + MANDATE_V1.spendWindowSeconds) * 1000).toISOString();
     expect(message).toBe(
-      `A (0.001 MON) would exceed the daily cap (0.005 MON of 0.005 MON already counted); the oldest counted approval ` +
-        `leaves the 25 h window at ${leaves}, or raise the mandate's cap with set-mandate (and E2E_MANDATE in e2e.ts)`,
+      `the run's in-mandate actions (0.001 MON + 0.001 MON = 0.002 MON) would exceed the daily cap (0.004 MON of 0.005 MON ` +
+        `already counted); the oldest counted approval leaves the 25 h window at ${leaves}, or raise the mandate's cap ` +
+        "with set-mandate (and E2E_MANDATE in e2e.ts)",
     );
   });
 });

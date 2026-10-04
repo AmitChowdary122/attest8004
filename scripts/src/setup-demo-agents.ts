@@ -12,14 +12,18 @@
  *   3. For each agent, the deployer registers its hot key: forwarder.setAgentKey(agentId, hotKey).
  *   4. Estimates forwarder.request from each hot key (a representative request JSON v1) and checks
  *      it against DEFAULT_GAS.forwarderRequest.
- *   5. Only with --fund: tops each hot key up to FUNDED_REQUESTS requests at the current max fee.
+ *   5. Only with --fund: tops each hot key up to its agent's FUNDED_REQUESTS requests at the current
+ *      max fee (agent 1984: 12, two P5 e2e runs of 6 requests each; agent 1985: 4).
  *   6. Only with --fund-validator: tops validator A up to VALIDATOR_FUND_TARGET.
+ *   7. Only with --fund-validator-b: tops validator B (`risk-v1`, DEPLOYMENTS.validators.riskV1) up
+ *      to VALIDATOR_B_FUND_TARGET, then reads its balance back.
  *
- * Run: pnpm --filter @attest8004/scripts setup-demo-agents [-- --fund --fund-validator]
+ * Run: pnpm --filter @attest8004/scripts setup-demo-agents [-- --fund --fund-validator --fund-validator-b]
  *
  * Every step is skipped when already done, so it can be re-run. Needs DEPLOYER_PRIVATE_KEY and the
- * hot keys' addresses (DEMO_AGENT_<n>_HOT_ADDRESS from the hot-keys script); never a hot key itself.
- * Every transaction has a literal gas limit and goes through the SDK's estimate guard.
+ * hot keys' addresses (DEMO_AGENT_<n>_HOT_ADDRESS from the hot-keys script); never a hot key itself,
+ * nor a validator's key. Every transaction has a literal gas limit and goes through the SDK's
+ * estimate guard.
  */
 import { getAddress, parseAbi, parseEther, parseEventLogs, type Address, type Hex } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
@@ -61,11 +65,25 @@ const GAS = {
   fund: 26_000n,
 } as const;
 
-/** Each hot key holds enough MON for this many forwarded requests, at the current max fee. */
-const FUNDED_REQUESTS = 4n;
+/**
+ * Each agent's hot key holds enough MON for this many forwarded requests, at the current max fee:
+ * agent 1984's for two P5 e2e runs (each requests three actions from both validators, 6 requests),
+ * agent 1985's for a few (the e2e only simulates a request from it).
+ */
+const FUNDED_REQUESTS: ReadonlyMap<bigint, bigint> = new Map([
+  [1984n, 12n],
+  [1985n, 4n],
+]);
 
 /** Validator A is topped up to about this much (only with --fund-validator), through sendWithGasGuard. */
 const VALIDATOR_FUND_TARGET = parseEther("2");
+
+/**
+ * Validator B is topped up to about this much (only with --fund-validator-b), through sendWithGasGuard: a
+ * `risk-v1` response's limit is its estimate x 1.2, capped at 1,000,000 gas, which is 0.122 MON at the 122 gwei
+ * max fee of 3 Oct 2026, so 1 MON pays for at least 8 responses (an e2e run sends 3).
+ */
+const VALIDATOR_B_FUND_TARGET = parseEther("1");
 
 // register/Registered aren't in the SDK's identityRegistryAbi (approve, getApproved,
 // setApprovalForAll, isApprovedForAll, ownerOf, the ERC721 events/errors); this script needs both.
@@ -84,8 +102,15 @@ const owner = privateKeyToAccount(requireEnv("DEPLOYER_PRIVATE_KEY") as Hex);
 const ownerWallet = walletFor(owner);
 const hotKeys = [requireAddress("DEMO_AGENT_1_HOT_ADDRESS"), requireAddress("DEMO_AGENT_2_HOT_ADDRESS")] as const;
 const validatorA = requireAddress("VALIDATOR_A_ADDRESS");
+/** Validator B as the deployment records it (the vault requires `risk-v1` from this address). */
+const validatorB = getAddress(deployment.validators.riskV1);
+if (process.env.VALIDATOR_B_ADDRESS && getAddress(process.env.VALIDATOR_B_ADDRESS) !== validatorB) {
+  throw new Error(`VALIDATOR_B_ADDRESS does not match validator B as DEPLOYMENTS records it (${validatorB})`);
+}
+// Each flag is matched exactly: --fund-validator-b doesn't also mean --fund-validator, nor --fund.
 const fund = process.argv.includes("--fund");
 const fundValidator = process.argv.includes("--fund-validator");
+const fundValidatorB = process.argv.includes("--fund-validator-b");
 
 async function registerAgents(): Promise<readonly bigint[]> {
   if (deployment.demoAgents.length > 0) return deployment.demoAgents;
@@ -244,11 +269,14 @@ async function main(): Promise<void> {
   // 5. Fund the hot keys for a few requests only.
   if (fund) {
     const { maxFeePerGas } = await publicClient.estimateFeesPerGas();
-    const target = FUNDED_REQUESTS * DEFAULT_GAS.forwarderRequest * maxFeePerGas;
-    for (const hotKey of hotKeys) {
+    for (const [i, id] of agents.entries()) {
+      const hotKey = hotKeys[i] as Address;
+      const requests = FUNDED_REQUESTS.get(id);
+      if (requests === undefined) throw new Error(`no FUNDED_REQUESTS entry for agent ${id}`);
+      const target = requests * DEFAULT_GAS.forwarderRequest * maxFeePerGas;
       const balance = await publicClient.getBalance({ address: hotKey });
       if (balance >= target) {
-        console.log(`  ${hotKey} holds ${mon(balance)} (target ${mon(target)})`);
+        console.log(`  agent ${id}'s hot key ${hotKey} holds ${mon(balance)} (target ${mon(target)}: ${requests} requests)`);
         continue;
       }
       const sent = await sendWithGasGuard({
@@ -260,7 +288,7 @@ async function main(): Promise<void> {
         label: `fund ${hotKey}`,
       });
       printTx(`fund ${hotKey.slice(0, 10)}…`, sent);
-      console.log(`  ${hotKey} funded with ${mon(target - balance)} (now ${mon(target)}: ${FUNDED_REQUESTS} requests)`);
+      console.log(`  agent ${id}'s hot key ${hotKey} funded with ${mon(target - balance)} (now ${mon(target)}: ${requests} requests)`);
     }
   } else {
     console.log("\nhot keys not funded (re-run with --fund)");
@@ -287,6 +315,27 @@ async function main(): Promise<void> {
     check(`validator A (${validatorA}) holds at least ${mon(VALIDATOR_FUND_TARGET)}`, after >= VALIDATOR_FUND_TARGET, mon(after));
   } else {
     console.log("validator A not funded (re-run with --fund-validator)");
+  }
+
+  // 7. Top up validator B so it can afford its responses (evidence-sized, up to 1,000,000 gas each).
+  if (fundValidatorB) {
+    const before = await publicClient.getBalance({ address: validatorB });
+    if (before < VALIDATOR_B_FUND_TARGET) {
+      const sent = await sendWithGasGuard({
+        publicClient,
+        walletClient: ownerWallet,
+        to: validatorB,
+        value: VALIDATOR_B_FUND_TARGET - before,
+        gasLimit: GAS.fund,
+        label: "fund validator B",
+      });
+      printTx("fund validator B", sent);
+      console.log(`  sent ${mon(VALIDATOR_B_FUND_TARGET - before)} to validator B`);
+    }
+    const after = await publicClient.getBalance({ address: validatorB });
+    check(`validator B (${validatorB}) holds at least ${mon(VALIDATOR_B_FUND_TARGET)}`, after >= VALIDATOR_B_FUND_TARGET, mon(after));
+  } else {
+    console.log("validator B not funded (re-run with --fund-validator-b)");
   }
 
   console.log("\nsetup OK");

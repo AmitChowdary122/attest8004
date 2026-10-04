@@ -1,7 +1,12 @@
 /**
  * Sets the end-to-end spending mandate for demo agent 1984 on Monad testnet (SPEC §4.2): the
- * targets, selectors and per-tx/per-day MON caps mandate-v1 checks before scoring an action.
+ * targets, selectors and per-tx/per-day MON caps mandate-v1 checks before scoring an action. From
+ * P5 the targets are the deployer and the DemoPassThrough (DEPLOYMENTS.demoPassThrough), the
+ * "risky but mandated" target the e2e's action R pays (SPEC §4.6, the P5 plan's decision 34):
+ * mandate-v1 allows it like any allowlisted target, and risk-v1 is meant to refuse it.
  *
+ *   0. Checks that the DemoPassThrough has code at its recorded address, so the mandate never
+ *      allowlists an address that isn't the deployed contract.
  *   1. Computes the mandate's hash with the MandateRegistry's own pure `mandateHashOf` (eth_call)
  *      and skips sending if the stored mandate's hash already equals it, unless --force is given:
  *      that sets the same mandate again, so it gets a new MandateSet log (and setAtBlock), the
@@ -9,7 +14,8 @@
  *      change, say).
  *   2. Otherwise calls setMandate(1984, mandate) from the deployer (the agent's current owner),
  *      with a literal gas limit.
- *   3. Reads getMandate(1984) back and checks every field and that owner == deployer, then checks
+ *   3. Reads getMandate(1984) back and checks every field (the targets exactly [deployer,
+ *      DemoPassThrough], in that order) and that owner == deployer, then checks
  *      the same thing mandate-v1 itself would check before trusting this mandate: no permission
  *      event for agent 1984 — an Identity Registry Transfer/Approval/ApprovalForAll, the
  *      forwarder's AgentKeySet, or another MandateRegistry MandateSet/MandateRevoked — landed
@@ -39,7 +45,10 @@ import { permissionChangedMessage, shouldSendMandate } from "./set-mandate-plan.
 
 /**
  * Explicit gas limit: Monad testnet eth_estimateGas on 3 Oct 2026 x 1.2, rounded up to 1k.
- * setMandate(1984, mandate) with exactly the constants below estimated 254,362.
+ * setMandate(1984, mandate) with the P4 constants (one target, the first mandate set) estimated
+ * 254,362. Replacing that mandate with the P5 one (two targets) costs less, since most of its slots
+ * are already non-zero: in forge with Monad gas, the first set measured 243,901 execution gas and
+ * the one-to-two-target replacement 118,165 (4 Oct 2026). The guard re-checks a fresh estimate.
  */
 const GAS = { setMandate: 306_000n } as const;
 
@@ -61,9 +70,14 @@ const ownerWallet = walletFor(owner);
 /** --force: send setMandate even when the stored mandate already matches, for a new MandateSet baseline. */
 const force = process.argv.includes("--force");
 
-/** The e2e mandate for agent 1984: plain MON transfers to the deployer only, capped and time-limited. */
+const passThrough = getAddress(deployment.demoPassThrough);
+
+/**
+ * The e2e mandate for agent 1984: plain MON transfers to the deployer and the DemoPassThrough only, in that order,
+ * capped and time-limited. The caps and expiry are P4's, unchanged.
+ */
 const MANDATE = {
-  allowedTargets: [owner.address] as Address[],
+  allowedTargets: [owner.address, passThrough] as Address[],
   allowedSelectors: ["0x00000000" as Hex],
   maxValuePerTx: parseEther("0.002"),
   maxValuePerDay: parseEther("0.005"),
@@ -134,6 +148,11 @@ async function main(): Promise<void> {
   await assertChain();
   console.log(`MandateRegistry ${mandateRegistry} (chain ${chain.id})`);
   console.log(`owner           ${owner.address} (deployer)`);
+  console.log(`pass-through    ${passThrough} (DemoPassThrough)`);
+
+  // 0. The pass-through must be the deployed contract, not an empty address.
+  const passThroughCode = await publicClient.getCode({ address: passThrough });
+  check("the DemoPassThrough has code", passThroughCode !== undefined && passThroughCode !== "0x", passThroughCode ?? "no code");
 
   const mandateHash = await publicClient.readContract({
     address: mandateRegistry,
@@ -176,8 +195,10 @@ async function main(): Promise<void> {
   });
   check(`agent ${AGENT_ID}'s stored mandate hash matches the constants`, hash === mandateHash, hash);
   check(
-    "allowedTargets is exactly the deployer",
-    mandate.allowedTargets.length === 1 && mandate.allowedTargets[0] === owner.address,
+    `allowedTargets is exactly [the deployer, the DemoPassThrough ${passThrough}]`,
+    mandate.allowedTargets.length === 2 &&
+      getAddress(mandate.allowedTargets[0] as Address) === owner.address &&
+      getAddress(mandate.allowedTargets[1] as Address) === passThrough,
     JSON.stringify(mandate.allowedTargets),
   );
   check(
