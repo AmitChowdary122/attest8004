@@ -646,30 +646,40 @@ describe("runAgent: caps", () => {
     for (const request of requests) expect(estimateTokens(request)).toBeLessThanOrEqual(RISK_V1.maxRequestTokens);
   });
 
-  it("at the worst-case calldata (512 chars of < and the largest request summary), at least 3 tool calls at the cap fit, and every request estimates <= 7,000 (fix round 1, finding 1)", async () => {
-    const text = calldataText(stringToHex("<".repeat(2_000)));
-    expect(text).toEqual([{ offset: 0, text: "<".repeat(RISK_V1.calldataTextMaxChars) }]);
+  it("at the caps (512 characters of < in 1..16 runs, the largest request summary), the room check passes and a 3-call at-cap run keeps every request <= 7,000 (fix rounds 1-2, finding 1)", async () => {
+    // The chosen caps (Task 10 fix round 2): measured worst case 6,828 of 7,000 for the room check, at 16 runs of 32.
+    expect(RISK_V1.calldataTextMaxChars).toBe(512);
+    expect(RISK_V1.calldataTextMaxRuns).toBe(16);
+    const cap = RISK_V1.calldataTextMaxChars;
+    for (let n = 1; n <= RISK_V1.calldataTextMaxRuns; n++) {
+      // n runs of `<` totalling the cap, after 1,000 zero bytes (4-digit offsets, as in a full-size request).
+      const runs = Array.from({ length: n }, (_, i) => stringToHex("<".repeat(Math.floor(cap / n) + (i < cap % n ? 1 : 0))));
+      const data = concatHex([hex(`0x${"00".repeat(1_000)}`), ...runs.flatMap((run) => [run, hex("0x00")])]);
+      const text = calldataText(data);
+      expect(text).toHaveLength(n);
+      expect(text.reduce((sum, r) => sum + r.text.length, 0)).toBe(cap);
+
+      const reader = makeReader({ trace: vi.fn(async () => okTrace(bigFrame())) });
+      const { client, requests } = scripted((request) => (request.tools ? toolTurn([call("simulate_action")]) : textTurn(EMPTY)));
+      const result = await run({ llm: client, reader, data: largestData(text) }); // resolves: the room check passed
+      expect(canonicalJson(result.toolCalls[0]?.output).length).toBeGreaterThan(1_400);
+      const ran = result.toolCalls.filter((c) => !JSON.stringify(c.output).includes("TOOL_CALL_LIMIT"));
+      expect(ran.length).toBeGreaterThanOrEqual(3);
+      for (const request of requests) expect(estimateTokens(request)).toBeLessThanOrEqual(RISK_V1.maxRequestTokens);
+      expect(isFinalRequest(requests.at(-1) as ChatRequest)).toBe(true);
+      expect(result.findings).toEqual([]);
+    }
+  });
+
+  it("64 short runs of < (the largest summary): only the first 16 runs are kept, so the room check passes and 3 calls fit", async () => {
+    const run8 = stringToHex("<".repeat(8));
+    const text = calldataText(concatHex(Array.from({ length: 64 }, () => concatHex([run8, "0x00"]))));
+    expect(text).toHaveLength(16);
     const reader = makeReader({ trace: vi.fn(async () => okTrace(bigFrame())) });
     const { client, requests } = scripted((request) => (request.tools ? toolTurn([call("simulate_action")]) : textTurn(EMPTY)));
     const result = await run({ llm: client, reader, data: largestData(text) });
-
-    expect(canonicalJson(result.toolCalls[0]?.output).length).toBeGreaterThan(1_400);
-    const ran = result.toolCalls.filter((c) => !JSON.stringify(c.output).includes("TOOL_CALL_LIMIT"));
-    expect(ran.length).toBeGreaterThanOrEqual(3);
-    const estimates = requests.map((r) => estimateTokens(r));
-    for (const estimate of estimates) expect(estimate).toBeLessThanOrEqual(RISK_V1.maxRequestTokens);
-    expect(isFinalRequest(requests.at(-1) as ChatRequest)).toBe(true);
-    expect(result.findings).toEqual([]);
-  });
-
-  it("at the 512-char cap, 64 short runs of < with the largest summary leave no room for 3 answers: rejected before any model call, never sent (fails closed)", async () => {
-    const run8 = stringToHex("<".repeat(8));
-    const data = concatHex(Array.from({ length: 64 }, () => concatHex([run8, "0x00"])));
-    const text = calldataText(data);
-    expect(text).toHaveLength(64);
-    const { client, requests } = scripted([textTurn(EMPTY)]);
-    await expect(run({ llm: client, data: largestData(text) })).rejects.toThrow("room for 3 tool answers");
-    expect(requests).toHaveLength(0);
+    expect(result.toolCalls.filter((c) => !JSON.stringify(c.output).includes("TOOL_CALL_LIMIT")).length).toBeGreaterThanOrEqual(3);
+    for (const request of requests) expect(estimateTokens(request)).toBeLessThanOrEqual(RISK_V1.maxRequestTokens);
   });
 
   it("initial messages that don't fit are never sent: runAgent rejects before any model call", async () => {

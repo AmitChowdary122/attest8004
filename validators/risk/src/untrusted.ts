@@ -57,7 +57,10 @@ function isPrintable(byte: number): boolean {
  * (shorter runs are dropped), with `offset` the run's byte offset into `data`. The combined `text`
  * length across every returned run never exceeds `RISK_V1.calldataTextMaxChars`: the run that would
  * cross that cap is cut to fit exactly, and every run after it is dropped (so truncation is
- * deterministic and always lands at the same point for the same input).
+ * deterministic and always lands at the same point for the same input). At most
+ * `RISK_V1.calldataTextMaxRuns` runs are returned, the first ones by offset (a dropped short run
+ * doesn't count): each run costs its own JSON wrapper in the model's first message, so the two caps
+ * together bound that message (Task 10 fix round 2).
  *
  * This is what feeds the request's calldata to Prompt Guard and, delimited, to the model — it is the
  * only place in the calldata an agent could plant free text (Decision 12).
@@ -92,7 +95,7 @@ export function calldataText(data: Hex): { offset: number; text: string }[] {
     for (let k = start; k < start + take; k++) text += String.fromCharCode(bytes[k] as number);
     runs.push({ offset: start, text });
     used += text.length;
-    if (take < length) break;
+    if (take < length || runs.length >= RISK_V1.calldataTextMaxRuns) break;
     i = end;
   }
   return runs;

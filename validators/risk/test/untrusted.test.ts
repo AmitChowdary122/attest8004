@@ -90,6 +90,34 @@ describe("calldataText", () => {
     expect(runs[1]?.text).toBe("C".repeat(502));
   });
 
+  it("keeps at most calldataTextMaxRuns (16) runs: the first 16 by offset (Task 10 fix round 2)", () => {
+    expect(RISK_V1.calldataTextMaxRuns).toBe(16);
+    const texts = Array.from({ length: 20 }, (_, i) => String.fromCharCode(65 + i).repeat(10));
+    const data = hex(...texts.flatMap((t) => [stringToHex(t), numberToHex(0, { size: 1 })]));
+    const runs = calldataText(data);
+    expect(runs).toHaveLength(16);
+    expect(runs.map((r) => r.offset)).toEqual(Array.from({ length: 16 }, (_, i) => i * 11));
+    expect(runs.map((r) => r.text)).toEqual(texts.slice(0, 16));
+  });
+
+  it("runs dropped for being too short don't count toward the 16", () => {
+    const parts: Hex[] = [];
+    for (let i = 0; i < 20; i++) parts.push(stringToHex("short"), numberToHex(0, { size: 1 }));
+    for (let i = 0; i < 17; i++) parts.push(stringToHex(`run-${String(i).padStart(4, "0")}`), numberToHex(0, { size: 1 }));
+    const runs = calldataText(hex(...parts));
+    expect(runs).toHaveLength(16);
+    expect(runs.map((r) => r.text)).toEqual(Array.from({ length: 16 }, (_, i) => `run-${String(i).padStart(4, "0")}`));
+  });
+
+  it("the run cap and the character cap both apply: 16 runs of 40 characters stop at 512 in total (the 13th run cut, the rest dropped)", () => {
+    const data = hex(...Array.from({ length: 16 }, () => [stringToHex("E".repeat(40)), numberToHex(0, { size: 1 })]).flat());
+    const runs = calldataText(data);
+    expect(runs).toHaveLength(13);
+    expect(runs.slice(0, 12).every((r) => r.text === "E".repeat(40))).toBe(true);
+    expect(runs[12]).toEqual({ offset: 12 * 41, text: "E".repeat(32) });
+    expect(runs.reduce((sum, r) => sum + r.text.length, 0)).toBe(RISK_V1.calldataTextMaxChars);
+  });
+
   it("returns no runs for calldata with no printable text", () => {
     expect(calldataText(toHex(new Uint8Array([0, 1, 2, 3])))).toEqual([]);
   });
