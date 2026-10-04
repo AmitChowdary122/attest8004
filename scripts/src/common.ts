@@ -13,6 +13,7 @@ import {
   type WalletClient,
 } from "viem";
 import { monadTestnet } from "viem/chains";
+import { rateLimitedFetch } from "./rpc-rate-limit.ts";
 
 export const chain = monadTestnet;
 
@@ -27,9 +28,12 @@ export function requireAddress(name: string): Address {
 }
 
 const rpcUrl = requireEnv("MONAD_TESTNET_RPC_URL");
-export const publicClient: PublicClient = createPublicClient({ chain, transport: http(rpcUrl) });
+// One limiter for every client in the process (the e2e's own reads and its in-process validators share it): the
+// public RPC refuses more than 15 requests a second per IP (-32011), so stay at 10 and retry a refusal.
+const fetchFn = rateLimitedFetch({ requestsPerSecond: 10, retries: 6, retryDelayMs: 1_000 });
+export const publicClient: PublicClient = createPublicClient({ chain, transport: http(rpcUrl, { fetchFn }) });
 export const walletFor = (account: Account): WalletClient =>
-  createWalletClient({ account, chain, transport: http(rpcUrl) });
+  createWalletClient({ account, chain, transport: http(rpcUrl, { fetchFn }) });
 
 export async function assertChain(): Promise<void> {
   const id = await publicClient.getChainId();
