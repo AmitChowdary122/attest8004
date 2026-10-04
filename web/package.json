@@ -7,19 +7,26 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "build": "tsc --noEmit && vite build",
+    "build": "pnpm run typecheck && vite build",
     "preview": "vite preview",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit -p tsconfig.json && tsc --noEmit -p tsconfig.node.json",
+    "test": "vitest run"
   },
   "dependencies": {
+    "@attest8004/sdk": "workspace:*",
+    "@category-labs/mera": "0.2.0",
     "react": "^19.3.0",
-    "react-dom": "^19.3.0"
+    "react-dom": "^19.3.0",
+    "viem": "catalog:",
+    "zod": "catalog:"
   },
   "devDependencies": {
+    "@types/node": "catalog:",
     "@types/react": "^19.3.0",
     "@types/react-dom": "^19.3.0",
     "@vitejs/plugin-react": "^6.1.1",
     "typescript": "catalog:",
-    "vite": "^8.3.2"
+    "vite": "^8.3.2",
+    "vitest": "catalog:"
   }
 }

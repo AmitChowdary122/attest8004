@@ -204,12 +204,15 @@ export async function verifyAssertionLocally(o: {
   if (r <= 0n || r >= P256_N || s <= 0n || !isOnP256(o.qx, o.qy)) return { ok: false, problem: "SIGNATURE" };
 
   const subtle = globalThis.crypto.subtle;
-  const key = await subtle.importKey("raw", hexToBytes(concat(["0x04", o.qx, o.qy])), { name: "ECDSA", namedCurve: "P-256" }, false, [
-    "verify",
-  ]);
-  const signed = hexToBytes(concat([auth.authenticatorData, sha256(clientData)]));
-  const valid = await subtle.verify({ name: "ECDSA", hash: "SHA-256" }, key, hexToBytes(concat([auth.r, auth.s])), signed);
+  const key = await subtle.importKey("raw", bufferOf(concat(["0x04", o.qx, o.qy])), { name: "ECDSA", namedCurve: "P-256" }, false, ["verify"]);
+  const signed = bufferOf(concat([auth.authenticatorData, sha256(clientData)]));
+  const valid = await subtle.verify({ name: "ECDSA", hash: "SHA-256" }, key, bufferOf(concat([auth.r, auth.s])), signed);
   return valid ? { ok: true } : { ok: false, problem: "SIGNATURE" };
+}
+
+/** Hex as bytes backed by a plain ArrayBuffer, the `BufferSource` WebCrypto and WebAuthn take under the DOM types. */
+export function bufferOf(hex: Hex): Uint8Array<ArrayBuffer> {
+  return new Uint8Array(hexToBytes(hex));
 }
 
 function toBytes32(value: bigint): Hex {

@@ -7,7 +7,10 @@
     "types": ["vite/client"],
     "jsx": "react-jsx",
     "declaration": false,
-    "noEmit": true
+    "noEmit": true,
+    // @attest8004/sdk is imported as TypeScript source through its "@attest8004/source" export condition.
+    "allowImportingTsExtensions": true,
+    "customConditions": ["@attest8004/source"]
   },
-  "include": ["src", "vite.config.ts"]
+  "include": ["src"]
 }

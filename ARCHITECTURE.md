@@ -194,12 +194,15 @@ sequenceDiagram
   Op->>ID: register agent (owner = operator wallet)
   Op->>ID: approve(AgentRequestForwarder, agentId)  [per agent; the demo's choice, §7]
   Op->>F: setAgentKey(agentId, agent hot key)  [owner wallet tx]
-  Op->>W: create passkey (Google Password Manager / iCloud)
-  W->>MR: setPasskey(agentId, qx, qy)  [owner wallet tx; once; key on the P-256 curve]
+  Op->>W: create passkey (ES256 only, PRF requested; Google Password Manager / iCloud)
+  W-->>Op: registration file (public: qx, qy, credential id)
+  Op->>MR: set-passkey → setPasskey(agentId, qx, qy)  [owner wallet tx; once; key on the P-256 curve]
   MR->>ID: ownerOf(agentId) == msg.sender?
-  Op->>W: approve mandate (targets, selectors, caps, expiry)
-  W->>W: WebAuthn assertion over challenge = sha256(abi.encode(chainId, MR, agentId, mandateHash, nonceOf(agentId)))
-  W->>MR: setMandate(agentId, mandate, webauthnAuth)  [owner wallet tx]
+  Op->>W: Mera PRF check (fingerprint of a check-only salt; equal on every device)
+  Op->>W: approve mandate (shown in plain words; nonce and passkey read from chain)
+  W->>W: WebAuthn assertion over challenge = sha256(abi.encode(chainId, MR, agentId, mandateHash, nonceOf(agentId))); low-s; verified locally against the onchain key
+  W-->>Op: approval file (public)
+  Op->>MR: submit-approval → setMandate(agentId, mandate, webauthnAuth)  [owner wallet tx]
   MR->>ID: ownerOf(agentId) == msg.sender?
   MR->>MR: passkey set? authenticatorData starts with rpIdHash?
   MR->>MR: type "webauthn.get", challenge, UP + UV flags, low-s (OpenZeppelin WebAuthn)
@@ -210,7 +213,20 @@ sequenceDiagram
   W->>MR: setInboxKey(agentId, x25519Pub, webauthnAuth)  [owner wallet tx; same two factors]
 ```
 
-> **P4 vs. P6.** The `MandateRegistry` steps above are MandateRegistry v2 as built in P6 (`contracts/src/MandateRegistry.sol`), built and tested but **not yet deployed**. Until it is, the live registry is P4's: the owner's wallet alone calls `setMandate(agentId, mandate)` and `revokeMandate(agentId)`, with no passkey. In v2, `revokeMandate(agentId)` stays owner-only (no passkey) and also increments the nonce (§7). The web steps (`/approve`, `/inbox`) are still design.
+> **P4 vs. P6.** The `MandateRegistry` steps above are MandateRegistry v2 as built in P6 (`contracts/src/MandateRegistry.sol`), built and tested but **not yet deployed**. Until it is, the live registry is P4's: the owner's wallet alone calls `setMandate(agentId, mandate)` and `revokeMandate(agentId)`, with no passkey. In v2, `revokeMandate(agentId)` stays owner-only (no passkey) and also increments the nonce (§7). `/approve` is built (P6); `/inbox` is still design.
+>
+> **`/approve`, as built (P6; `web/src/approve/`).** A client-only page: no server, and nothing stored (no localStorage, sessionStorage, IndexedDB or cookie).
+> - **What it does.** It creates the passkey and exports its public registration. It runs the Mera PRF check. It reads the agent's owner, passkey, nonce and current mandate from the public RPC. It shows the new mandate in plain words next to the current one. It cross-checks its own `mandateHash` and challenge against the registry's `mandateHashOf` and `challengeFor`. Then it asks for the assertion and verifies it locally against the agent's onchain key, refusing to export on any mismatch (the wrong passkey picked, flags, rpId, challenge). Finally it exports the signed approval (§6, "Passkey files").
+> - **It never sends a transaction.** The owner's wallet does, through `set-passkey` and `submit-approval`, and both re-check everything first. Neither factor alone can change a mandate.
+> - **Ceremonies run only on `attest8004.vercel.app`** (`isApproveHost`). Anywhere else the buttons are disabled, so a passkey is never created on a preview URL or on localhost.
+> - **Security headers** come from `web/vercel.json`, and `vite preview` serves the same ones:
+>   - a CSP of `default-src 'self'; connect-src 'self' https://testnet-rpc.monad.xyz; frame-ancestors 'none'; object-src 'none'; base-uri 'none'`, so the page loads no third-party code, talks only to the testnet RPC and can't be framed (clickjacking);
+>   - `X-Frame-Options: DENY`;
+>   - `Referrer-Policy: no-referrer`.
+>
+>   zod runs `jitless`, so its `new Function` probe doesn't trip the CSP.
+> - **No URL input.** The page never reads a value from the query string or the fragment. The agent, the mandate and everything else come from presets, typed input or the chain, so a phishing link can't pre-fill a malicious mandate. A query or fragment is stripped unread, with a notice, and `web/test/no-url-input.test.ts` enforces this on the source.
+> - **The build's commit is in the footer** (`VERCEL_GIT_COMMIT_SHA`), so production can be matched to a commit before anyone uses a passkey on it.
 >
 > **Per-token approval in the demo.** The diagram's `approve(forwarder, agentId)` is a per-token ERC-721 approval, scoped to one agent, which is what the demo uses for both demo agents (§7 has the trade-off against the alternative, a blanket `setApprovalForAll`). An owner with many agents can still choose the blanket approval instead; either way the forwarder only ever calls `validationRequest`.
 
@@ -600,6 +616,8 @@ The recommended gate policy is *require `mandate-v1` = 100 **and** `risk-v1` ≥
 | Envio API token | Bearer token | Indexer env | Builder | None |
 
 The LLM never sees or holds any private key. Validators sign; the model only proposes a structured verdict, which is checked against a schema.
+
+`/approve` handles only public data: the passkey's public key, the credential id, and assertions, which are public once submitted. It shows no PRF output. Its Mera check evaluates a check-only salt, `sha256("attest8004.prf-check.v1")`, never P7's inbox salt. It shows the first 8 bytes of `sha256(output)`, so two devices can be compared, and zeroes the output at once.
 
 ---
 

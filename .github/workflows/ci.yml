@@ -131,3 +131,6 @@ jobs:
 
       - name: Test
         run: pnpm test
+
+      - name: Build the web app (what Vercel deploys)
+        run: pnpm --filter @attest8004/web build
