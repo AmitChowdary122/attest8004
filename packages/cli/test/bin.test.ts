@@ -6,7 +6,7 @@ import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 
 const REPO_ROOT = fileURLToPath(new URL("../../../", import.meta.url));
-const BIN = "validators/mandate/bin/attest8004.mjs";
+const BIN = "packages/cli/bin/attest8004.mjs";
 /** The root `attest8004` script's flags, without `--env-file-if-exists` (the tests read no `.env`). */
 const FLAGS = ["--conditions=@attest8004/source"];
 
@@ -24,9 +24,11 @@ function run(nodeArgs: string[], args: string[]): { status: number | null; stdou
 }
 
 describe("bin/attest8004.mjs", () => {
-  it("runs the CLI: --help prints the usage and exits 0", () => {
+  it("runs the CLI: --help prints the usage, naming both tags, and exits 0", () => {
     const { status, stdout } = run(FLAGS, ["--help"]);
     expect(stdout).toContain("usage: attest8004 verify <requestHash>");
+    expect(stdout).toContain("mandate-v1");
+    expect(stdout).toContain("risk-v1");
     expect(status).toBe(0);
   });
 

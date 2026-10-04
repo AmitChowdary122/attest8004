@@ -1,16 +1,22 @@
-// `attest8004 verify <requestHash> [--rpc-url URL] [--json]` (SPEC §4.5): re-runs a `mandate-v1`
-// verdict at the block its evidence pins, from chain data alone, and compares the score and
-// responseHash with the ones posted onchain. From the repo root: `pnpm attest8004 verify <requestHash>`,
-// through bin/attest8004.mjs (which turns an old Node, a load failure or an uncaught error into exit 2).
-// Read-only: it never sends a transaction. Its own output never prints the RPC URL it was given,
-// which can carry an API key: errors show viem's short message only. pnpm, though, echoes the command
-// line it runs, so a keyed URL belongs in MONAD_TESTNET_RPC_URL (or `pnpm --loglevel silent` with
-// --rpc-url; pnpm 12 has no `-s` for `pnpm run`).
+// `attest8004 verify <requestHash> [--rpc-url URL] [--json]` (SPEC §4.5, §4.6): re-checks a posted
+// verdict from chain data alone. It reads the response's tag once and sends it to that tag's verifier:
+// `mandate-v1` is re-run at the block its evidence pins (score and responseHash must reproduce);
+// `risk-v1` is re-checked from its public evidence (the score from the recorded findings, the
+// injection rule, every onchain tool call the model saw re-run at the pin, the mandate-v1 verdict it
+// required) without ever re-running the model. Any other tag is UNKNOWN_TAG (exit 2).
+//
+// From the repo root: `pnpm attest8004 verify <requestHash>`, through bin/attest8004.mjs (which turns an
+// old Node, a load failure or an uncaught error into exit 2). Read-only: it never sends a transaction.
+// Its own output never prints the RPC URL it was given, which can carry an API key: errors show viem's
+// short message only. pnpm, though, echoes the command line it runs, so a keyed URL belongs in
+// MONAD_TESTNET_RPC_URL (or `pnpm --loglevel silent` with --rpc-url; pnpm 12 has no `-s` for `pnpm run`).
 import { realpathSync } from "node:fs";
 import { fileURLToPath } from "node:url";
-import { BaseError, createPublicClient, formatEther, http } from "viem";
-import { viemMandateReader, type VerifyReader } from "./reader.ts";
-import { verifyContextFor, verifyRequest, type VerifyContext, type VerifyProblem, type VerifyReport, type VerifyVerdict } from "./verify.ts";
+import { deploymentsFor } from "@attest8004/sdk";
+import { MANDATE_V1, statusOrUnknown, verifyContextFor, verifyRequest, type VerifyReport, type VerifyVerdict } from "@attest8004/validator-mandate";
+import { RISK_V1, riskAddressesFor, verifyRiskRequest, viemRiskReader, type RiskReader, type RiskVerifyReport } from "@attest8004/validator-risk";
+import { BaseError, createPublicClient, http, type Hex } from "viem";
+import { jsonText, mandateText, printable, riskJson, riskText, unknownTagJson, unknownTagText } from "./text.ts";
 
 /** Monad's public testnet RPC: the default, so a third party needs no `.env`. */
 export const DEFAULT_RPC_URL = "https://testnet-rpc.monad.xyz";
@@ -18,8 +24,14 @@ export const DEFAULT_RPC_URL = "https://testnet-rpc.monad.xyz";
 export const USAGE = [
   "usage: attest8004 verify <requestHash> [--rpc-url URL] [--json]",
   "",
-  "Re-runs a mandate-v1 verdict at the block its evidence pins, from chain data alone, and compares",
-  "the score and responseHash with the ones posted onchain. Read-only.",
+  "Re-checks a posted verdict from chain data alone, by the response's tag. Read-only.",
+  "  mandate-v1  re-runs the verdict at the block its evidence pins, and compares the score and",
+  "              responseHash with the ones posted onchain.",
+  "  risk-v1     re-derives the score from the recorded findings, re-applies the injection rule to",
+  "              the recorded classifier results, re-runs every onchain tool call the model saw at",
+  "              the pinned block, and re-checks the mandate-v1 verdict it required. It never",
+  "              re-runs the model: the model output is recorded, not re-run, so a match doesn't",
+  "              prove that the model produced it.",
   "",
   "  <requestHash>   the request's hash: 0x and 64 hex digits",
   "  --rpc-url URL   a Monad testnet RPC (default: $MONAD_TESTNET_RPC_URL, else the public RPC).",
@@ -32,17 +44,26 @@ export const USAGE = [
   "",
   "exit codes: 0 match; 1 mismatch (public proof that the validator misbehaved);",
   "            2 could not verify: bad usage, an RPC error, something not found",
-  "              (REQUEST_NOT_FOUND, RESPONSE_NOT_FOUND), another validator's tag (NOT_MANDATE_V1),",
-  "              evidence that isn't inline JSON verify decodes (EVIDENCE_NOT_DECODED), or a Node",
-  "              that can't run the CLI (it needs Node 22.18 or later)",
+  "              (REQUEST_NOT_FOUND, RESPONSE_NOT_FOUND, an input log), a tag other than mandate-v1",
+  "              and risk-v1 (UNKNOWN_TAG), evidence that isn't inline JSON verify decodes",
+  "              (EVIDENCE_NOT_DECODED), or a Node that can't run the CLI (it needs Node 22.18",
+  "              or later)",
 ].join("\n");
+
+/** The verifiers `main` dispatches to, over one RPC. */
+export interface Verifiers {
+  /** The request's tag at the finalized head: `null` when the registry has no such request, `""` while it has no response. */
+  status(requestHash: Hex): Promise<{ tag: string } | null>;
+  /** `mandate-v1`'s `verifyRequest`. It also reports a request with no response, or none at all. */
+  mandate(requestHash: Hex): Promise<VerifyReport>;
+  /** `risk-v1`'s `verifyRiskRequest`. */
+  risk(requestHash: Hex): Promise<RiskVerifyReport>;
+}
 
 /** What `main` needs from the outside world, so tests can script it. */
 export interface CliDeps {
-  /** Connects to the RPC at `rpcUrl`: a reader, and the chain's recorded deployment to check against. */
-  connect(rpcUrl: string): Promise<{ reader: VerifyReader } & VerifyContext>;
-  /** Default {@link verifyRequest}. */
-  verify?: typeof verifyRequest;
+  /** Connects to the RPC at `rpcUrl`: the verifiers, over the chain's recorded deployment. */
+  connect(rpcUrl: string): Promise<Verifiers>;
   /** Writes `text` and a newline. */
   stdout(text: string): void;
   stderr(text: string): void;
@@ -54,7 +75,16 @@ const HISTORY_HINT =
   "If the pinned block is older than the RPC's history (the public RPC serves about 51 days), use an archive RPC: " +
   "MONAD_TESTNET_RPC_URL=<url> pnpm attest8004 verify <requestHash> (pnpm would echo a URL passed with --rpc-url).";
 
-/** Runs the CLI on `argv` (the arguments after the script) and returns its exit code. Never throws. */
+type Outcome = { kind: "mandate"; report: VerifyReport } | { kind: "risk"; report: RiskVerifyReport } | { kind: "unknown"; tag: string };
+
+/**
+ * Runs the CLI on `argv` (the arguments after the script) and returns its exit code. Never throws.
+ *
+ * Reads the request's tag once: `mandate-v1`, or no response yet, or no such request, goes to the
+ * `mandate-v1` verifier (which reports the last two as `RESPONSE_NOT_FOUND` and `REQUEST_NOT_FOUND`);
+ * `risk-v1` goes to the `risk-v1` verifier; any other tag prints `could not verify: UNKNOWN_TAG
+ * "<tag>"`. Exit 0 match, 1 mismatch, 2 could not verify (including any failed read).
+ */
 export async function main(argv: readonly string[], env: Record<string, string | undefined>, deps: CliDeps): Promise<number> {
   const command = parseCommand(argv);
   if (command.kind === "help") {
@@ -71,17 +101,62 @@ export async function main(argv: readonly string[], env: Record<string, string |
     return 2;
   }
 
-  let report: VerifyReport;
+  let outcome: Outcome;
   try {
-    const connected = await deps.connect(rpc.url);
-    report = await (deps.verify ?? verifyRequest)({ ...connected, requestHash: command.requestHash });
+    const verifiers = await deps.connect(rpc.url);
+    const status = await verifiers.status(command.requestHash);
+    if (status === null || status.tag === "" || status.tag === MANDATE_V1.tag) {
+      outcome = { kind: "mandate", report: await verifiers.mandate(command.requestHash) };
+    } else if (status.tag === RISK_V1.tag) {
+      outcome = { kind: "risk", report: await verifiers.risk(command.requestHash) };
+    } else {
+      outcome = { kind: "unknown", tag: status.tag };
+    }
   } catch (error) {
     deps.stderr(printable(`could not verify ${command.requestHash}: ${redact(errorText(error), rpc.url)}`));
     return 2;
   }
-  // The report is built from chain data and our own text, never from the URL, so it is printed as is.
-  deps.stdout(printable(command.json ? jsonText(report) : humanText(report)));
-  return EXIT_CODES[report.verdict];
+  // The reports are built from chain data and our own text, never from the URL, so they are printed as is.
+  switch (outcome.kind) {
+    case "mandate":
+      deps.stdout(printable(command.json ? jsonText(outcome.report) : mandateText(outcome.report)));
+      return EXIT_CODES[outcome.report.verdict];
+    case "risk":
+      deps.stdout(printable(command.json ? riskJson(outcome.report) : riskText(outcome.report)));
+      return EXIT_CODES[outcome.report.verdict];
+    case "unknown":
+      deps.stdout(printable(command.json ? unknownTagJson(command.requestHash.toLowerCase(), outcome.tag) : unknownTagText(outcome.tag)));
+      return 2;
+  }
+}
+
+/**
+ * The real verifiers over one `RiskReader` (a `risk-v1` reader is also everything `mandate-v1`'s
+ * `verify` reads), checking against the SDK's recorded deployment for `chainId` (`DEPLOYMENTS`):
+ * `mandate-v1` with `verifyContextFor(chainId)`; `risk-v1` with the same deploy blocks, the contracts
+ * `risk-v1` reads (`riskAddressesFor`) and validator A (`validators.mandateV1`). Throws for a chain with
+ * no recorded deployment. The two verify functions can be replaced, for tests.
+ */
+export function chainVerifiers(o: {
+  reader: RiskReader;
+  chainId: number;
+  verifyMandate?: typeof verifyRequest;
+  verifyRisk?: typeof verifyRiskRequest;
+}): Verifiers {
+  const { reader, chainId } = o;
+  const mandateContext = verifyContextFor(chainId);
+  const riskContext = { ...mandateContext, addresses: riskAddressesFor(chainId), mandateValidator: deploymentsFor(chainId).validators.mandateV1 };
+  const verifyMandate = o.verifyMandate ?? verifyRequest;
+  const verifyRisk = o.verifyRisk ?? verifyRiskRequest;
+  return {
+    async status(requestHash) {
+      const head = await reader.finalized();
+      const status = await statusOrUnknown(reader, requestHash, head.number);
+      return status === null ? null : { tag: status.tag };
+    },
+    mandate: (requestHash) => verifyMandate({ reader, requestHash, ...mandateContext }),
+    risk: (requestHash) => verifyRisk({ reader, requestHash, context: riskContext }),
+  };
 }
 
 /** The real dependencies: a viem client over HTTP, and the process's stdout and stderr. */
@@ -89,8 +164,8 @@ export function nodeCliDeps(): CliDeps {
   return {
     async connect(rpcUrl) {
       const publicClient = createPublicClient({ transport: http(rpcUrl) });
-      const context = verifyContextFor(await publicClient.getChainId());
-      return { reader: viemMandateReader({ publicClient, addresses: context.addresses }), ...context };
+      const chainId = await publicClient.getChainId();
+      return chainVerifiers({ reader: viemRiskReader({ publicClient, addresses: riskAddressesFor(chainId) }), chainId });
     },
     stdout: (text) => process.stdout.write(`${text}\n`),
     stderr: (text) => process.stderr.write(`${text}\n`),
@@ -100,7 +175,7 @@ export function nodeCliDeps(): CliDeps {
 type Command =
   | { kind: "help" }
   | { kind: "usage"; error: string }
-  | { kind: "verify"; requestHash: `0x${string}`; rpcUrl: string | undefined; json: boolean };
+  | { kind: "verify"; requestHash: Hex; rpcUrl: string | undefined; json: boolean };
 
 /** Parses the arguments. Its errors never echo an argument, which could be a URL with a key in it. */
 function parseCommand(argv: readonly string[]): Command {
@@ -131,7 +206,7 @@ function parseCommand(argv: readonly string[]): Command {
   if (requestHash === undefined) return usage("missing <requestHash>");
   if (rest.length > 0) return usage("too many arguments");
   if (!REQUEST_HASH.test(requestHash)) return usage("<requestHash> must be 0x followed by 64 hex digits");
-  return { kind: "verify", requestHash: requestHash as `0x${string}`, rpcUrl, json };
+  return { kind: "verify", requestHash: requestHash as Hex, rpcUrl, json };
 }
 
 /** `--rpc-url`, else `MONAD_TESTNET_RPC_URL` (blank counts as unset), else the public RPC. Errors never echo it. */
@@ -170,87 +245,6 @@ function redact(text: string, rpcUrl: string): string {
   const url = URL.parse(rpcUrl);
   const secrets = [rpcUrl, url?.href, url !== null && url.port !== "" ? url.host : undefined];
   return secrets.reduce<string>((out, secret) => (secret ? out.split(secret).join("<rpc>") : out), text);
-}
-
-/**
- * Escapes control characters (except newlines) and bidirectional overrides as `\uXXXX`, so strings
- * from the chain (a response's tag, the posted evidence's keys) can't drive the terminal. Inside JSON
- * strings the escape is still valid JSON for the same character.
- */
-function printable(text: string): string {
-  return text.replace(/[\u0000-\u0009\u000b-\u001f\u007f-\u009f\u200e\u200f\u2028\u2029\u202a-\u202e\u2066-\u2069]/g, (c) =>
-    `\\u${c.charCodeAt(0).toString(16).padStart(4, "0")}`,
-  );
-}
-
-/** The report as one line of JSON, every `bigint` as a decimal string. */
-function jsonText(report: VerifyReport): string {
-  return JSON.stringify(report, (_key, value: unknown) => (typeof value === "bigint" ? value.toString() : value));
-}
-
-const PROBLEM_TEXT: Record<VerifyProblem, string> = {
-  NOT_MANDATE_V1: "the response isn't tagged mandate-v1, so there is no mandate-v1 run to repeat",
-  RESPONSE_NOT_FOUND: "no response yet, or its ValidationResponse log wasn't found (retry later)",
-  EVIDENCE_NOT_DECODED:
-    "the response URI isn't inline JSON verify decodes (not a data: URI, over 128 KiB, or malformed); verify never fetches",
-  EVIDENCE_HASH_MISMATCH: "the evidence at responseURI doesn't hash to the onchain responseHash",
-  REQUEST_NOT_FOUND:
-    "the registry has no such request, or its ValidationRequest log wasn't returned for the block state confirms (retry later)",
-  REQUEST_BLOCK_WRONG: "the evidence names a request block the request wasn't made in (the registry's state shows otherwise)",
-  REQUEST_INVALID:
-    "the request's JSON doesn't hash to the requestHash, names another validator, agent or chain, or has a deadline more than " +
-    "3,600 s after the pinned block's time; it must not be answered",
-  PIN_OUT_OF_RANGE: "the evidence's pinned block isn't between the request's block and the response's block",
-  SCORE_MISMATCH: "the onchain score isn't the recomputed score",
-  RESPONSE_HASH_MISMATCH: "the onchain responseHash isn't the hash of the recomputed evidence",
-};
-
-function verdictLine(report: VerifyReport): string {
-  switch (report.verdict) {
-    case "match":
-      return `match: re-running mandate-v1 at block ${report.pinnedBlock} gives the posted score and responseHash`;
-    case "mismatch":
-      return "MISMATCH: the posted verdict doesn't reproduce. This is public proof that the validator misbehaved.";
-    case "unverifiable": {
-      const [first] = report.problems;
-      return `could not verify: ${first === undefined ? "unknown" : PROBLEM_TEXT[first]}. Nothing is proven either way.`;
-    }
-  }
-}
-
-function humanText(report: VerifyReport): string {
-  const lines = [verdictLine(report), ""];
-  const row = (label: string, value: string) => lines.push(`${label.padEnd(19)}${value}`);
-  const more = (value: string) => row("", value);
-  const { posted, recomputed, pinned } = report;
-
-  row("request", report.requestHash);
-  row("validator", report.validator);
-  row("tag", JSON.stringify(posted.tag));
-  if (pinned !== null) {
-    row("pinned block", `${pinned.number}  ${pinned.hash}`);
-    more(`${new Date(Number(pinned.timestamp) * 1000).toISOString()} (${pinned.timestamp})`);
-  } else {
-    row("pinned block", report.pinnedBlock === null ? "-" : `${report.pinnedBlock} (named by the evidence; not re-run)`);
-  }
-  row("score", `posted ${posted.score}, recomputed ${recomputed?.score ?? "-"}`);
-  row("responseHash", `posted     ${posted.responseHash}`);
-  more(`recomputed ${recomputed?.responseHash ?? "-"}`);
-  if (recomputed !== null) {
-    row("reasons", recomputed.reasons.length === 0 ? "none" : recomputed.reasons.join(", "));
-    row("spend", `${report.spendEntries.length} mandate-v1 approval(s) in the 25 h window`);
-    for (const entry of report.spendEntries) {
-      more(`${entry.requestHash}  ${entry.value} wei (${formatEther(entry.value)} MON)  ${entry.counted ? "counted" : "not counted"}`);
-    }
-    row("permission events", `${report.permissionEvents.length} in the window`);
-  }
-  if (report.problems.length === 0) {
-    row("problems", "none");
-  } else {
-    report.problems.forEach((problem, i) => row(i === 0 ? "problems" : "", `${problem}: ${PROBLEM_TEXT[problem]}`));
-  }
-  if (report.differingKeys.length > 0) row("differing keys", report.differingKeys.join(", "));
-  return lines.join("\n");
 }
 
 /**

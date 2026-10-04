@@ -181,8 +181,12 @@ export function isRecordableJson(value: unknown): value is JsonValue {
   return !hasProtoKey(value);
 }
 
-/** Every `0x`-address-shaped string anywhere in `value`, lower-cased, added to `out`. */
-function collectAddresses(value: JsonValue, out: Set<string>): void {
+/**
+ * Every `0x`-address-shaped string anywhere in `value`, lower-cased, added to `out`: what `runTool`
+ * adds to the scope from a tool's capped output. Exported so `verify` rebuilds the scope from the
+ * recorded outputs exactly this way.
+ */
+export function collectAddresses(value: JsonValue, out: Set<string>): void {
   if (typeof value === "string") {
     if (/^0x[0-9a-fA-F]{40}$/.test(value)) out.add(value.toLowerCase());
   } else if (Array.isArray(value)) {

@@ -1,5 +1,5 @@
 // The `attest8004` CLI's entry point: `pnpm attest8004 verify <requestHash>` from the repo root runs
-//   node --conditions=@attest8004/source --env-file-if-exists=.env validators/mandate/bin/attest8004.mjs …
+//   node --conditions=@attest8004/source --env-file-if-exists=.env packages/cli/bin/attest8004.mjs …
 // It is plain JavaScript so that it can always say why it can't run. The CLI itself (src/cli.ts) is
 // TypeScript, run through Node's type stripping, on by default from Node 22.18. Its exit codes are
 // 0 match, 1 mismatch, 2 could not verify. Node exits 1 on its own when a module fails to load or an

@@ -184,6 +184,31 @@ importers:
 
   .: {}
 
+  packages/cli:
+    dependencies:
+      '@attest8004/sdk':
+        specifier: workspace:*
+        version: link:../sdk
+      '@attest8004/validator-mandate':
+        specifier: workspace:*
+        version: link:../../validators/mandate
+      '@attest8004/validator-risk':
+        specifier: workspace:*
+        version: link:../../validators/risk
+      viem:
+        specifier: 'catalog:'
+        version: 2.57.2(typescript@7.0.2)(zod@4.6.5)
+    devDependencies:
+      '@types/node':
+        specifier: 'catalog:'
+        version: 22.20.4
+      typescript:
+        specifier: 'catalog:'
+        version: 7.0.2
+      vitest:
+        specifier: 'catalog:'
+        version: 5.0.3(@types/node@22.20.4)(vite@8.3.2(@types/node@22.20.4))
+
   packages/sdk:
     dependencies:
       viem:

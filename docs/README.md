@@ -16,4 +16,4 @@ The docs are part of the product (SPEC §4.10). Each file is added in the phase 
 | `mera.md` | Passkey-derived findings inbox and the cross-device test | planned (P7) |
 | `security-review.md` | Auditor self-review | planned (P10) |
 
-How the system works is in [../ARCHITECTURE.md](../ARCHITECTURE.md). How to re-run a `mandate-v1` verdict (`pnpm attest8004 verify <requestHash>`) is in its §5.5 and the [README](../README.md#quickstart).
+How the system works is in [../ARCHITECTURE.md](../ARCHITECTURE.md). How to re-check a verdict (`pnpm attest8004 verify <requestHash>`: a `mandate-v1` one is re-run, a `risk-v1` one re-checked without re-running the model) is in its §5.5 and the [README](../README.md#quickstart).

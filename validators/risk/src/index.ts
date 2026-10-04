@@ -16,3 +16,4 @@ export * from "./agent.ts";
 export * from "./evidence.ts";
 export * from "./run.ts";
 export * from "./validator.ts";
+export * from "./verify.ts";

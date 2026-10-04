@@ -1,0 +1,14 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "noEmit": true,
+    // Source imports use .ts extensions, so Node's type stripping can run src/ directly
+    // (workspace packages import it through the "@attest8004/source" export condition).
+    "allowImportingTsExtensions": true,
+    // Node's type stripping runs this source as is, so only erasable TypeScript syntax is allowed.
+    "erasableSyntaxOnly": true,
+    // Resolve the workspace packages to their TypeScript source (run with node --conditions=@attest8004/source).
+    "customConditions": ["@attest8004/source"]
+  },
+  "include": ["src", "test"]
+}

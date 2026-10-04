@@ -34,8 +34,12 @@ agent's mandate and owner, its approved spend in the last 25 h, recent permissio
 action) is read at one pinned block, and the verdict's clock is that block's time. Its evidence is public canonical
 JSON, posted inline, and records that block. `pnpm attest8004 verify <requestHash>` re-runs the verdict from chain data
 alone and must reproduce the same score and the same `responseHash`. The validator signed both, so a mismatch is public
-proof that it misbehaved ([ARCHITECTURE §5.5](./ARCHITECTURE.md)). The agentic `risk-v1` (P5) will add advisory
-context on top, and is never meant to be the only check.
+proof that it misbehaved ([ARCHITECTURE §5.5](./ARCHITECTURE.md)). The agentic `risk-v1` (P5) adds advisory context
+on top, and is never meant to be the only check. The same command re-checks a `risk-v1` verdict without re-running the
+model. It proves three things: the score follows from the recorded findings; every onchain fact shown to the model was
+true at the pinned block; and the injection rule was applied. It does **not** prove that the recorded output came from
+the model, so trusting `risk-v1` means trusting validator B's operator. That is why the gate also requires `mandate-v1`,
+which anyone can fully reproduce.
 
 The flow, in short:
 
@@ -50,8 +54,9 @@ The diagrams, flows, data formats, trust model and key custody are in **[ARCHITE
 |---|---|
 | [`contracts/`](./contracts) | Foundry: ValidationRegistry, AgentRequestForwarder, MandateRegistry, AttestGate, DemoAgentVault |
 | [`packages/sdk/`](./packages/sdk) | `@attest8004/sdk`: client, validator base, shared types, hash test vectors |
-| [`validators/mandate/`](./validators/mandate) | `mandate-v1` deterministic validator: the service and the `verify` CLI |
-| [`validators/risk/`](./validators/risk) | `risk-v1` agentic validator (P5) |
+| [`packages/cli/`](./packages/cli) | `@attest8004/cli`: `pnpm attest8004 verify`, which re-checks `mandate-v1` and `risk-v1` verdicts |
+| [`validators/mandate/`](./validators/mandate) | `mandate-v1` deterministic validator: the service and its re-run (`verifyRequest`) |
+| [`validators/risk/`](./validators/risk) | `risk-v1` agentic validator (P5) and its re-check (`verifyRiskRequest`) |
 | [`indexer/`](./indexer) | Envio HyperIndex project |
 | [`web/`](./web) | `/approve`, `/inbox`, `/dashboard` |
 | [`scripts/`](./scripts) | `@attest8004/scripts`: operational scripts (testnet round trip, demo agents, end to end) |
@@ -73,9 +78,15 @@ pnpm test:contracts     # forge test (fork tests skip unless MONAD_TESTNET_RPC_U
 pnpm test               # TypeScript tests
 ```
 
-Re-run any `mandate-v1` verdict from chain data alone. It is read-only, and uses the public testnet RPC unless
-`MONAD_TESTNET_RPC_URL` names another. pnpm echoes its arguments, so pass a URL with an API key through that variable
-(or `.env`), not `--rpc-url`, or run `pnpm --loglevel silent attest8004 verify …` ([ARCHITECTURE §5.5](./ARCHITECTURE.md)):
+Re-check any verdict from chain data alone. `verify` reads the response's tag: it re-runs a `mandate-v1` verdict at
+the block its evidence pins, and re-checks a `risk-v1` verdict from its public evidence. For `risk-v1` it proves three
+things: the score follows from the recorded findings; every onchain fact shown to the model was true at the pinned
+block; and the injection rule was applied. It does not prove that the recorded output came from the model (every
+`risk-v1` report says `model output: recorded, not re-run`). Trusting `risk-v1` means trusting validator B's operator,
+which is why the gate also requires the fully reproducible `mandate-v1`. Any other tag exits 2 (`UNKNOWN_TAG`). It is
+read-only, and uses the public testnet RPC unless `MONAD_TESTNET_RPC_URL` names another. pnpm echoes its arguments, so
+pass a URL with an API key through that variable (or `.env`), not `--rpc-url`, or run
+`pnpm --loglevel silent attest8004 verify …` ([ARCHITECTURE §5.5](./ARCHITECTURE.md)):
 
 ```bash
 pnpm attest8004 verify <requestHash>   # exit 0 match, 1 mismatch, 2 could not verify; --json prints the report
