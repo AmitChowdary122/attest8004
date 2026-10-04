@@ -18,11 +18,17 @@
  *
  * Response normalisation keeps canonicalJson safe throughout (never an unsafe-integer or non-finite
  * number reaches `output`): Nansen's USD volumes become decimal strings (`String(n)` of a finite
- * number, else `null`), and every Nansen string this validator surfaces to the model (an entity
- * `label`, a `first_funder_name`, a counterparty label) is capped at 64 characters — with
- * {@link import("./trace.ts").dropTrailingLoneSurrogate} applied after the cut, exactly as `capOutput`
- * does for its own string cuts — before it ever reaches `output`. `tools.ts` reads those same capped
- * strings back out of `output` for Prompt Guard screening (`untrusted`), so the two can never disagree.
+ * number, else `null`), and every Nansen string this validator surfaces — an entity `label`,
+ * `category`, each `kind` entry, a `first_funder_name`, a counterparty label — is capped at 64
+ * characters, with {@link import("./trace.ts").dropTrailingLoneSurrogate} applied after the cut,
+ * exactly as `capOutput` does for its own string cuts. Only `label`/`first_funder_name`/counterparty
+ * labels are free text that goes to `untrusted` for Prompt Guard screening (Decisions 12-13);
+ * `category`/`kind` are a fixed Nansen taxonomy and stay unscreened, but are still capped so a
+ * malformed response can't inflate `output`. An address-shaped field (`first_funder_address`,
+ * `counterparty_address`) that *isn't* a 20-byte hex address becomes `null`, never the raw string —
+ * it's consumed as an address, not free text, so a non-matching value must never reach `output`
+ * uncapped and unscreened. `tools.ts` reads the already-capped strings back out of `output` for
+ * Prompt Guard screening (`untrusted`), so the two can never disagree.
  */
 import { getAddress, type Address } from "viem";
 import { RISK_V1 } from "./params.ts";
@@ -77,10 +83,17 @@ function capLabel(value: string): string {
 
 const ADDRESS_PATTERN = /^0x[0-9a-fA-F]{40}$/;
 
-/** `value` checksummed if it's exactly 20 bytes of hex, the raw string Nansen sent otherwise, or `null`. */
+/**
+ * `value` checksummed if it's exactly 20 bytes of hex, else `null` — never the raw string (fix round
+ * 1, finding 1). This field is documented and consumed as an address, not free text: a non-matching
+ * value used to pass through verbatim, landing in tool output uncapped and unscreened by Prompt
+ * Guard (bypassing Decisions 12-13). Treating it as "not an address" instead means it's never added
+ * to `ctx.scope` (`tools.ts`'s `collectAddresses` only matches the same 40-hex-char shape) and never
+ * surfaces in `untrusted` (only `label`/`name`/counterparty-label fields ever do).
+ */
 function addressLike(value: unknown): string | null {
   if (typeof value !== "string") return null;
-  return ADDRESS_PATTERN.test(value) ? getAddress(value.toLowerCase() as Address) : value;
+  return ADDRESS_PATTERN.test(value) ? getAddress(value.toLowerCase() as Address) : null;
 }
 
 /** A USD figure as a decimal string (`String(n)` of a finite number), or `null` (Decision 19). */
@@ -93,14 +106,19 @@ function safeCount(value: unknown): number | null {
   return typeof value === "number" && Number.isSafeInteger(value) ? value : null;
 }
 
-/** `{label, category, kind}[]`, capped at `RISK_V1.nansenMaxLabels`; `label` is capped and goes to `untrusted`. */
+/**
+ * `{label, category, kind}[]`, capped at `RISK_V1.nansenMaxLabels`. `label` is capped and goes to
+ * `untrusted` (it's free text); `category` and each `kind` entry are capped too (fix round 1, finding
+ * 4) but stay out of `untrusted` — they're a fixed Nansen taxonomy, not free text, so they're never
+ * screened by Prompt Guard.
+ */
 function normalizeLabels(body: unknown): JsonValue[] {
   return dataArray(body)
     .slice(0, RISK_V1.nansenMaxLabels)
     .map((entry) => ({
       label: capLabel(asString(entry.label) ?? ""),
-      category: asString(entry.category) ?? "",
-      kind: asStringArray(entry.kind),
+      category: capLabel(asString(entry.category) ?? ""),
+      kind: asStringArray(entry.kind).map(capLabel),
     }));
 }
 
@@ -119,12 +137,16 @@ function normalizeFirstFunder(body: unknown): JsonValue {
   };
 }
 
-/** The counterparties endpoint's `data[]`, capped at `RISK_V1.nansenMaxCounterparties`; each label is capped. */
+/**
+ * The counterparties endpoint's `data[]`, capped at `RISK_V1.nansenMaxCounterparties`; each label is
+ * capped. `address` is `null` (never the raw string) when `counterparty_address` isn't a 20-byte hex
+ * address (fix round 1, finding 1).
+ */
 function normalizeCounterparties(body: unknown): JsonValue[] {
   return dataArray(body)
     .slice(0, RISK_V1.nansenMaxCounterparties)
     .map((entry) => ({
-      address: addressLike(entry.counterparty_address) ?? asString(entry.counterparty_address) ?? "",
+      address: addressLike(entry.counterparty_address),
       labels: asStringArray(entry.counterparty_address_label).map(capLabel),
       interactionCount: safeCount(entry.interaction_count),
       totalVolumeUsd: usdString(entry.total_volume_usd),
@@ -139,7 +161,11 @@ type FetchResult = { ok: true; body: unknown } | { ok: false; reason: string };
 
 const RETRY_AFTER_CAP_MS = 10_000;
 const RETRY_FALLBACK_MS = 2_000;
-const RETRYABLE_STATUSES = new Set([429, 500, 502, 503]);
+
+/** 429, or any 5xx (Decision 20 / the brief: "one retry on 429 or 5xx") — fix round 1, finding 2: the original set ({429, 500, 502, 503}) missed 501, 504 and the rest of 5xx. */
+function isRetryableStatus(status: number): boolean {
+  return status === 429 || (status >= 500 && status <= 599);
+}
 
 /** `retry-after` honoured up to {@link RETRY_AFTER_CAP_MS}; missing or unusable falls back to a fixed 2 s. */
 function retryDelayMs(headers: Headers): number {
@@ -190,7 +216,7 @@ async function postNansen(
       return { ok: true, body: await readJsonSafely(response) };
     }
 
-    if (RETRYABLE_STATUSES.has(response.status) && attempt === 0) {
+    if (isRetryableStatus(response.status) && attempt === 0) {
       await o.sleepFn(retryDelayMs(response.headers));
       continue;
     }
@@ -235,8 +261,11 @@ export function nansenClient(o: { apiKey?: string; fetch?: typeof fetch; sleep?:
     reason: null,
 
     async profile(address: Address): Promise<JsonValue> {
-      // Labels costs 100 credits; first-funder only 1. On a labels failure, skip first-funder rather
-      // than spending another call on a profile that's already unavailable.
+      // Fix round 1, finding 3: labels already failed here, so skipping first-funder saves only its
+      // 1 credit (not the 100 labels itself would have cost). The real reason is representational,
+      // not a credit optimisation: the pinned output shape is `{available: true, labels, firstFunder}`
+      // or `{available: false, reason}` — there's no way to say "labels unavailable, firstFunder
+      // available" within it, so a labels failure must fail the whole profile either way.
       const labels = await postNansen(transport, LABELS_PATH, { address, chain: "all", pagination: { page: 1, per_page: 100 } });
       if (!labels.ok) return { available: false, reason: labels.reason };
 

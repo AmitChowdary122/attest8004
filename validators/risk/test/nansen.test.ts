@@ -145,6 +145,27 @@ describe("nansenClient: profile()", () => {
     expect(/[\uD800-\uDFFF]/.test(result.firstFunder?.name ?? "")).toBe(false);
   });
 
+  it("fix round 1, finding 1: a malformed first_funder_address (not 40 hex chars) becomes null, never the raw string", async () => {
+    const { fn } = fakeFetch([
+      jsonResponse(200, { data: [] }),
+      jsonResponse(200, { data: [{ first_funder_address: "not-an-address", first_funder_name: "Binance", chain: "ethereum", block_timestamp: "1" }] }),
+    ]);
+    const client = nansenClient({ apiKey: "k", fetch: fn, sleep: fakeSleep().fn });
+    const result = (await client.profile(ADDRESS)) as { firstFunder: { address: unknown } | null };
+    expect(result.firstFunder?.address).toBeNull();
+  });
+
+  it("fix round 1, finding 4: category and each kind entry are capped at 64 characters, dropping a trailing lone surrogate", async () => {
+    const longCategory = "c".repeat(63) + "\u{1F600}"; // 65 UTF-16 units; the cut at 64 lands inside the emoji
+    const longKind = "k".repeat(100);
+    const { fn } = fakeFetch([jsonResponse(200, { data: [{ label: "x", category: longCategory, kind: [longKind] }] }), jsonResponse(200, { data: [] })]);
+    const client = nansenClient({ apiKey: "k", fetch: fn, sleep: fakeSleep().fn });
+    const result = (await client.profile(ADDRESS)) as { labels: { category: string; kind: string[] }[] };
+    expect(result.labels[0]?.category.length).toBeLessThanOrEqual(64);
+    expect(/[\uD800-\uDFFF]/.test(result.labels[0]?.category ?? "")).toBe(false);
+    expect(result.labels[0]?.kind[0]?.length).toBe(64);
+  });
+
   it("when labels fails, the whole profile fails and first-funder is never called", async () => {
     const { fn, calls } = fakeFetch([jsonResponse(403, { code: "insufficient_credits" })]);
     const client = nansenClient({ apiKey: "k", fetch: fn, sleep: fakeSleep().fn });
@@ -237,6 +258,14 @@ describe("nansenClient: flows()", () => {
     expect(result.counterparties).toHaveLength(RISK_V1.nansenMaxCounterparties);
   });
 
+  it("fix round 1, finding 1: a malformed counterparty_address (not 40 hex chars) becomes null, never the raw string", async () => {
+    const body = { data: [{ counterparty_address: "not-an-address", counterparty_address_label: ["Exchange"] }] };
+    const { fn } = fakeFetch([jsonResponse(200, body)]);
+    const client = nansenClient({ apiKey: "k", fetch: fn, sleep: fakeSleep().fn });
+    const result = (await client.flows(ADDRESS, 0n, 1n)) as { counterparties: { address: unknown }[] };
+    expect(result.counterparties[0]?.address).toBeNull();
+  });
+
   it("caps each counterparty label at 64 characters", async () => {
     const other = "0x1234567890123456789012345678901234567890";
     const longLabel = "b".repeat(100);
@@ -282,6 +311,38 @@ describe("nansenClient: errors never throw, and the key never leaks", () => {
     const client = nansenClient({ apiKey: "k", fetch: fn, sleep: sleep.fn });
     await client.flows(ADDRESS, 0n, 1n);
     expect(sleep.calls).toEqual([2_000]);
+  });
+
+  it("fix round 1, finding 2: 504 is retried once, then gives NANSEN_ERROR 504", async () => {
+    const responses = [jsonResponse(504, {}), jsonResponse(504, {})];
+    const { fn, calls } = fakeFetch(responses);
+    const sleep = fakeSleep();
+    const client = nansenClient({ apiKey: "k", fetch: fn, sleep: sleep.fn });
+    const result = await client.flows(ADDRESS, 0n, 1n);
+    expect(result).toEqual({ available: false, reason: "NANSEN_ERROR 504" });
+    expect(calls).toHaveLength(2);
+    expect(sleep.calls).toHaveLength(1);
+  });
+
+  it("fix round 1, finding 2: 501 is retried once, then gives NANSEN_ERROR 501", async () => {
+    const responses = [jsonResponse(501, {}), jsonResponse(501, {})];
+    const { fn, calls } = fakeFetch(responses);
+    const sleep = fakeSleep();
+    const client = nansenClient({ apiKey: "k", fetch: fn, sleep: sleep.fn });
+    const result = await client.flows(ADDRESS, 0n, 1n);
+    expect(result).toEqual({ available: false, reason: "NANSEN_ERROR 501" });
+    expect(calls).toHaveLength(2);
+    expect(sleep.calls).toHaveLength(1);
+  });
+
+  it("fix round 1, finding 2: 499 is never retried", async () => {
+    const { fn, calls } = fakeFetch([jsonResponse(499, {})]);
+    const sleep = fakeSleep();
+    const client = nansenClient({ apiKey: "k", fetch: fn, sleep: sleep.fn });
+    const result = await client.flows(ADDRESS, 0n, 1n);
+    expect(result).toEqual({ available: false, reason: "NANSEN_ERROR 499" });
+    expect(calls).toHaveLength(1);
+    expect(sleep.calls).toEqual([]);
   });
 
   it("403 insufficient_credits gives NANSEN_ERROR 403 insufficient_credits, with no retry", async () => {

@@ -281,6 +281,32 @@ describe("runTool: nansen_counterparty_profile and nansen_flows", () => {
     expect(new TextEncoder().encode(canonicalJson(result.output)).length).toBeLessThanOrEqual(RISK_V1.toolOutputMaxBytes);
   });
 
+  it("fix round 1, finding 1: a malformed address Nansen returns is null in output, never added to scope, and never surfaces in untrusted", async () => {
+    const nansen = makeNansen({
+      profile: vi.fn(async () => ({
+        available: true,
+        labels: [],
+        firstFunder: { address: null, name: "Binance", chain: "ethereum", time: "1" },
+      })),
+      flows: vi.fn(async () => ({
+        available: true,
+        counterparties: [{ address: null, labels: ["Exchange"], interactionCount: 1, totalVolumeUsd: null, volumeInUsd: null, volumeOutUsd: null }],
+      })),
+    });
+    const ctx = makeCtx(makeReader(), undefined, nansen);
+    const scopeBefore = new Set(ctx.scope);
+
+    const profileResult = await runTool("nansen_counterparty_profile", JSON.stringify({ address: TARGET }), ctx);
+    const flowsResult = await runTool("nansen_flows", JSON.stringify({ address: TARGET }), ctx);
+
+    expect((profileResult.output as { firstFunder: { address: unknown } }).firstFunder.address).toBeNull();
+    expect((flowsResult.output as { counterparties: { address: unknown }[] }).counterparties[0]?.address).toBeNull();
+    // only the legitimate label/name strings are screened — the (null) address never was one
+    expect(profileResult.untrusted).toEqual([{ source: "tool:nansen_counterparty_profile", text: "Binance" }]);
+    expect(flowsResult.untrusted).toEqual([{ source: "tool:nansen_flows", text: "Exchange" }]);
+    expect(ctx.scope).toEqual(scopeBefore);
+  });
+
   it("INVALID_ARGUMENTS and bad JSON behave the same as counterparty_onchain's, and never call the Nansen client", async () => {
     const nansen = makeNansen();
     const ctx = makeCtx(makeReader(), undefined, nansen);
