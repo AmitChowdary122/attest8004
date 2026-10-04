@@ -3,16 +3,13 @@ import { collectPermissions, type MandateInputs, type MandateRecord, type Pinned
 import { getAddress, isAddress, keccak256, type Address, type Hex } from "viem";
 import { z } from "zod";
 import { type ToolName } from "./findings.ts";
+import type { NansenClient } from "./nansen.ts";
 import { RISK_V1 } from "./params.ts";
 import type { RiskReader } from "./reader.ts";
 import { dropTrailingLoneSurrogate, flattenTrace, type JsonObject } from "./trace.ts";
 import type { JsonValue } from "./types.ts";
 
-/**
- * The five read-only tools this task implements (the P5 plan's seven, minus the two Nansen tools,
- * which Task 9 adds). `runTool` answers every other name — including the two not-yet-implemented
- * Nansen names — with `{error: "UNKNOWN_TOOL"}`; Task 9 widens that check.
- */
+/** The five tools that read the chain directly, all `onchain: true` and re-run byte-for-byte by `verify`. */
 export const ONCHAIN_TOOLS = [
   "get_mandate",
   "simulate_action",
@@ -27,9 +24,22 @@ function isOnchainToolName(name: string): name is OnchainToolName {
   return (ONCHAIN_TOOLS as readonly string[]).includes(name);
 }
 
+/**
+ * The two Nansen tools (Task 9): always `onchain: false`, so `verify` reports them `unchecked` rather
+ * than re-running them (types.ts's `ToolCallRecord` doc). Both take the same single `address`
+ * argument as `counterparty_onchain`, subject to the same scope check (Decision 18).
+ */
+export const NANSEN_TOOLS = ["nansen_counterparty_profile", "nansen_flows"] as const satisfies readonly ToolName[];
+
+type NansenToolName = (typeof NANSEN_TOOLS)[number];
+
+function isNansenToolName(name: string): name is NansenToolName {
+  return (NANSEN_TOOLS as readonly string[]).includes(name);
+}
+
 /** One entry of the OpenAI-compatible `tools` array sent to the model. */
 function toolDefinition(
-  name: OnchainToolName,
+  name: OnchainToolName | NansenToolName,
   description: string,
   properties: Record<string, { type: string; description: string }>,
   required: string[] = [],
@@ -44,10 +54,15 @@ function toolDefinition(
   };
 }
 
+/** The description every address argument shares (Decision 18): what scope means, independent of which tool. */
+const ADDRESS_ARG_DESCRIPTION =
+  "A 0x-prefixed, 20-byte EVM address. Must be in scope: the target, the gate, the owner, a mandate-allowed target, or an address a previous tool call returned.";
+
 /**
- * The OpenAI `tools` array for the five onchain tools (Task 9 appends the two Nansen entries).
- * `get_mandate`/`simulate_action`/`recent_permission_events` take no arguments: they always read the
- * request's own target/gate/agent, never a model-supplied address.
+ * The OpenAI `tools` array for all seven tools, in {@link ONCHAIN_TOOLS} then {@link NANSEN_TOOLS}
+ * order (matching `findings.ts`'s `TOOL_NAMES`). `get_mandate`/`simulate_action`/
+ * `recent_permission_events` take no arguments: they always read the request's own
+ * target/gate/agent, never a model-supplied address.
  */
 export const TOOL_DEFINITIONS = [
   toolDefinition("get_mandate", "Read the requesting agent's mandate and its owner, both at the pinned block.", {}),
@@ -64,13 +79,7 @@ export const TOOL_DEFINITIONS = [
   toolDefinition(
     "counterparty_onchain",
     "Read onchain facts about one address at the pinned block: whether it has code, an EIP-7702 delegate, balance, nonce, how many ERC-8004 agents it owns, and an age estimate.",
-    {
-      address: {
-        type: "string",
-        description:
-          "A 0x-prefixed, 20-byte EVM address. Must be in scope: the target, the gate, the owner, a mandate-allowed target, or an address a previous tool call returned.",
-      },
-    },
+    { address: { type: "string", description: ADDRESS_ARG_DESCRIPTION } },
     ["address"],
   ),
   toolDefinition(
@@ -79,13 +88,26 @@ export const TOOL_DEFINITIONS = [
     { agentId: { type: "string", description: "The agent's ERC-8004 token id, as a decimal string." } },
     ["agentId"],
   ),
+  toolDefinition(
+    "nansen_counterparty_profile",
+    "Look up Nansen's entity/behavioural labels and funding origin (first funder) for one address, searched across every chain Nansen indexes. Unavailable (no NANSEN_API_KEY) today.",
+    { address: { type: "string", description: ADDRESS_ARG_DESCRIPTION } },
+    ["address"],
+  ),
+  toolDefinition(
+    "nansen_flows",
+    "Look up Nansen's top counterparties (by USD volume) for one address over the 30 days ending at the pinned block's time, searched across every chain Nansen indexes. Unavailable (no NANSEN_API_KEY) today.",
+    { address: { type: "string", description: ADDRESS_ARG_DESCRIPTION } },
+    ["address"],
+  ),
 ];
 
-/** Everything a tool call reads from: the chain reader, the pinned block, the request, and the live address scope. */
+/** Everything a tool call reads from: the chain reader, the pinned block, the request, Nansen, and the live address scope. */
 export interface ToolContext {
   reader: RiskReader;
   pinned: PinnedBlock;
   request: MandateInputs["request"];
+  nansen: NansenClient;
   /**
    * Lower-case addresses an address argument may name (Decision 18), seeded by {@link initialScope}.
    * **`runTool` mutates this set**: every address found anywhere in a tool's own (capped) output is
@@ -123,8 +145,8 @@ const reputationArgsSchema = z.strictObject({ agentId: agentIdArg });
 /** The validated arguments `execute` needs per tool, or `null` for a schema mismatch. */
 type ToolArgs = { address?: Address; agentId?: bigint };
 
-function validateArguments(name: OnchainToolName, parsed: unknown): ToolArgs | null {
-  if (name === "counterparty_onchain") {
+function validateArguments(name: OnchainToolName | NansenToolName, parsed: unknown): ToolArgs | null {
+  if (name === "counterparty_onchain" || name === "nansen_counterparty_profile" || name === "nansen_flows") {
     const result = counterpartyArgsSchema.safeParse(parsed);
     return result.success ? { address: result.data.address } : null;
   }
@@ -293,7 +315,84 @@ async function erc8004ReputationTool(agentId: bigint, ctx: ToolContext): Promise
   return { output, untrusted: [] };
 }
 
-async function execute(name: OnchainToolName, args: ToolArgs, ctx: ToolContext): Promise<{ output: JsonValue; untrusted: UntrustedField[] }> {
+/** A plain JSON object (not an array, not `null`/`undefined`) — a small local guard for reading Nansen's own output shape back out. */
+function asPlainObject(value: JsonValue | undefined): { [key: string]: JsonValue } | null {
+  return value !== undefined && value !== null && typeof value === "object" && !Array.isArray(value) ? value : null;
+}
+
+/**
+ * Every `label` in a `nansen_counterparty_profile` output's `labels[]`, plus `firstFunder.name` when
+ * present (Decision 12-13; context's "Strings from Nansen ... are returned in `untrusted`"). `output`
+ * is read defensively: an unavailable result (`{available: false, reason}`) has neither key, so this
+ * is `[]` for it, exactly as it is for any other tool that found nothing to screen.
+ */
+function untrustedFromProfile(output: JsonValue): UntrustedField[] {
+  const obj = asPlainObject(output);
+  if (obj === null) return [];
+  const fields: UntrustedField[] = [];
+  const labels = obj.labels;
+  if (Array.isArray(labels)) {
+    for (const entry of labels) {
+      const label = asPlainObject(entry)?.label;
+      if (typeof label === "string" && label.length > 0) fields.push({ source: "tool:nansen_counterparty_profile", text: label });
+    }
+  }
+  const firstFunderName = asPlainObject(obj.firstFunder)?.name;
+  if (typeof firstFunderName === "string" && firstFunderName.length > 0) {
+    fields.push({ source: "tool:nansen_counterparty_profile", text: firstFunderName });
+  }
+  return fields;
+}
+
+/** Every label in a `nansen_flows` output's `counterparties[].labels[]` (Decision 12-13). */
+function untrustedFromFlows(output: JsonValue): UntrustedField[] {
+  const obj = asPlainObject(output);
+  if (obj === null) return [];
+  const counterparties = obj.counterparties;
+  if (!Array.isArray(counterparties)) return [];
+  const fields: UntrustedField[] = [];
+  for (const entry of counterparties) {
+    const labels = asPlainObject(entry)?.labels;
+    if (!Array.isArray(labels)) continue;
+    for (const label of labels) {
+      if (typeof label === "string" && label.length > 0) fields.push({ source: "tool:nansen_flows", text: label });
+    }
+  }
+  return fields;
+}
+
+/**
+ * `nansen_counterparty_profile(address)` (Decision 16, 18, 20): the same scope check as
+ * `counterparty_onchain`, then `ctx.nansen.profile` — which never throws and, with no
+ * `NANSEN_API_KEY`, answers `{available: false, reason}` without a fetch.
+ */
+async function nansenCounterpartyProfileTool(address: Address, ctx: ToolContext): Promise<{ output: JsonValue; untrusted: UntrustedField[] }> {
+  if (!ctx.scope.has(address.toLowerCase())) {
+    return { output: { error: "ADDRESS_OUT_OF_SCOPE" }, untrusted: [] };
+  }
+  const output = await ctx.nansen.profile(address);
+  return { output, untrusted: untrustedFromProfile(output) };
+}
+
+/**
+ * `nansen_flows(address)` (Decision 16, 18, 20): the window is `[P.timestamp - nansenWindowSeconds,
+ * P.timestamp]` — pinned to the block, never wall-clock time, so a re-check sees the same window.
+ */
+async function nansenFlowsTool(address: Address, ctx: ToolContext): Promise<{ output: JsonValue; untrusted: UntrustedField[] }> {
+  if (!ctx.scope.has(address.toLowerCase())) {
+    return { output: { error: "ADDRESS_OUT_OF_SCOPE" }, untrusted: [] };
+  }
+  const to = ctx.pinned.timestamp;
+  const from = to - RISK_V1.nansenWindowSeconds;
+  const output = await ctx.nansen.flows(address, from, to);
+  return { output, untrusted: untrustedFromFlows(output) };
+}
+
+async function execute(
+  name: OnchainToolName | NansenToolName,
+  args: ToolArgs,
+  ctx: ToolContext,
+): Promise<{ output: JsonValue; untrusted: UntrustedField[] }> {
   switch (name) {
     case "get_mandate":
       return getMandateTool(ctx);
@@ -305,6 +404,10 @@ async function execute(name: OnchainToolName, args: ToolArgs, ctx: ToolContext):
       return counterpartyOnchainTool(args.address as Address, ctx);
     case "erc8004_reputation":
       return erc8004ReputationTool(args.agentId as bigint, ctx);
+    case "nansen_counterparty_profile":
+      return nansenCounterpartyProfileTool(args.address as Address, ctx);
+    case "nansen_flows":
+      return nansenFlowsTool(args.address as Address, ctx);
   }
 }
 
@@ -430,12 +533,18 @@ export function initialScope(request: MandateInputs["request"], owner: Address, 
 
 /**
  * Runs one model tool call, deterministically, from the raw argument string the model sent (Ruling
- * R3): never throws on bad input — an unknown `name` or one of the two not-yet-implemented Nansen
- * names gives `{error: "UNKNOWN_TOOL"}`; a `rawArguments` that isn't JSON, or doesn't match that
- * tool's shape, gives `{error: "INVALID_ARGUMENTS"}`; an address argument outside `ctx.scope` gives
- * `{error: "ADDRESS_OUT_OF_SCOPE"}` with no chain reads. Any other failure (an RPC or transport error)
- * throws, so it can never become a tool output. The returned `arguments` is the parsed JSON when
- * `rawArguments` parsed, else the raw string itself, so the record always keeps what the model sent.
+ * R3): never throws on bad input — an unknown `name` gives `{error: "UNKNOWN_TOOL"}`; a
+ * `rawArguments` that isn't JSON, or doesn't match that tool's shape, gives
+ * `{error: "INVALID_ARGUMENTS"}`; an address argument outside `ctx.scope` gives
+ * `{error: "ADDRESS_OUT_OF_SCOPE"}` with no chain read or Nansen call. Any other failure (an RPC or
+ * transport error — Nansen's own failures never throw; see `nansen.ts`) throws, so it can never
+ * become a tool output. The returned `arguments` is the parsed JSON when `rawArguments` parsed, else
+ * the raw string itself, so the record always keeps what the model sent.
+ *
+ * `onchain` is `true` for one of the five onchain tool names (whatever the outcome — success,
+ * `INVALID_ARGUMENTS` or `ADDRESS_OUT_OF_SCOPE`) and for an unrecognised name (fix round 1, finding
+ * 6: so `verify` still re-checks `UNKNOWN_TOOL` deterministically, never skipping it); it is `false`
+ * for the two Nansen tool names (Task 9), since `verify` reports those `unchecked` instead.
  *
  * The output is capped with {@link capOutput} at `RISK_V1.toolOutputMaxBytes`, and **every address
  * found in that capped output is added to `ctx.scope`** (lower-cased) before this resolves — see
@@ -468,13 +577,13 @@ export async function runTool(
     }
   }
 
-  // Fix round 1, finding 6: `onchain` is true for every tool call here. types.ts documents
-  // `onchain: false` as reserved for the two Nansen tools specifically (Task 9) — never for an
-  // unrecognised name, which must still be re-checked (as UNKNOWN_TOOL) by `verify`, not skipped.
-  const onchain = true;
-  if (!isOnchainToolName(name)) {
-    return { arguments: argumentsRecord, output: { error: "UNKNOWN_TOOL" }, onchain, untrusted: [] };
+  // Fix round 1, finding 6: an unrecognised name is still `onchain: true`, so `verify` re-checks
+  // `UNKNOWN_TOOL` deterministically rather than skipping it. The two Nansen names are the only
+  // ones ever `onchain: false` (Task 9) — independent of their outcome.
+  if (!isOnchainToolName(name) && !isNansenToolName(name)) {
+    return { arguments: argumentsRecord, output: { error: "UNKNOWN_TOOL" }, onchain: true, untrusted: [] };
   }
+  const onchain = isOnchainToolName(name);
 
   const args = parsedOk ? validateArguments(name, parsed) : null;
   if (args === null) {

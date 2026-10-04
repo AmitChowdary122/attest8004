@@ -149,11 +149,22 @@ Canonical contracts this project builds on:
 
 ## Nansen endpoints
 
-The `risk-v1` validator will use Nansen for counterparty profiles and fund flows. Each endpoint and data category will be listed here and in [docs/nansen.md](./docs/nansen.md) once integrated.
+`risk-v1` uses Nansen for counterparty profiles and fund flows, through two read-only tools:
+`nansen_counterparty_profile(address)` (labels + first-funder) and `nansen_flows(address)`
+(counterparties). Base URL `https://api.nansen.ai`, key in an `apikey` header, every call a POST.
 
-| Endpoint | Data category | Used for |
-|---|---|---|
-| *TBD* | | |
+| Endpoint | Data category | Validator tool | Access | Credits |
+|---|---|---|---|---|
+| `POST /api/v1/profiler/address/labels` | Entity and behavioural labels | `nansen_counterparty_profile` | API key only (not payable by x402) | 100 |
+| `POST /api/v1/profiler/address/first-funder` | Funding origin | `nansen_counterparty_profile` | API key, or x402 at $0.01 | 1 |
+| `POST /api/v1/profiler/address/counterparties` | Counterparty volumes in/out, with labels | `nansen_flows` | API key, or x402 at $0.05 | 5 |
+
+Every call sends `chain: "all"`, since Nansen doesn't index Monad testnet: that searches the same EVM
+address across every chain Nansen does index (including Monad mainnet), rather than failing outright.
+**Integrated; unused until `NANSEN_API_KEY` is set.** Without a key (today), both tools report
+themselves unavailable with no fetch, no credits spent, and the model is told so upfront; the
+evidence always records whether Nansen was available for a given verdict. Full detail, including the
+exact request/response shapes and the per-check credit cost, is in [docs/nansen.md](./docs/nansen.md).
 
 ## Built with AI
 

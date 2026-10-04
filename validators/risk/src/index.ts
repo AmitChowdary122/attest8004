@@ -9,4 +9,5 @@ export * from "./guard.ts";
 export * from "./replay.ts";
 export * from "./trace.ts";
 export * from "./reader.ts";
+export * from "./nansen.ts";
 export * from "./tools.ts";

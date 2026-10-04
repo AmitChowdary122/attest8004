@@ -2,8 +2,11 @@ import { canonicalJson } from "@attest8004/sdk";
 import type { MandateInputs, MandateRecord, PinnedBlock, Simulation } from "@attest8004/validator-mandate";
 import { encodeErrorResult, getAddress, keccak256, toHex, type Address, type Hex } from "viem";
 import { describe, expect, it, vi } from "vitest";
+import { TOOL_NAMES } from "../src/findings.ts";
+import type { NansenClient } from "../src/nansen.ts";
+import { RISK_V1 } from "../src/params.ts";
 import type { RiskReader } from "../src/reader.ts";
-import { capOutput, initialScope, ONCHAIN_TOOLS, runTool, TOOL_DEFINITIONS, type ToolContext } from "../src/tools.ts";
+import { capOutput, initialScope, NANSEN_TOOLS, ONCHAIN_TOOLS, runTool, TOOL_DEFINITIONS, type ToolContext } from "../src/tools.ts";
 import type { CallFrame, TraceResult } from "../src/trace.ts";
 import type { JsonValue } from "../src/types.ts";
 
@@ -71,18 +74,36 @@ function makeReader(overrides: Partial<RiskReader> = {}): RiskReader {
   return { ...defaults, ...overrides };
 }
 
-function makeCtx(reader: RiskReader, scope?: Set<string>): ToolContext {
-  return { reader, pinned: P, request: REQUEST, scope: scope ?? initialScope(REQUEST, OWNER, null) };
+/** A `NansenClient` that is `available: false` (today's default — no `NANSEN_API_KEY`), never calling `fetch`. */
+function makeNansen(overrides: Partial<NansenClient> = {}): NansenClient {
+  const defaults: NansenClient = {
+    available: false,
+    reason: "NANSEN_API_KEY is not set",
+    profile: vi.fn(async () => ({ available: false, reason: "NANSEN_API_KEY is not set" })),
+    flows: vi.fn(async () => ({ available: false, reason: "NANSEN_API_KEY is not set" })),
+  };
+  return { ...defaults, ...overrides };
 }
 
-describe("ONCHAIN_TOOLS and TOOL_DEFINITIONS", () => {
-  it("lists exactly the five onchain tools, and TOOL_DEFINITIONS matches their names and no-arg/one-arg shape", () => {
+function makeCtx(reader: RiskReader, scope?: Set<string>, nansen?: NansenClient): ToolContext {
+  return { reader, pinned: P, request: REQUEST, scope: scope ?? initialScope(REQUEST, OWNER, null), nansen: nansen ?? makeNansen() };
+}
+
+describe("ONCHAIN_TOOLS, NANSEN_TOOLS and TOOL_DEFINITIONS", () => {
+  it("lists exactly the five onchain tools and the two Nansen tools, matching findings.ts's TOOL_NAMES", () => {
     expect(ONCHAIN_TOOLS).toEqual(["get_mandate", "simulate_action", "recent_permission_events", "counterparty_onchain", "erc8004_reputation"]);
-    expect(TOOL_DEFINITIONS.map((t) => t.function.name)).toEqual(ONCHAIN_TOOLS);
+    expect(NANSEN_TOOLS).toEqual(["nansen_counterparty_profile", "nansen_flows"]);
+    expect([...ONCHAIN_TOOLS, ...NANSEN_TOOLS]).toEqual(TOOL_NAMES);
+  });
+
+  it("TOOL_DEFINITIONS matches all seven names, in TOOL_NAMES order, and each one's no-arg/one-arg shape", () => {
+    expect(TOOL_DEFINITIONS.map((t) => t.function.name)).toEqual(TOOL_NAMES);
     const byName = new Map(TOOL_DEFINITIONS.map((t) => [t.function.name, t]));
     expect(byName.get("get_mandate")?.function.parameters.required).toEqual([]);
     expect(byName.get("counterparty_onchain")?.function.parameters.required).toEqual(["address"]);
     expect(byName.get("erc8004_reputation")?.function.parameters.required).toEqual(["agentId"]);
+    expect(byName.get("nansen_counterparty_profile")?.function.parameters.required).toEqual(["address"]);
+    expect(byName.get("nansen_flows")?.function.parameters.required).toEqual(["address"]);
   });
 });
 
@@ -101,18 +122,11 @@ describe("runTool: arguments", () => {
     expect(result.output).toEqual({ error: "INVALID_ARGUMENTS" });
   });
 
-  it("an unknown tool name gives UNKNOWN_TOOL, onchain: true (fix round 1, finding 6 — only the two Nansen tools are ever onchain: false, and only once Task 9 implements them), never throws", async () => {
+  it("an unknown tool name gives UNKNOWN_TOOL, onchain: true (fix round 1, finding 6 — only the two Nansen tools are ever onchain: false), never throws", async () => {
     const ctx = makeCtx(makeReader());
     const result = await runTool("made_up_tool", "{}", ctx);
     expect(result.output).toEqual({ error: "UNKNOWN_TOOL" });
     expect(result.onchain).toBe(true);
-  });
-
-  it("the two not-yet-implemented Nansen names also give UNKNOWN_TOOL, onchain: true (Task 9 adds real handling)", async () => {
-    const ctx = makeCtx(makeReader());
-    await expect(runTool("nansen_counterparty_profile", "{}", ctx)).resolves.toEqual(
-      expect.objectContaining({ output: { error: "UNKNOWN_TOOL" }, onchain: true }),
-    );
   });
 
   it("canonicalJson(parsed) throwing (a non-safe-integer number, e.g. a float or a 78-digit integer) falls back to the raw string as `arguments` (fix round 1, finding 4)", async () => {
@@ -165,6 +179,117 @@ describe("runTool: scope", () => {
     // and now a counterparty_onchain call on that newly-scoped address succeeds
     const result = await runTool("counterparty_onchain", JSON.stringify({ address: SINK }), ctx);
     expect((result.output as { error?: string }).error).toBeUndefined();
+  });
+});
+
+describe("runTool: nansen_counterparty_profile and nansen_flows", () => {
+  it("both are onchain: false, whether the scope check passes or not", async () => {
+    const ctx = makeCtx(makeReader());
+    const inScope = await runTool("nansen_counterparty_profile", JSON.stringify({ address: TARGET }), ctx);
+    expect(inScope.onchain).toBe(false);
+    const outOfScope = await runTool("nansen_flows", JSON.stringify({ address: OUT_OF_SCOPE }), ctx);
+    expect(outOfScope.onchain).toBe(false);
+  });
+
+  it("an out-of-scope address gives ADDRESS_OUT_OF_SCOPE and never calls the Nansen client", async () => {
+    const nansen = makeNansen();
+    const ctx = makeCtx(makeReader(), undefined, nansen);
+    const profileResult = await runTool("nansen_counterparty_profile", JSON.stringify({ address: OUT_OF_SCOPE }), ctx);
+    const flowsResult = await runTool("nansen_flows", JSON.stringify({ address: OUT_OF_SCOPE }), ctx);
+    expect(profileResult.output).toEqual({ error: "ADDRESS_OUT_OF_SCOPE" });
+    expect(flowsResult.output).toEqual({ error: "ADDRESS_OUT_OF_SCOPE" });
+    expect(nansen.profile).not.toHaveBeenCalled();
+    expect(nansen.flows).not.toHaveBeenCalled();
+  });
+
+  it("nansen_counterparty_profile: an in-scope address calls nansen.profile(address) and returns its output, with no NANSEN_API_KEY today", async () => {
+    const nansen = makeNansen();
+    const ctx = makeCtx(makeReader(), undefined, nansen);
+    const result = await runTool("nansen_counterparty_profile", JSON.stringify({ address: TARGET }), ctx);
+    expect(nansen.profile).toHaveBeenCalledWith(TARGET);
+    expect(result.output).toEqual({ available: false, reason: "NANSEN_API_KEY is not set" });
+    expect(result.untrusted).toEqual([]);
+  });
+
+  it("nansen_flows: an in-scope address calls nansen.flows(address, P.timestamp - nansenWindowSeconds, P.timestamp)", async () => {
+    const nansen = makeNansen();
+    const ctx = makeCtx(makeReader(), undefined, nansen);
+    const result = await runTool("nansen_flows", JSON.stringify({ address: TARGET }), ctx);
+    expect(nansen.flows).toHaveBeenCalledWith(TARGET, P.timestamp - RISK_V1.nansenWindowSeconds, P.timestamp);
+    expect(result.output).toEqual({ available: false, reason: "NANSEN_API_KEY is not set" });
+    expect(result.untrusted).toEqual([]);
+  });
+
+  it("nansen_counterparty_profile: labels[].label and firstFunder.name are returned in `untrusted`, sourced tool:nansen_counterparty_profile", async () => {
+    const other = getAddress("0x1234567890123456789012345678901234567890");
+    const nansen = makeNansen({
+      profile: vi.fn(async () => ({
+        available: true,
+        labels: [{ label: "Exchange", category: "CEX", kind: ["Hot Wallet"] }],
+        firstFunder: { address: other, name: "Binance", chain: "ethereum", time: "2026-01-01T00:00:00Z" },
+      })),
+    });
+    const ctx = makeCtx(makeReader(), undefined, nansen);
+    const result = await runTool("nansen_counterparty_profile", JSON.stringify({ address: TARGET }), ctx);
+    expect(result.untrusted).toEqual([
+      { source: "tool:nansen_counterparty_profile", text: "Exchange" },
+      { source: "tool:nansen_counterparty_profile", text: "Binance" },
+    ]);
+    // the first-funder address is also folded into scope, like every other tool output
+    expect(ctx.scope.has(other.toLowerCase())).toBe(true);
+  });
+
+  it("nansen_counterparty_profile: an unavailable result produces no untrusted fields", async () => {
+    const nansen = makeNansen({ profile: vi.fn(async () => ({ available: false, reason: "NANSEN_ERROR 429 rate_limit_exceeded" })) });
+    const ctx = makeCtx(makeReader(), undefined, nansen);
+    const result = await runTool("nansen_counterparty_profile", JSON.stringify({ address: TARGET }), ctx);
+    expect(result.untrusted).toEqual([]);
+    expect(result.output).toEqual({ available: false, reason: "NANSEN_ERROR 429 rate_limit_exceeded" });
+  });
+
+  it("nansen_flows: every counterparty label is returned in `untrusted`, sourced tool:nansen_flows", async () => {
+    const other = getAddress("0x1234567890123456789012345678901234567890");
+    const nansen = makeNansen({
+      flows: vi.fn(async () => ({
+        available: true,
+        counterparties: [
+          { address: other, labels: ["Exchange", "Hot Wallet"], interactionCount: 3, totalVolumeUsd: "100.5", volumeInUsd: "50", volumeOutUsd: "50.5" },
+        ],
+      })),
+    });
+    const ctx = makeCtx(makeReader(), undefined, nansen);
+    const result = await runTool("nansen_flows", JSON.stringify({ address: TARGET }), ctx);
+    expect(result.untrusted).toEqual([
+      { source: "tool:nansen_flows", text: "Exchange" },
+      { source: "tool:nansen_flows", text: "Hot Wallet" },
+    ]);
+    expect(ctx.scope.has(other.toLowerCase())).toBe(true);
+  });
+
+  it("a large Nansen response is still capped at RISK_V1.toolOutputMaxBytes by the generic capOutput pass", async () => {
+    const counterparties = Array.from({ length: RISK_V1.nansenMaxCounterparties }, (_, i) => ({
+      address: getAddress(`0x${(i + 1).toString(16).padStart(40, "0")}`),
+      labels: ["Exchange", "Hot Wallet", "Market Maker"],
+      interactionCount: i,
+      totalVolumeUsd: "123456.789",
+      volumeInUsd: "60000",
+      volumeOutUsd: "63456.789",
+    }));
+    const nansen = makeNansen({ flows: vi.fn(async () => ({ available: true, counterparties })) });
+    const ctx = makeCtx(makeReader(), undefined, nansen);
+    const result = await runTool("nansen_flows", JSON.stringify({ address: TARGET }), ctx);
+    expect(new TextEncoder().encode(canonicalJson(result.output)).length).toBeLessThanOrEqual(RISK_V1.toolOutputMaxBytes);
+  });
+
+  it("INVALID_ARGUMENTS and bad JSON behave the same as counterparty_onchain's, and never call the Nansen client", async () => {
+    const nansen = makeNansen();
+    const ctx = makeCtx(makeReader(), undefined, nansen);
+    const badJson = await runTool("nansen_flows", "not json", ctx);
+    expect(badJson.output).toEqual({ error: "INVALID_ARGUMENTS" });
+    const wrongShape = await runTool("nansen_counterparty_profile", JSON.stringify({ addr: TARGET }), ctx);
+    expect(wrongShape.output).toEqual({ error: "INVALID_ARGUMENTS" });
+    expect(nansen.profile).not.toHaveBeenCalled();
+    expect(nansen.flows).not.toHaveBeenCalled();
   });
 });
 
