@@ -107,6 +107,8 @@ export function ApproveChange({ enabled }: { enabled: boolean }) {
     if (agentId === null) return;
     setBusy(true);
     setError(null);
+    setPrepared(null);
+    setApproval(null);
     try {
       setAgent(await readAgent(agentId));
     } catch (e) {

@@ -165,7 +165,7 @@ export const registrationSchema = z.strictObject({
   alg: z.number().int(),
   qx: zBytes32,
   qy: zBytes32,
-  /** The creation ceremony's authenticator data, kept for its rpIdHash and flags. */
+  /** The creation ceremony's authenticator data, kept for its rpIdHash, flags and attested credential data. */
   authenticatorData: zHexBytes,
   prfEnabled: z.boolean(),
 });

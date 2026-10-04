@@ -7,9 +7,9 @@
  *      nonce (a stale approval says to approve again); the agent's passkey; the deployer owns the agent; the registry's
  *      own mandateHashOf and challengeFor; the rpIdHash, UP/UV flags, challenge and P-256 signature, verified locally.
  *   3. Prints the new mandate and the current one in plain words, the owner's own check of what the passkey signed
- *      (a WebAuthn prompt shows no content). Without --confirm it stops there. With `--confirm <first 8 hex digits of
- *      the changeHash>`, sends setMandate(agentId, mandate, auth) from the deployer with an explicit gas limit (the
- *      SDK's estimate guard).
+ *      (a WebAuthn prompt shows no content). Without --confirm it stops there.
+ *   4. With `--confirm <first 8 hex digits of the changeHash>`, sends setMandate(agentId, mandate, auth) from the
+ *      deployer with an explicit gas limit (the SDK's estimate guard).
  *   5. Reads the mandate back field by field, checks the nonce moved by one, and runs mandate-v1's own permission-window
  *      rule for the new mandate (no permission event after its MandateSet in the last 6,000 blocks).
  *

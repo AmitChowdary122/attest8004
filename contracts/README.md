@@ -65,7 +65,8 @@ through one internal hook, `_authorize(agentId, changeHash, auth)`, before any w
 `authenticatorData` starting with the immutable `rpIdHash` (`sha256("attest8004.vercel.app")`; OpenZeppelin doesn't
 check it), then the assertion over `challengeFor(agentId, changeHash, nonce) = sha256(abi.encode(chainid, registry,
 agentId, changeHash, nonce))`; success increments the nonce. `revokeMandate` is the panic button: owner only, no
-passkey, and it also increments the nonce, cancelling approvals signed but not yet submitted. There is no passkey
+passkey, and it also increments the nonce, cancelling approvals signed but not yet submitted (while a mandate is set:
+with none set it reverts `NoMandate`). There is no passkey
 recovery. `MandateSet`/`MandateRevoked` keep P4's exact signatures. The record stores the setting owner and
 `setAtBlock`, so a mandate goes stale once the agent is transferred (`mandate-v1` then fails
 `MANDATE_OWNER_CHANGED`). It rejects a zero target, an expiry at or before now, and a per-transaction cap above the

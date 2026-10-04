@@ -1380,8 +1380,10 @@ contract MandateRegistryTest is WebAuthnFixture {
 
     // ----------------------------------------------------------- gas
 
-    /// A measurement, not a check: each call's gas as its own transaction (isolated, so intrinsic
-    /// gas and calldata are included and storage starts cold). Later tasks size gas limits from it.
+    /// A measurement, not a check: each call's frame gas (`vm.lastFrameGas`), with cold storage,
+    /// against the mock Identity Registry. It leaves out the 21,000 intrinsic gas, calldata and the
+    /// canonical Identity Registry's proxy `ownerOf`, so don't size live gas limits from it: the
+    /// scripts' caps are fork-measured against the canonical registry (scripts/src/approval-plan.ts).
     /// forge-config: default.isolate = true
     function test_Gas_Record() public {
         MandateRegistry.Mandate memory mandate = _validMandate();

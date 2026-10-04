@@ -4,8 +4,9 @@
  * mandate change needs the owner's transaction AND an assertion from this passkey.
  *
  *   1. Reads the registration file (`attest8004.passkey.v1`, the page's "Download registration") and refuses it if it
- *      can't serve the agent: another rpId, not ES256, PRF not enabled, UV or UP missing, the wrong rpIdHash, or a key
- *      off the curve (`registrationProblems`).
+ *      can't serve the agent: another rpId, not ES256, PRF not enabled, UV or UP missing, the wrong rpIdHash, a key
+ *      off the curve, or a key or credential id that isn't the one attested in its authenticatorData
+ *      (`registrationProblems`).
  *   2. Checks the chain: the registry is the recorded one and binds rpIdHash = sha256("attest8004.vercel.app"), the
  *      deployer owns the agent, and the agent has no passkey yet (the same key again is a no-op; another key stops:
  *      rotation needs the current passkey).

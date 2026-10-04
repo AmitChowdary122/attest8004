@@ -10,7 +10,8 @@ import {DemoPassThrough} from "../src/DemoPassThrough.sol";
 /// Monad's eth_estimateGas for this call against DEPLOY_GAS (see deployPlan).
 /// DemoPassThrough is the P5 risky-but-mandated demo target (SPEC §4.6, decision 34): a fresh
 /// "payment router" that forwards every payment straight to `SINK`, an address nobody controls.
-/// The operator allowlists it next to the deployer in demo agent 1984's mandate (set-mandate);
+/// The operator allowlists it next to the deployer in demo agent 1984's mandate (approved on
+/// /approve, submitted with submit-approval);
 /// mandate-v1 approves a plain transfer to it, and risk-v1's simulation sees the value keep
 /// moving on to `SINK`.
 contract DeployDemoPassThrough is Script {

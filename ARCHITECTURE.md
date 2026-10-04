@@ -535,8 +535,8 @@ Encodings are `mandate-v1`'s: every `bigint` (block numbers, timestamps, wei, ga
     "authenticatorData": "0x…", "prfEnabled": true }
   ```
   - `qx, qy` come from `getPublicKey()`, the SPKI form. The exact 26-byte P-256 SPKI prefix is checked, and so is the point.
-  - `authenticatorData` is the creation ceremony's, kept for its rpIdHash and its UP/UV flags.
-  - `registrationProblems` refuses another rpId, an algorithm other than ES256 (-7), PRF not enabled (P7's Mera inbox needs it), missing UP or UV, the wrong rpIdHash and a point off the curve.
+  - `authenticatorData` is the creation ceremony's, kept for its rpIdHash, its UP/UV flags and its attested credential data.
+  - `registrationProblems` refuses another rpId, an algorithm other than ES256 (-7), PRF not enabled (P7's Mera inbox needs it), missing UP or UV, the wrong rpIdHash, a point off the curve, and a key or credential id that isn't the one attested in that `authenticatorData` (`CREDENTIAL_DATA`), so a page bug can't bind a key that doesn't belong to the passkey.
 - **`attest8004.approval.v1`, one signed change** ("Download approval" or "Copy approval", the input of `submit-approval`):
   ```json
   { "schema": "attest8004.approval.v1", "chainId": 10143, "registry": "0x…", "agentId": "1984",
