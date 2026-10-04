@@ -17,6 +17,7 @@ contract MandateRegistryForkTest is WebAuthnFixture {
     address internal stranger = makeAddr("stranger");
     Signer internal passkey;
 
+    DeployMandateRegistry internal script;
     MandateRegistry internal registry;
 
     function setUp() public {
@@ -26,15 +27,20 @@ contract MandateRegistryForkTest is WebAuthnFixture {
             return;
         }
         vm.createSelectFork(rpc);
-        // A fresh v2 registry on the fork, configured exactly as the deploy script does.
-        DeployMandateRegistry script = new DeployMandateRegistry();
-        registry = script.deploy(script.configFor(10143));
+        script = new DeployMandateRegistry();
+        // A fresh registry with the deploy script's constructor arguments, created with `new` rather
+        // than `script.deploy`: deploy is idempotent, so once v2 is live at the CREATE2 address it
+        // would return the live contract, whose agent 1984 already has its (once-only) passkey.
+        registry = new MandateRegistry(script.configFor(10143), script.RP_ID_HASH());
         passkey = _signer("fork passkey");
     }
 
-    function testFork_DeployedWithTheRpIdHash() public view {
-        assertEq(registry.rpIdHash(), RP_ID_HASH);
-        assertEq(address(registry.identityRegistry()), address(IDENTITY));
+    /// The script's testnet deployment (the live one once deployed, else a fork-local deploy) is
+    /// wired to the canonical Identity Registry and our rpIdHash.
+    function testFork_DeployedWithTheRpIdHash() public {
+        MandateRegistry deployed = script.deploy(script.configFor(10143));
+        assertEq(deployed.rpIdHash(), RP_ID_HASH);
+        assertEq(address(deployed.identityRegistry()), address(IDENTITY));
     }
 
     function testFork_OwnerAndPasskeyOfLiveAgentSetMandate() public {
@@ -73,7 +79,7 @@ contract MandateRegistryForkTest is WebAuthnFixture {
         registry.setMandate(AGENT_ID, mandate, auth);
     }
 
-    function testFork_OwnerWithoutPasskeyAssertionRefused() public {
+    function testFork_OwnerWithAnotherKeysAssertionRefused() public {
         address owner = IDENTITY.ownerOf(AGENT_ID);
         vm.prank(owner);
         registry.setPasskey(AGENT_ID, passkey.qx, passkey.qy);
