@@ -1,5 +1,5 @@
 import { readFileSync } from "node:fs";
-import type { OperatorReport } from "@attest8004/sdk";
+import { approvalSchema, type OperatorReport } from "@attest8004/sdk";
 import { parseEther, type Hex } from "viem";
 import { describe, expect, it } from "vitest";
 import {
@@ -9,8 +9,10 @@ import {
   narrateLog,
   monShort,
   plainText,
+  printableError,
   reportLogOf,
   shortKeyLine,
+  toolsLine,
   txLine,
   verdictLines,
   wrap,
@@ -187,5 +189,45 @@ describe("reportLogOf", () => {
     expect(reportLogOf({ level: "info", msg: "operator report skipped", validator: "mandate-v1", reason: "NO_INBOX_KEY" })).toBe("mandate-v1");
     expect(reportLogOf({ level: "info", msg: "caught up", validator: "risk-v1" })).toBeNull();
     expect(reportLogOf({ level: "error", msg: "operator report failed; its gas reservation stays", validator: "risk-v1" })).toBeNull();
+  });
+});
+
+describe("printableError (review fix: untrusted text never reaches the terminal raw)", () => {
+  it("prefers viem's short message, which carries no request details", () => {
+    expect(printableError({ shortMessage: "Execution reverted.", message: "long https://rpc.example/key" })).toBe("Execution reverted.");
+  });
+  it("keeps the lines, strips escapes, controls and bidi marks from each, and replaces URLs", () => {
+    const error = new Error("first https://rpc.example/abc\nsecond \u001b]52;c;aGV\u0007 ‮evil");
+    expect(printableError(error)).toBe("first <url>\nsecond ]52;c;aGV evil");
+  });
+  it("turns a schema error into its first issue's path and message, never the pretty-printed issue list", () => {
+    let caught: unknown;
+    try {
+      approvalSchema.parse({ schema: "attest8004.approval.v1" });
+    } catch (error) {
+      caught = error;
+    }
+    const line = printableError(caught);
+    expect(line).not.toMatch(/^\[/);
+    expect(line).toMatch(/^[a-zA-Z.]+: /);
+  });
+  it("cleans what JSON.parse echoes from a hostile file", () => {
+    let caught: unknown;
+    try {
+      JSON.parse("\u001b]52;c;aGVsbG8=\u0007‮{");
+    } catch (error) {
+      caught = error;
+    }
+    const line = printableError(caught);
+    expect(line).not.toMatch(/[\u001b\u0007‮]/);
+  });
+});
+
+describe("toolsLine (review fix: model-chosen tool names are untrusted)", () => {
+  it("names each tool once, cleaned, and says whether Nansen was available", () => {
+    expect(toolsLine(["simulate_action", "get_mandate", "simulate_action", "evil\u001b[2J‮x"], { available: false, reason: "NANSEN_API_KEY is not set" })).toBe(
+      "tools it called: simulate_action, get_mandate, evilx; Nansen: not configured (NANSEN_API_KEY is not set)",
+    );
+    expect(toolsLine([], { available: true, reason: null })).toBe("tools it called: none; Nansen: available");
   });
 });

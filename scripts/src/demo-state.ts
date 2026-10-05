@@ -4,7 +4,7 @@
  * file to submit, and whether a validator service is running. Pure: the runner reads the chain, the approvals folder
  * and the process list, and passes them in.
  */
-import type { Mandate, Outcome } from "@attest8004/sdk";
+import { approvalChange, type Approval, type Mandate, type Outcome } from "@attest8004/sdk";
 import { formatEther, getAddress, type Address } from "viem";
 import type { SceneId } from "./demo-args.ts";
 import type { KeyRole } from "./demo-budget.ts";
@@ -136,6 +136,21 @@ export function demoMandateProblems(m: Mandate, expected: Mandate): string[] {
     problems.push(`MAX_VALUE_PER_DAY: ${formatEther(m.maxValuePerDay)} MON, expected ${formatEther(expected.maxValuePerDay)} MON`);
   }
   if (m.validUntil !== expected.validUntil) problems.push(`VALID_UNTIL: ${m.validUntil}, expected ${expected.validUntil}`);
+  return problems;
+}
+
+/**
+ * Why `approval` isn't the one the runner may submit (Decision 6): it must be for `agentId`, at `nonce` (the agent's
+ * nonce when the wait began, which named the file), and a mandate change to exactly `expected`. Each as `CODE: detail`.
+ * The chain checks (`approvalProblems`) come on top.
+ */
+export function demoApprovalProblems(approval: Approval, o: { agentId: bigint; nonce: bigint; expected: Mandate }): string[] {
+  const problems: string[] = [];
+  if (BigInt(approval.agentId) !== o.agentId) problems.push(`AGENT: the approval is for agent ${approval.agentId}, not ${o.agentId}`);
+  if (BigInt(approval.nonce) !== o.nonce) problems.push(`NONCE: the approval is at nonce ${approval.nonce}, the agent is at ${o.nonce}`);
+  const change = approvalChange(approval);
+  if (change.kind !== "setMandate") problems.push("NOT_A_MANDATE: this approval changes the inbox key, not the mandate");
+  else problems.push(...demoMandateProblems(change.mandate, o.expected));
   return problems;
 }
 

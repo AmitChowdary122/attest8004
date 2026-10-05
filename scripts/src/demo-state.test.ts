@@ -1,10 +1,12 @@
-import { e2eMandate, type Mandate } from "@attest8004/sdk";
+import { readFileSync } from "node:fs";
+import { approvalChange, approvalSchema, e2eMandate, type Mandate } from "@attest8004/sdk";
 import { getAddress, type Address, type Hex } from "viem";
 import { describe, expect, it } from "vitest";
 import {
   approvalFileName,
   classifyAgentKey,
   cursorIsFresh,
+  demoApprovalProblems,
   demoMandateProblems,
   findServiceProcesses,
   pickApprovalFile,
@@ -265,5 +267,27 @@ describe("unexpectedOutcome", () => {
     expect(declined).toContain("DECLINED");
     expect(declined).toContain("GATE_NOT_SERVED");
     expect(unexpectedOutcome("B", undefined)).toContain("no outcome");
+  });
+});
+
+describe("demoApprovalProblems (review fix: the approval must be for this agent, at this nonce, for the demo mandate)", () => {
+  const vector = approvalSchema.parse(JSON.parse(readFileSync(new URL("../../packages/sdk/test/webauthn-vector.json", import.meta.url), "utf8")));
+  const inbox = approvalSchema.parse(JSON.parse(readFileSync(new URL("../../packages/sdk/test/webauthn-inbox-vector.json", import.meta.url), "utf8")));
+  const change = approvalChange(vector);
+  if (change.kind !== "setMandate") throw new Error("the vector is a mandate approval");
+  const expected = change.mandate;
+
+  it("finds none for this agent's mandate approval at the expected nonce", () => {
+    expect(demoApprovalProblems(vector, { agentId: 1984n, nonce: 0n, expected })).toEqual([]);
+  });
+  it("refuses another agent's approval and another nonce, by name", () => {
+    expect(demoApprovalProblems(vector, { agentId: 1985n, nonce: 0n, expected })).toEqual([expect.stringMatching(/^AGENT: /)]);
+    expect(demoApprovalProblems(vector, { agentId: 1984n, nonce: 7n, expected })).toEqual([expect.stringMatching(/^NONCE: /)]);
+  });
+  it("refuses an inbox-key approval and a mandate other than the demo's", () => {
+    expect(demoApprovalProblems(inbox, { agentId: 1984n, nonce: BigInt(inbox.nonce), expected })).toEqual([expect.stringMatching(/^NOT_A_MANDATE: /)]);
+    expect(demoApprovalProblems(vector, { agentId: 1984n, nonce: 0n, expected: { ...expected, maxValuePerTx: 1n } })).toEqual([
+      expect.stringMatching(/^MAX_VALUE_PER_TX: /),
+    ]);
   });
 });

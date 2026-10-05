@@ -53,7 +53,7 @@ import {
 } from "./demo-chain.ts";
 import { SCENE_RUNNERS, SceneBlocked, VAULT_FUND_TARGET, makeOut, type Out, type SceneContext, type Take } from "./demo-scenes.ts";
 import { sceneBlockers } from "./demo-state.ts";
-import { monShort, plainText, redactUrls, sceneHeader, shortKeyLine, txLine } from "./demo-text.ts";
+import { monShort, plainText, printableError, redactUrls, sceneHeader, shortKeyLine, txLine } from "./demo-text.ts";
 import { Timeline, timingTable } from "./demo-timing.ts";
 import { checkModelsEndpoint, reportsExpected } from "./e2e-preflight.ts";
 import { GAS, liveValidators } from "./live-validators.ts";
@@ -305,8 +305,7 @@ main().catch((error: unknown) => {
   if (error instanceof SceneBlocked) {
     console.error(error.message);
   } else {
-    const short = (error as { shortMessage?: string }).shortMessage;
-    console.error(redactUrls(String(short ?? (error instanceof Error ? error.message : error))));
+    console.error(printableError(error));
     if (scenesStarted) console.error("If scene 3 set the rogue key, reset with `pnpm demo --scene 3b`.");
   }
   process.exitCode = 1;

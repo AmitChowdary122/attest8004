@@ -103,3 +103,31 @@ export function serialQueue(): { push(task: () => Promise<void>): void; drain():
     drain: () => tail,
   };
 }
+
+/**
+ * How each validator's outcome is shown, so every verdict prints outside the cut regions (review fix): mandate-v1's
+ * outcome closes the pin wait, then (in order, through `queue`) its verdict prints and risk-v1's wait opens; risk-v1's
+ * outcome closes that wait, then its verdict prints. The queue keeps that order even when risk-v1 lands before
+ * mandate-v1's verdict has finished printing.
+ */
+export function verdictFlow(o: {
+  queue: { push(task: () => Promise<void>): void };
+  closeWait: () => void;
+  openRiskWait: () => void;
+  show: (side: "A" | "B") => Promise<void>;
+}): (side: "A" | "B") => void {
+  return (side) => {
+    if (side === "A") {
+      o.closeWait();
+      o.queue.push(async () => {
+        await o.show("A");
+        o.openRiskWait();
+      });
+    } else {
+      o.queue.push(async () => {
+        o.closeWait();
+        await o.show("B");
+      });
+    }
+  };
+}

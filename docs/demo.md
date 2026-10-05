@@ -136,6 +136,7 @@ The runner ignores approval files saved before a scene started waiting. An appro
 | What you see | What to do |
 |---|---|
 | Chrome: "The operation either timed out or was not allowed" | The passkey prompt was dismissed, timed out or lost focus. Keep the window in front, click **Sign with passkey** again (or **Prepare approval**, then sign), and pick the Google Password Manager passkey. The runner waits 15 minutes. |
+| Scene 2 stops: "risk-v1 scored the benign action … below the vault's 80" | Read its findings on screen. This hasn't happened yet: in every run so far, the model never opened the reset's permission events. If a finding cites those older events (`afterMandate: false`), the runner can't fix it. Either record takes at least 31 minutes apart (the events then leave the window), or clarify risk-v1's rubric under a new `promptVersion` (`risk-v1/5`) and re-record its fixtures. The evidence format doesn't change. |
 | `scene 2 can't run now: … reset with pnpm demo --scene 3b` | An interrupted take left the rogue key or a stale mandate. Run `pnpm demo --scene 3b`. |
 | `… can't pay for a take` | Paste the printed address into the faucet, or run `pnpm demo --fund`. |
 | `stop the validator services first` | Stop `pnpm --filter @attest8004/validator-mandate start` and `…validator-risk start`. |

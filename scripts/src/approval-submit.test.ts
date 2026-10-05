@@ -2,7 +2,7 @@ import { readFileSync } from "node:fs";
 import { approvalSchema, type Approval } from "@attest8004/sdk";
 import type { Address, Hex, PublicClient } from "viem";
 import { describe, expect, it } from "vitest";
-import { readApprovalChainState } from "./approval-submit.ts";
+import { makeCheck, readApprovalChainState } from "./approval-submit.ts";
 
 // The SDK's committed approvals (the same ones approval-plan.test.ts uses): a mandate at nonce 0, an inbox key at nonce 1.
 const approval: Approval = approvalSchema.parse(JSON.parse(readFileSync(new URL("../../packages/sdk/test/webauthn-vector.json", import.meta.url), "utf8")));
@@ -77,5 +77,17 @@ describe("readApprovalChainState", () => {
     });
     expect(state.contractChangeHash).toBeNull();
     expect(calls.some((c) => c.functionName === "mandateHashOf")).toBe(false);
+  });
+});
+
+describe("makeCheck (review fix: submit-approval prints each read-back check again)", () => {
+  it("reports each passing check, and throws a failing one with common.ts's message", () => {
+    const passed: string[] = [];
+    const check = makeCheck((label) => passed.push(label));
+    check("the stored mandate hash is the approved changeHash", true, "");
+    expect(passed).toEqual(["the stored mandate hash is the approved changeHash"]);
+    expect(() => check("nonceOf(1984) moved from 3 to 4", false, "3")).toThrow("check failed: nonceOf(1984) moved from 3 to 4 (3)");
+    expect(passed).toHaveLength(1);
+    expect(() => makeCheck()("silent", true, "")).not.toThrow();
   });
 });

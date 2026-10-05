@@ -38,7 +38,7 @@ import {
   pickApprovalFile,
   type DemoState,
 } from "./demo-state.ts";
-import type { TraceFrame } from "./demo-text.ts";
+import { plainText, printableError, type TraceFrame } from "./demo-text.ts";
 import { READER_CONCURRENCY, llmSettingsFromEnv, type LlmSettings } from "./live-validators.ts";
 import { checkPermissionWindow } from "./permission-window.ts";
 
@@ -353,7 +353,7 @@ export async function waitForApproval(o: {
       try {
         return await parse(answer);
       } catch (error) {
-        o.say(`  couldn't read that file (${error instanceof Error ? error.message.split("\n")[0] : "error"}); try again`);
+        o.say(`  couldn't read that file (${printableError(error).split("\n")[0]}); try again`);
       }
     }
   };
@@ -382,7 +382,7 @@ export async function waitForApproval(o: {
         } catch (error) {
           firstParseError ??= Date.now();
           if (Date.now() - firstParseError > 5_000) {
-            o.say(`  couldn't read ${file} (${error instanceof Error ? error.message.split("\n")[0] : "error"}); still waiting`);
+            o.say(`  couldn't read ${plainText(file, 120)} (${printableError(error).split("\n")[0]}); still waiting`);
             firstParseError = Number.POSITIVE_INFINITY;
           }
         }

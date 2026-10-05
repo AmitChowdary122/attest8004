@@ -60,9 +60,9 @@ import {
   waitForApproval,
   type DemoEnv,
 } from "./demo-chain.ts";
-import { demoMandateProblems, sceneBlockers, unexpectedOutcome } from "./demo-state.ts";
-import { elapsed, findP256Calls, mandateLines, monShort, narrateLog, palette, plainText, reportLogOf, txLine, verdictLines } from "./demo-text.ts";
-import { serialQueue, waitCloseLine, waitOpenLine, type Timeline, type WaitKind } from "./demo-timing.ts";
+import { demoApprovalProblems, sceneBlockers, unexpectedOutcome } from "./demo-state.ts";
+import { elapsed, findP256Calls, mandateLines, monShort, narrateLog, palette, plainText, reportLogOf, toolsLine, txLine, verdictLines } from "./demo-text.ts";
+import { serialQueue, verdictFlow, waitCloseLine, waitOpenLine, type Timeline, type WaitKind } from "./demo-timing.ts";
 import { GAS, READER_CONCURRENCY, counted, pollAll, revertOf, type LiveValidators } from "./live-validators.ts";
 import { checkPermissionWindow } from "./permission-window.ts";
 import { retryUntil } from "./e2e-preflight.ts";
@@ -237,18 +237,17 @@ function mandateLabels(env: DemoEnv): Record<string, string> {
  * checks it against the chain and against the demo mandate exactly, and submits it from the owner's wallet. `null`
  * when you typed `skip`.
  */
-async function approveMandate(ctx: SceneContext): Promise<{ hash: Hash; setAtBlock: bigint } | null> {
+async function approveMandate(ctx: SceneContext, nonce: bigint): Promise<{ hash: Hash; setAtBlock: bigint } | null> {
   const { out, env } = ctx;
-  const { snapshot } = await readDemoState(env, { spend: false });
   out.line("Switch to the browser (laptop Chrome):");
   out.bold(`  ${WEB}/approve → 3 · Approve a mandate change → agent ${AGENT_ID}`);
   out.line("  Read agent from chain → Preset: e2e mandate → Prepare approval → Sign with passkey → Download approval");
-  out.dim(`  (the runner picks up attest8004-approval-agent${AGENT_ID}-nonce${snapshot.nonce}.json from ${ctx.approvalsDir})`);
+  out.dim(`  (the runner picks up attest8004-approval-agent${AGENT_ID}-nonce${nonce}.json from ${ctx.approvalsDir})`);
   const approval = await waiting(ctx, "browser", "your passkey approval on /approve", () =>
     waitForApproval({
       dir: ctx.approvalsDir,
       agentId: AGENT_ID,
-      nonce: snapshot.nonce,
+      nonce,
       timeoutMs: APPROVAL_TIMEOUT_MS,
       ask: ctx.ask === null ? null : (q, signal) => (ctx.ask as NonNullable<SceneContext["ask"]>)(q, signal),
       say: (line) => out.line(line),
@@ -264,10 +263,12 @@ async function approveMandate(ctx: SceneContext): Promise<{ hash: Hash; setAtBlo
     approval,
     sender: env.owner.address,
   });
-  const problems = await approvalProblems(approval, chainState);
+  // This agent, this nonce, exactly the demo mandate (a typed path has no file-name filter), then the chain's checks.
+  const problems = [
+    ...demoApprovalProblems(approval, { agentId: AGENT_ID, nonce, expected: demoMandate(env) }),
+    ...(await approvalProblems(approval, chainState)),
+  ];
   const change = approvalChange(approval);
-  if (change.kind !== "setMandate") problems.push("NOT_A_MANDATE: this approval changes the inbox key, not the mandate");
-  else problems.push(...demoMandateProblems(change.mandate, demoMandate(env)));
   if (problems.length > 0 || change.kind !== "setMandate") throw new Error(`refusing to submit this approval:\n  ${problems.join("\n  ")}`);
   out.ok(`✓ The approval checks out: agent ${AGENT_ID}'s passkey signed exactly the demo mandate, at nonce ${approval.nonce}.`);
   if (ctx.ask) await ctx.ask("  Press Enter to submit it from the owner's wallet… ");
@@ -394,9 +395,7 @@ async function answer(ctx: SceneContext, client: Attest8004Client, a: RequestedV
     if (side === "B") {
       const parsed = parseRiskEvidence(got.text);
       if (parsed.ok) {
-        const tools = [...new Set(parsed.doc.toolCalls.map((call) => call.name))];
-        const nansen = parsed.doc.tools.nansen.available ? "available" : `not configured (${plainText(parsed.doc.tools.nansen.reason ?? "unavailable", 80)})`;
-        out.dim(`    tools it called: ${tools.length > 0 ? tools.join(", ") : "none"}; Nansen: ${nansen}`);
+        out.dim(`    ${toolsLine(parsed.doc.toolCalls.map((call) => call.name), parsed.doc.tools.nansen)}`);
         out.dim(`    model: ${plainText(parsed.doc.llm.servedModels.join(", "), 80)}, ${parsed.doc.llm.usage.total.toLocaleString("en-US")} tokens (recorded in the public evidence)`);
       }
     }
@@ -408,6 +407,15 @@ async function answer(ctx: SceneContext, client: Attest8004Client, a: RequestedV
     if (outcome.blockNumber > ctx.take.lastBlock) ctx.take.lastBlock = outcome.blockNumber;
   };
 
+  // Each verdict prints outside the cut regions: A's outcome closes the pin wait, A's verdict prints, then risk-v1's
+  // wait opens; B's outcome closes it before B's verdict prints (verdictFlow, through the print queue).
+  const landed: Partial<Record<"A" | "B", Extract<Outcome, { kind: "responded" }>>> = {};
+  const flow = verdictFlow({
+    queue: printing,
+    closeWait,
+    openRiskWait: () => openWait("risk-v1", riskWhat, "risk-v1 working"),
+    show: (side) => show(side, landed[side] as Extract<Outcome, { kind: "responded" }>),
+  });
   openWait("pin", pinWhat, "waiting for mandate-v1");
   try {
     await pollAll(
@@ -420,12 +428,13 @@ async function answer(ctx: SceneContext, client: Attest8004Client, a: RequestedV
       (job, outcome) => {
         const problem = unexpectedOutcome(job === "A" ? MANDATE_V1.tag : RISK_V1.tag, outcome);
         if (problem !== null || outcome.kind !== "responded") throw new Error(problem ?? "unreachable");
-        closeWait();
-        if (job === "A") openWait("risk-v1", riskWhat, "risk-v1 working");
-        printing.push(() => show(job as "A" | "B", outcome));
+        landed[job as "A" | "B"] = outcome;
+        flow(job as "A" | "B");
       },
     );
   } finally {
+    // Let a queued print finish (it may open risk-v1's wait) before closing whatever wait is still open.
+    await printing.drain().catch(() => {});
     closeWait();
     ctx.take.tokens += main.stats.usage.total;
   }
@@ -449,7 +458,7 @@ function deadlineAfter(latest: bigint): bigint {
 export async function scene1(ctx: SceneContext): Promise<void> {
   const { snapshot } = await requireReady(ctx, "1");
   ctx.out.line(`The owner of agent ${AGENT_ID} approves its mandate with a passkey: what the agent may do, signed on the device.`);
-  const approved = await approveMandate(ctx);
+  const approved = await approveMandate(ctx, snapshot.nonce);
   if (approved !== null) return showMandate(ctx, approved.hash);
   if (snapshot.mandate === null) throw new Error(`agent ${AGENT_ID} has no mandate to show`);
   const tx = await mandateSetTx(snapshot.mandate.setAtBlock);
@@ -470,7 +479,9 @@ export async function scene2(ctx: SceneContext): Promise<void> {
   const { verdictA, verdictB } = await answer(ctx, client, a, b);
   if (verdictA.response !== MIN_SCORE_A) throw new Error(`mandate-v1 scored the benign action ${verdictA.response} (needs ${MIN_SCORE_A})`);
   if (verdictB.response < MIN_SCORE_B) {
-    throw new Error(`risk-v1 scored the benign action ${verdictB.response}, below the vault's ${MIN_SCORE_B} (R1: see the plan's Decision 22)`);
+    throw new Error(
+      `risk-v1 scored the benign action ${verdictB.response}, below the vault's ${MIN_SCORE_B}: its findings are above; see docs/demo.md, "When something goes wrong"`,
+    );
   }
   out.line();
   if (!(await client.isValidated({ gate: VAULT, action }))) throw new Error("the vault doesn't see the action as validated");
@@ -573,7 +584,7 @@ export async function scene3b(ctx: SceneContext): Promise<void> {
   let setAtBlock = snapshot.mandate?.setAtBlock ?? 0n;
   if (state.permissionChangedAfterMandate || !state.mandate.present || !state.mandate.demoTerms) {
     out.line("The key changes came after the mandate, so mandate-v1 refuses everything until the owner approves again:");
-    const approved = await approveMandate(ctx);
+    const approved = await approveMandate(ctx, snapshot.nonce);
     if (approved === null) throw new Error("skipped: the demo isn't reset (approve the mandate again to reset it)");
     setAtBlock = approved.setAtBlock;
   } else {

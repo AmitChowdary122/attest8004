@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { Timeline, serialQueue, timingTable, waitCloseLine, waitOpenLine } from "./demo-timing.ts";
+import { Timeline, serialQueue, timingTable, verdictFlow, waitCloseLine, waitOpenLine } from "./demo-timing.ts";
 
 /** A clock the test moves by hand. */
 function clock() {
@@ -135,5 +135,28 @@ describe("serialQueue", () => {
     } finally {
       process.off("unhandledRejection", onUnhandled);
     }
+  });
+});
+
+describe("verdictFlow (review fix: each verdict prints outside the cut regions)", () => {
+  it("closes the pin wait, prints mandate-v1's verdict, then opens risk-v1's wait; closes it before printing risk-v1's, even when B lands before A has printed", async () => {
+    const steps: string[] = [];
+    let releaseA: () => void = () => {};
+    const gateA = new Promise<void>((resolve) => (releaseA = resolve));
+    const queue = serialQueue();
+    const onOutcome = verdictFlow({
+      queue,
+      closeWait: () => steps.push("close"),
+      openRiskWait: () => steps.push("open risk-v1"),
+      show: async (side) => {
+        if (side === "A") await gateA;
+        steps.push(`show ${side}`);
+      },
+    });
+    onOutcome("A");
+    onOutcome("B");
+    releaseA();
+    await queue.drain();
+    expect(steps).toEqual(["close", "show A", "open risk-v1", "close", "show B"]);
   });
 });

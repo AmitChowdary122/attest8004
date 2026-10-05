@@ -301,7 +301,7 @@ As built in P9 and played live by `pnpm demo` scenes 3 and 3b ([docs/demo.md](./
    - the owner restores the agent's own key (`setAgentKey(agentId, hotKey)`, which revokes the rogue one);
    - the owner approves the mandate again with the passkey.
 
-   `mandate-v1` compares the window's events with the **newest** `MandateSet`, so a mandate approved after the changes is clean at once, with no 6,000-block wait. The owner approved it with the changes in view. `risk-v1` sees those older events marked `afterMandate: false`, and its rubric rates only a change after the mandate as a finding. This is tested by a recorded fixture and by two live checks (docs/deployments.md, P9).
+   `mandate-v1` compares the window's events with the **newest** `MandateSet`, so a mandate approved after the changes is clean at once, with no 6,000-block wait. The owner approved it with the changes in view. If `risk-v1` reads the permission history, it sees those older events marked `afterMandate: false`, and its rubric rates only a change after the mandate as a finding. In the recorded reset fixture and in both live checks (docs/deployments.md, P9), it scored the benign action 100 without opening that tool. So how the model weighs `afterMandate: false` events is still untested; docs/demo.md says what to do if a take's scene 2 ever scores below 80.
 
    `pnpm demo --scene 3b` does exactly this, which is also how the demo resets between takes. The e2e still waits 6,000 blocks after any new mandate before it starts.
 

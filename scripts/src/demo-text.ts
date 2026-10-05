@@ -169,6 +169,34 @@ export function narrateLog(entry: Record<string, unknown>, seen: Set<string>): s
   return `! ${validator}: ${plainText(msg, 120)}${why ? ` (${plainText(redactUrls(why), 200)})` : ""}`;
 }
 
+/**
+ * An error as terminal-safe text: viem's short message when there is one (it carries no request details), a schema
+ * error's first issue as `path: message`, otherwise the message. Each line goes through `plainText` and `redactUrls`, so
+ * neither a file's echoed bytes, a validator's text nor an endpoint's URL reaches the screen raw.
+ */
+export function printableError(error: unknown): string {
+  const e = error as { shortMessage?: unknown; message?: unknown; issues?: unknown } | null;
+  let text: string;
+  if (e !== null && typeof e === "object" && typeof e.shortMessage === "string") text = e.shortMessage;
+  else if (e !== null && typeof e === "object" && Array.isArray(e.issues) && e.issues.length > 0) {
+    const issue = e.issues[0] as { path?: unknown; message?: unknown };
+    const path = Array.isArray(issue.path) && issue.path.length > 0 ? issue.path.map(String).join(".") : "value";
+    text = `${path}: ${String(issue.message ?? "invalid")}`;
+  } else text = error instanceof Error ? error.message : String(error);
+  return text
+    .split("\n")
+    .map((line) => plainText(redactUrls(line), 300))
+    .filter((line) => line !== "")
+    .join("\n");
+}
+
+/** The tools risk-v1 called (names the model chose: untrusted), once each, and whether Nansen was available. */
+export function toolsLine(names: readonly string[], nansen: { available: boolean; reason: string | null }): string {
+  const tools = [...new Set(names.map((name) => plainText(name, 40)))];
+  const nansenText = nansen.available ? "available" : `not configured (${plainText(nansen.reason ?? "unavailable", 80)})`;
+  return `tools it called: ${tools.length > 0 ? tools.join(", ") : "none"}; Nansen: ${nansenText}`;
+}
+
 /** `wei` as MON rounded to 4 decimals for the screen (a non-zero amount below that shows as `<0.0001 MON`). */
 export function monShort(wei: bigint): string {
   if (wei === 0n) return "0 MON";

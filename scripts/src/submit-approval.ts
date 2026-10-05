@@ -119,6 +119,7 @@ async function submitMandate(approval: Approval, mandate: Mandate, nonce: bigint
     mandate,
     nonce,
     onSent: (sent) => printTx(`setMandate ${agentId}`, sent),
+    onCheck: (label) => console.log(`  ok  ${label}`),
   });
   console.log(
     `setAtBlock ${setAtBlock} (logIndex ${window.baseline.logIndex}); scanned blocks ${window.scanFrom}..${window.head} ` +

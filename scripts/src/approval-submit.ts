@@ -17,9 +17,15 @@ import { getAddress, type Address, type Hash, type PublicClient, type Transactio
 import { setMandateGasCap, type ApprovalChainState } from "./approval-plan.ts";
 import { checkPermissionWindow } from "./permission-window.ts";
 
-/** common.ts's `check`, here so this module never needs the RPC URL at import (tests load it without .env). */
-function check(label: string, ok: boolean, detail: string): void {
-  if (!ok) throw new Error(`check failed: ${label} (${detail})`);
+/**
+ * common.ts's `check`, here so this module never needs the RPC URL at import (tests load it without .env): it throws
+ * the same message, and reports each passing check to `onPass` (submit-approval prints it as `  ok  <label>`).
+ */
+export function makeCheck(onPass?: (label: string) => void): (label: string, ok: boolean, detail: string) => void {
+  return (label, ok, detail) => {
+    if (!ok) throw new Error(`check failed: ${label} (${detail})`);
+    onPass?.(label);
+  };
 }
 
 /**
@@ -93,7 +99,10 @@ export async function sendMandateApproval(o: {
   mandate: Mandate;
   nonce: bigint;
   onSent?: (sent: SentTx) => void;
+  /** Hears each read-back check that passed, in order. */
+  onCheck?: (label: string) => void;
 }): Promise<SentTx & { setAtBlock: bigint; window: Awaited<ReturnType<typeof checkPermissionWindow>> }> {
+  const check = makeCheck(o.onCheck);
   const { publicClient, registry, approval, mandate, nonce, owner } = o;
   const onRegistry = { address: registry, abi: mandateRegistryAbi } as const;
   const agentId = BigInt(approval.agentId);
