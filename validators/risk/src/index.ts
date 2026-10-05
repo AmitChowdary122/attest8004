@@ -14,6 +14,7 @@ export * from "./tools.ts";
 export * from "./prompt.ts";
 export * from "./agent.ts";
 export * from "./evidence.ts";
+export * from "./report.ts";
 export * from "./run.ts";
 export * from "./validator.ts";
 export * from "./verify.ts";

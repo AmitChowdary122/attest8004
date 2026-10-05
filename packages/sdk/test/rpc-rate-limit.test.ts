@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { rateLimitedFetch } from "../src/rpc-rate-limit.ts";
+import { PUBLIC_RPC_REQUESTS_PER_SECOND, parseRequestsPerSecond, rateLimitedFetch } from "../src/rpc-rate-limit.ts";
 
 /** A fake clock: `sleep` advances it, so the limiter's waits are observable and instant. */
 function fakeClock() {
@@ -87,5 +87,16 @@ describe("rateLimitedFetch", () => {
     expect(await (await f("https://rpc.example", { method: "POST" })).json()).toEqual(revert);
     expect(calls).toBe(1);
     expect(clock.at()).toBe(0);
+  });
+});
+
+describe("parseRequestsPerSecond", () => {
+  it("accepts an integer from 1 to the public RPC's 15, and nothing else", () => {
+    expect(PUBLIC_RPC_REQUESTS_PER_SECOND).toBe(15);
+    expect(parseRequestsPerSecond("1", "X_RPS")).toEqual({ ok: true, value: 1 });
+    expect(parseRequestsPerSecond("15", "X_RPS")).toEqual({ ok: true, value: 15 });
+    for (const bad of ["0", "16", "x", "7.5", "07", ""]) {
+      expect(parseRequestsPerSecond(bad, "X_RPS")).toEqual({ ok: false, problem: `X_RPS must be an integer from 1 to 15, got "${bad}"` });
+    }
   });
 });

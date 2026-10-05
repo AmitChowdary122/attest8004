@@ -18,6 +18,7 @@ import {
   FakeRiskReader,
   findingsJson,
   MODEL,
+  sampleRiskRecord as sampleRecord,
   P4_REGISTRY,
   PASS_THROUGH,
   requestPair,
@@ -31,69 +32,6 @@ import {
 
 const TOP_LEVEL_KEYS = ["block", "request", "params", "prerequisite", "llm", "classifier", "tools", "toolCalls", "modelOutputs", "finalOutput", "findings"];
 
-/** A realistic record: the pass-through traced, the sink looked up, one high finding. */
-function sampleRecord(over: Partial<RiskRecord> = {}): RiskRecord {
-  const { jsonB, rhB, rhA } = requestPair(fakeAction());
-  const request = mandateRequestOf(jsonB, rhB, 1_000n);
-  const raw = findingsJson([
-    { code: "FUNDS_FORWARDED", severity: "high", explanation: `The target forwards all of it to ${SINK}.`, sources: ["simulate_action"] },
-  ]);
-  const usage = { prompt: 1_000, completion: 50, total: 1_050 };
-  return {
-    block: blockAt(1_004n),
-    request: {
-      block: request.block,
-      chainId: request.chainId,
-      gate: request.gate,
-      agentId: request.agentId,
-      target: request.target,
-      value: request.value,
-      dataHash: keccak256(request.data),
-      selector: "0x00000000",
-      deadline: request.deadline,
-      salt: request.salt,
-    },
-    params: riskParams(ADDRESSES, VALIDATOR_A),
-    prerequisite: { validator: VALIDATOR_A, requestHash: rhA, score: 100, responseHash: keccak256(toHex("A")), tag: "mandate-v1", reasons: [] },
-    llm: {
-      host: "api.groq.com",
-      model: MODEL,
-      servedModels: [MODEL],
-      systemFingerprints: ["fp_1", null],
-      promptVersion: "risk-v1/1",
-      promptHash: keccak256(toHex("prompt")),
-      usage: { prompt: 2_000, completion: 100, total: 2_100 },
-    },
-    classifier: { model: RISK_V1.guardModel, threshold: "0.5", results: [{ source: "calldata_text", text: "memo text", score: "3.89e-05", flagged: false }] },
-    tools: { nansen: { available: false, reason: "NANSEN_API_KEY is not set" } },
-    toolCalls: [
-      {
-        id: "call_1",
-        name: "simulate_action",
-        arguments: {},
-        output: { ok: true, calls: [{ depth: 0, to: PASS_THROUGH, value: "1000000000000000" }], valueFlows: [], truncatedCalls: 0 },
-        onchain: true,
-      },
-      { id: "call_2", name: "nansen_flows", arguments: { address: SINK }, output: { available: false, reason: "NANSEN_API_KEY is not set" }, onchain: false },
-    ],
-    modelOutputs: [
-      {
-        content: null,
-        toolCalls: [{ id: "call_1", name: "simulate_action", arguments: "{}" }],
-        finishReason: "tool_calls",
-        servedModel: MODEL,
-        systemFingerprint: "fp_1",
-        usage,
-      },
-      { content: raw, toolCalls: [], finishReason: "stop", servedModel: MODEL, systemFingerprint: null, usage },
-    ],
-    finalOutput: { raw, attempts: 1 },
-    findings: [
-      { code: "FUNDS_FORWARDED", severity: "high", explanation: `The target forwards all of it to ${SINK}.`, sources: ["simulate_action"], origin: "model" },
-    ],
-    ...over,
-  };
-}
 
 /** The full document as the base publishes it, its canonical text and its size in bytes. */
 function publish(record: RiskRecord, score = 0, reasons = ["FUNDS_FORWARDED"]): { doc: Record<string, unknown>; text: string; bytes: number } {

@@ -4,6 +4,20 @@
 // 15/sec", which viem doesn't retry. The e2e runs both validators in-process next to its own reads, all through
 // common.ts's clients, so their bursts add up; every request now waits for a slot, and a refused one is retried.
 
+/** The public Monad testnet RPC's per-IP limit, in requests a second (measured 5 Oct 2026). */
+export const PUBLIC_RPC_REQUESTS_PER_SECOND = 15;
+
+/**
+ * A requests-per-second setting (e.g. from the environment): an integer from 1 to
+ * {@link PUBLIC_RPC_REQUESTS_PER_SECOND}, or the problem, naming the setting.
+ */
+export function parseRequestsPerSecond(value: string, name: string): { ok: true; value: number } | { ok: false; problem: string } {
+  if (!/^[1-9][0-9]?$/.test(value) || Number(value) > PUBLIC_RPC_REQUESTS_PER_SECOND) {
+    return { ok: false, problem: `${name} must be an integer from 1 to ${PUBLIC_RPC_REQUESTS_PER_SECOND}, got "${value}"` };
+  }
+  return { ok: true, value: Number(value) };
+}
+
 /** JSON-RPC error code the public Monad testnet RPC returns when a client exceeds its request rate. */
 export const RATE_LIMITED_CODE = -32011;
 

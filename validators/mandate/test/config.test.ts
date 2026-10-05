@@ -32,6 +32,7 @@ describe("parseServiceConfig", () => {
       maxRequestsPerAgentPerHour: 20,
       dailyGasBudget: 10_000_000n,
       maxResponseGas: 400_000n,
+      rpcRequestsPerSecond: 7,
     });
   });
 
@@ -129,5 +130,21 @@ describe("parseServiceConfig", () => {
       `MANDATE_V1_GATES: "${GATE_A}" must be <gate address>:<agentId>, e.g. ${DEPLOYMENTS[10143].demoAgentVault}:1984`,
     );
     expect(errorOf({ ...base, MANDATE_V1_GATES: `${GATE_A}:1984:1985` })).toContain("must be <gate address>:<agentId>");
+  });
+
+  it("RPC requests per second: default 7, 1–15 accepted, 0/16/\"x\" refused", () => {
+    expect(parseServiceConfig(base, ROOT).rpcRequestsPerSecond).toBe(7);
+    expect(parseServiceConfig({ ...base, MANDATE_V1_RPC_REQUESTS_PER_SECOND: "1" }, ROOT).rpcRequestsPerSecond).toBe(1);
+    expect(parseServiceConfig({ ...base, MANDATE_V1_RPC_REQUESTS_PER_SECOND: "15" }, ROOT).rpcRequestsPerSecond).toBe(15);
+    for (const bad of ["0", "16", "x", "7.5"]) {
+      expect(errorOf({ ...base, MANDATE_V1_RPC_REQUESTS_PER_SECOND: bad })).toContain("MANDATE_V1_RPC_REQUESTS_PER_SECOND must be an integer from 1 to 15");
+    }
+  });
+
+  it("daily budget below response cap + report cap refused", () => {
+    expect(errorOf({ ...base, MANDATE_V1_DAILY_GAS_BUDGET: "819999" })).toContain(
+      "MANDATE_V1_DAILY_GAS_BUDGET (819999) must be at least MANDATE_V1_MAX_RESPONSE_GAS (400000) plus the operator report cap (420000)",
+    );
+    expect(parseServiceConfig({ ...base, MANDATE_V1_DAILY_GAS_BUDGET: "820000" }, ROOT).dailyGasBudget).toBe(820_000n);
   });
 });

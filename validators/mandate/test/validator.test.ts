@@ -10,6 +10,7 @@ import {
   MAX_REQUEST_URI_BYTES,
   MemoryCursorStore,
   requestHashOfJson,
+  type InboxPort,
   type RequestEvent,
   type RequestJsonV1,
   type ValidationStatus,
@@ -20,9 +21,16 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { PreimageCache } from "../src/collect.ts";
 import { MANDATE_V1 } from "../src/params.ts";
 import type { MandateAddresses, MandateContracts, MandateReader } from "../src/reader.ts";
+import { mandateReport } from "../src/report.ts";
 import { runMandateV1 } from "../src/run.ts";
 import type { MandateInputs, MandateRecord, PermissionEvent, PinnedBlock, Simulation } from "../src/types.ts";
 import { MandateValidator, PIN_LAG_BLOCKS, type MandateValidatorOptions } from "../src/validator.ts";
+
+// The real report builder, wrapped so one test can make it throw.
+vi.mock("../src/report.ts", async (importOriginal) => {
+  const real = await importOriginal<typeof import("../src/report.ts")>();
+  return { ...real, mandateReport: vi.fn(real.mandateReport) };
+});
 
 const VALIDATOR = getAddress("0xa62dab21e0c0f57e94b3ed6e675f214199989e92");
 const GATE = getAddress("0x23bfbd12545ccd1501dda1b65a54518fd6212a96");
@@ -891,5 +899,136 @@ describe("MandateValidator: a missing spend log is a retry, never a verdict", ()
     const { doc } = posted(b.requestHash);
     expect(doc.spend).toMatchObject({ total: "1000", entries: [{ requestHash: a.requestHash, value: "1000", counted: true }] });
     expect(reader.evidenceCalls).toEqual([a.requestHash, a.requestHash]);
+  });
+});
+
+/** An InboxPort that records reads and posts; the agent's inbox key is `inboxKey` (zero: none). */
+class FakeInbox implements InboxPort {
+  readonly chainId = CHAIN_ID;
+  readonly validator: Address = VALIDATOR;
+  readonly findingsBoard: Address = getAddress("0xa7d52b3b08fab0cd0527c6242ca678f9feee6a1c");
+  readonly validationRegistry: Address = ADDRESSES.validationRegistry;
+  inboxKey: Hex = "0x8520f0098930a754748b7ddcb43ef75a0dbf3a0d26381af4eba4a98eaa9b4e6a";
+  readFails: Error | null = null;
+  postFails: Error | null = null;
+  readonly reads: bigint[] = [];
+  readonly posts: { requestHash: Hex; agentId: bigint; envelope: Hex; responsesBefore: number }[] = [];
+
+  async inboxKeyOf(agentId: bigint): Promise<Hex> {
+    this.reads.push(agentId);
+    if (this.readFails) throw this.readFails;
+    return this.inboxKey;
+  }
+  async post(p: { requestHash: Hex; agentId: bigint; envelope: Hex }) {
+    this.posts.push({ ...p, responsesBefore: chain.responses.length });
+    if (this.postFails) throw this.postFails;
+    return { txHash: keccak256(toHex(`report ${this.posts.length}`)) as Hash, blockNumber: 1_006n, gasLimit: 77_000n };
+  }
+}
+
+describe("MandateValidator: operator reports (P7)", () => {
+  const reportAdmission = () =>
+    new Admission({ maxRequestsPerAgent: 20, agentWindowSeconds: 3_600n, dailyGasBudget: 10_000_000n, maxGasPerResponse: 400_000n, maxGasPerReport: 420_000n });
+
+  it("posts one report after the response lands, with the response's requestHash and agent", async () => {
+    const inbox = new FakeInbox();
+    const e = addRequest(requestJson());
+
+    const { outcomes } = await validator({ inbox }).pollOnce();
+
+    expect(outcomes).toEqual([expect.objectContaining({ kind: "responded", requestHash: e.requestHash })]);
+    expect(inbox.reads).toEqual([AGENT]);
+    expect(inbox.posts).toHaveLength(1);
+    expect(inbox.posts[0]).toMatchObject({ requestHash: e.requestHash, agentId: AGENT, responsesBefore: 1 });
+    expect(logs).toContainEqual(expect.objectContaining({ level: "info", msg: "operator report posted", requestHash: e.requestHash, gasLimit: 77_000n }));
+  });
+
+  it("settles admission's report part to the post's gas limit", async () => {
+    const admission = reportAdmission();
+    const settleReport = vi.spyOn(admission, "settleReport");
+    const e = addRequest(requestJson());
+
+    await validator({ inbox: new FakeInbox(), admission }).pollOnce();
+
+    expect(settleReport).toHaveBeenCalledWith(expect.objectContaining({ requestHash: e.requestHash, gasLimit: 77_000n }));
+  });
+
+  it("no inbox key → no post; report reservation settled to 0", async () => {
+    const inbox = new FakeInbox();
+    inbox.inboxKey = zeroHash;
+    const admission = reportAdmission();
+    const settleReport = vi.spyOn(admission, "settleReport");
+    const e = addRequest(requestJson());
+
+    await validator({ inbox, admission }).pollOnce();
+
+    expect(inbox.posts).toHaveLength(0);
+    expect(settleReport).toHaveBeenCalledWith(expect.objectContaining({ requestHash: e.requestHash, gasLimit: 0n }));
+    expect(logs).toContainEqual(expect.objectContaining({ msg: "operator report skipped", reason: "NO_INBOX_KEY" }));
+  });
+
+  it("post fails → outcome responded, one error log, reservation kept", async () => {
+    const inbox = new FakeInbox();
+    inbox.postFails = new Error("FindingsBoard.post: estimate 500000 is above the explicit gas limit 420000; raise the limit");
+    const admission = reportAdmission();
+    const settleReport = vi.spyOn(admission, "settleReport");
+    const e = addRequest(requestJson());
+
+    const { outcomes } = await validator({ inbox, admission }).pollOnce();
+
+    expect(outcomes).toEqual([expect.objectContaining({ kind: "responded", requestHash: e.requestHash })]);
+    expect(chain.responses).toHaveLength(1);
+    expect(settleReport).not.toHaveBeenCalled();
+    expect(logs.filter((l) => l.level === "error" && l.msg === "operator report failed; its gas reservation stays")).toHaveLength(1);
+  });
+
+  it("inboxKeyOf throws → same", async () => {
+    const inbox = new FakeInbox();
+    inbox.readFails = new Error("eth_call: upstream unavailable");
+    const e = addRequest(requestJson());
+
+    const { outcomes } = await validator({ inbox }).pollOnce();
+
+    expect(outcomes).toEqual([expect.objectContaining({ kind: "responded", requestHash: e.requestHash })]);
+    expect(inbox.posts).toHaveLength(0);
+    expect(logs.filter((l) => l.level === "error" && l.msg === "operator report failed; its gas reservation stays")).toHaveLength(1);
+  });
+
+  it("report builder throws → same", async () => {
+    vi.mocked(mandateReport).mockImplementationOnce(() => {
+      throw new Error("evidence without a request");
+    });
+    const inbox = new FakeInbox();
+    const e = addRequest(requestJson());
+
+    const { outcomes } = await validator({ inbox }).pollOnce();
+
+    expect(outcomes).toEqual([expect.objectContaining({ kind: "responded", requestHash: e.requestHash })]);
+    expect(inbox.posts).toHaveLength(0);
+    expect(logs).toContainEqual(expect.objectContaining({ level: "error", msg: "operator report failed; its gas reservation stays", error: "evidence without a request" }));
+  });
+
+  it("no inbox port → no inbox read at all", async () => {
+    const admission = reportAdmission();
+    const settleReport = vi.spyOn(admission, "settleReport");
+    const e = addRequest(requestJson());
+
+    const { outcomes } = await validator({ inbox: null, admission }).pollOnce();
+
+    expect(outcomes).toEqual([expect.objectContaining({ kind: "responded", requestHash: e.requestHash })]);
+    expect(settleReport).not.toHaveBeenCalled();
+    expect(logs.some((l) => String(l.msg).startsWith("operator report"))).toBe(false);
+  });
+
+  it("a restart that finds ALREADY_RESPONDED posts nothing", async () => {
+    const inbox = new FakeInbox();
+    addRequest(requestJson());
+    await validator({ inbox }).pollOnce();
+    expect(inbox.posts).toHaveLength(1);
+
+    const { outcomes } = await validator({ inbox }).pollOnce();
+
+    expect(outcomes.map((o) => (o.kind === "skipped" ? o.reason : o.kind))).toEqual(["ALREADY_RESPONDED"]);
+    expect(inbox.posts).toHaveLength(1);
   });
 });

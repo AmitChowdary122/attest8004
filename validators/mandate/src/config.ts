@@ -1,4 +1,4 @@
-import { DEPLOYMENTS } from "@attest8004/sdk";
+import { DEPLOYMENTS, OPERATOR_REPORT_GAS_CAP, parseRequestsPerSecond } from "@attest8004/sdk";
 import { isAbsolute, resolve } from "node:path";
 import { getAddress, isAddress, type Hex } from "viem";
 import type { ServedGate } from "./validator.ts";
@@ -18,6 +18,8 @@ export interface ServiceConfig {
   maxRequestsPerAgentPerHour: number;
   dailyGasBudget: bigint;
   maxResponseGas: bigint;
+  /** The service's RPC client stays at or below this many requests a second (the public RPC refuses more than 15 per IP). */
+  rpcRequestsPerSecond: number;
 }
 
 /** The defaults for the optional `MANDATE_V1_*` settings. */
@@ -27,6 +29,8 @@ export const SERVICE_DEFAULTS = {
   maxRequestsPerAgentPerHour: 20,
   dailyGasBudget: 10_000_000n,
   maxResponseGas: 400_000n,
+  /** 7, so validator A and validator B on one IP together stay under the public RPC's 15 a second. */
+  rpcRequestsPerSecond: 7,
 } as const;
 
 const PRIVATE_KEY = /^0x[0-9a-fA-F]{64}$/;
@@ -108,10 +112,17 @@ export function parseServiceConfig(env: Record<string, string | undefined>, repo
   if (maxRequests > BigInt(Number.MAX_SAFE_INTEGER)) {
     problems.push("MANDATE_V1_MAX_REQUESTS_PER_AGENT_PER_HOUR is too large");
   }
-  if (dailyGasBudget < maxResponseGas) {
+  if (dailyGasBudget < maxResponseGas + OPERATOR_REPORT_GAS_CAP) {
     problems.push(
-      `MANDATE_V1_DAILY_GAS_BUDGET (${dailyGasBudget}) must be at least MANDATE_V1_MAX_RESPONSE_GAS (${maxResponseGas})`,
+      `MANDATE_V1_DAILY_GAS_BUDGET (${dailyGasBudget}) must be at least MANDATE_V1_MAX_RESPONSE_GAS (${maxResponseGas}) plus the operator report cap (${OPERATOR_REPORT_GAS_CAP})`,
     );
+  }
+  let rpcRequestsPerSecond: number = SERVICE_DEFAULTS.rpcRequestsPerSecond;
+  const rps = read("MANDATE_V1_RPC_REQUESTS_PER_SECOND");
+  if (rps !== undefined) {
+    const parsed = parseRequestsPerSecond(rps, "MANDATE_V1_RPC_REQUESTS_PER_SECOND");
+    if (parsed.ok) rpcRequestsPerSecond = parsed.value;
+    else problems.push(parsed.problem);
   }
 
   if (problems.length > 0) throw new Error(`invalid configuration:\n  - ${problems.join("\n  - ")}`);
@@ -124,5 +135,6 @@ export function parseServiceConfig(env: Record<string, string | undefined>, repo
     maxRequestsPerAgentPerHour: Number(maxRequests),
     dailyGasBudget,
     maxResponseGas,
+    rpcRequestsPerSecond,
   };
 }

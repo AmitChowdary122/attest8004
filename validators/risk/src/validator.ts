@@ -2,20 +2,24 @@ import {
   computeRequestHash,
   jsonLineLog,
   MAX_REQUEST_URI_BYTES,
+  sendOperatorReport,
   ValidatorBase,
   type Admission,
   type CheckResult,
   type CursorStore,
+  type InboxPort,
+  type RespondedResponse,
   type ValidatorOptions,
   type VerifiedRequest,
 } from "@attest8004/sdk";
 import { mandateRequestOf, PIN_LAG_BLOCKS, type PinnedBlock, type ServedGate } from "@attest8004/validator-mandate";
-import { BaseError, type Address, type Hash, type Hex } from "viem";
+import { BaseError, type Address, type Hex } from "viem";
 import type { PromptGuard } from "./guard.ts";
 import type { ChatClient } from "./llm.ts";
 import type { NansenClient } from "./nansen.ts";
 import { RISK_V1 } from "./params.ts";
 import { riskAddressesAt, type RiskContracts, type RiskReader } from "./reader.ts";
+import { riskReport } from "./report.ts";
 import { readPrerequisite, runRiskV1 } from "./run.ts";
 import type { Prerequisite } from "./types.ts";
 
@@ -50,6 +54,11 @@ export type RiskValidatorOptions = Omit<ValidatorOptions, "tag" | "maxDeadlineAh
   pinTimeoutMs?: number;
   /** Default {@link DEFAULT_RISK_PIN_POLL_MS} (500 ms). */
   pinPollMs?: number;
+  /**
+   * Where operator reports go (P7): after each response lands, a report is sealed to the agent's inbox key and posted
+   * to the FindingsBoard, if the agent has one. `null` or absent: no reports, and no inbox reads.
+   */
+  inbox?: InboxPort | null;
 };
 
 /**
@@ -74,7 +83,10 @@ export type RiskValidatorOptions = Omit<ValidatorOptions, "tag" | "maxDeadlineAh
  *   throws: nothing is posted, and the base retries the request later (every `retryDelayMs`, doubling,
  *   up to `maxFailedCycles`, then gives up with no response). This assumes one process per key.
  * - **`onResponded()`** records the response's block for the pin and settles the admission
- *   reservation to the gas limit actually sent. It never throws.
+ *   reservation to the gas limit actually sent. Then, with an `inbox`, it posts the operator report
+ *   (`riskReport`: each finding with a recommended action from code, sealed to the agent's inbox key, an
+ *   explicit gas limit) and settles the report's reservation; a report that fails is logged and keeps its
+ *   reservation. It never throws: the verdict has already landed.
  * - **Releases.** A decline from `check()` (any reason) and a request the base gives up on
  *   (`onGaveUp()`) release the request's admission reservation (`Admission.release`): no response
  *   will be sent for it, so its gas no longer counts against the daily budget (it still counts toward
@@ -103,6 +115,7 @@ export class RiskValidator extends ValidatorBase {
   private readonly pinPollMs: number;
   private readonly emit: (entry: Record<string, unknown>) => void;
   private readonly cursorStore: CursorStore;
+  private readonly inbox: InboxPort | null;
   private caughtUp = false;
   /** The highest block one of this process's responses landed in. */
   private lastResponseBlock: bigint | undefined;
@@ -110,7 +123,7 @@ export class RiskValidator extends ValidatorBase {
   private lastPinTimestamp = 0n;
 
   constructor(options: RiskValidatorOptions) {
-    const { reader, contracts, mandateValidator, gates, admission, llm, guard, nansen, model, pinTimeoutMs, pinPollMs, ...base } = options;
+    const { reader, contracts, mandateValidator, gates, admission, llm, guard, nansen, model, pinTimeoutMs, pinPollMs, inbox, ...base } = options;
     const log = options.log ?? jsonLineLog;
     super({
       ...base,
@@ -142,6 +155,7 @@ export class RiskValidator extends ValidatorBase {
     this.pinPollMs = pinPollMs ?? DEFAULT_RISK_PIN_POLL_MS;
     this.emit = log;
     this.cursorStore = options.cursor;
+    this.inbox = inbox ?? null;
   }
 
   /** The base's poll, plus one `info` line each time it catches up with the head. */
@@ -208,7 +222,7 @@ export class RiskValidator extends ValidatorBase {
     return result;
   }
 
-  protected override onResponded(response: { requestHash: Hex; score: number; txHash: Hash; blockNumber: bigint; gasLimit: bigint }): void {
+  protected override async onResponded(response: RespondedResponse): Promise<void> {
     const { requestHash, blockNumber, gasLimit } = response;
     if (this.lastResponseBlock === undefined || blockNumber > this.lastResponseBlock) this.lastResponseBlock = blockNumber;
     try {
@@ -216,6 +230,31 @@ export class RiskValidator extends ValidatorBase {
     } catch (error) {
       try {
         this.logLine("error", "admission settle failed; the reservation stays at the maximum", { requestHash, error: errorMessage(error) });
+      } catch {
+        // The response already landed; nothing here may throw.
+      }
+    }
+    if (this.inbox) await this.postReport(this.inbox, response);
+  }
+
+  /** Posts the operator report for a landed response and settles its gas reservation. Never throws. */
+  private async postReport(inbox: InboxPort, response: RespondedResponse): Promise<void> {
+    const { requestHash } = response;
+    try {
+      const outcome = await sendOperatorReport(inbox, { report: riskReport({ evidence: response.evidence, responseHash: response.responseHash }) });
+      if (outcome.kind === "posted") {
+        this.admission.settleReport({ requestHash, gasLimit: outcome.gasLimit, now: this.lastPinTimestamp });
+        const { txHash, blockNumber, gasLimit, envelopeBytes } = outcome;
+        this.logLine("info", "operator report posted", { requestHash, txHash, blockNumber, gasLimit, envelopeBytes });
+      } else if (outcome.kind === "skipped") {
+        this.admission.settleReport({ requestHash, gasLimit: 0n, now: this.lastPinTimestamp });
+        this.logLine("info", "operator report skipped", { requestHash, reason: outcome.reason });
+      } else {
+        this.logLine("error", "operator report failed; its gas reservation stays", { requestHash, error: outcome.error });
+      }
+    } catch (error) {
+      try {
+        this.logLine("error", "operator report failed; its gas reservation stays", { requestHash, error: errorMessage(error) });
       } catch {
         // The response already landed; nothing here may throw.
       }

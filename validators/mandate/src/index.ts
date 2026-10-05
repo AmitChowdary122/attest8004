@@ -10,6 +10,7 @@ export * from "./concurrency.ts";
 export * from "./reader.ts";
 export * from "./collect.ts";
 export * from "./evidence.ts";
+export * from "./report.ts";
 export * from "./run.ts";
 export * from "./validator.ts";
 export * from "./verify.ts";

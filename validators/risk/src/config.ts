@@ -1,4 +1,4 @@
-import { DEPLOYMENTS } from "@attest8004/sdk";
+import { DEPLOYMENTS, OPERATOR_REPORT_GAS_CAP, parseRequestsPerSecond } from "@attest8004/sdk";
 import type { ServedGate } from "@attest8004/validator-mandate";
 import { isAbsolute, resolve } from "node:path";
 import { getAddress, isAddress, type Hex } from "viem";
@@ -29,6 +29,8 @@ export interface RiskServiceConfig {
   maxRequestsPerAgentPerHour: number;
   dailyGasBudget: bigint;
   maxResponseGas: bigint;
+  /** The service's RPC client stays at or below this many requests a second (the public RPC refuses more than 15 per IP). */
+  rpcRequestsPerSecond: number;
   /** The main model's client-side pacing (the guard has its own fixed pacer). */
   llmRequestsPerMinute: number;
   llmTokensPerMinute: number;
@@ -41,6 +43,8 @@ export const RISK_SERVICE_DEFAULTS = {
   maxRequestsPerAgentPerHour: 20,
   dailyGasBudget: 10_000_000n,
   maxResponseGas: 1_000_000n,
+  /** 7, so validator A and validator B on one IP together stay under the public RPC's 15 a second. */
+  rpcRequestsPerSecond: 7,
   /** Groq's free tier for `openai/gpt-oss-120b` (the P5 plan's Decision 5). */
   llmRequestsPerMinute: 30,
   llmTokensPerMinute: 8_000,
@@ -151,8 +155,17 @@ export function parseRiskServiceConfig(env: Record<string, string | undefined>, 
   const maxRequestsPerAgentPerHour = count("RISK_V1_MAX_REQUESTS_PER_AGENT_PER_HOUR", RISK_SERVICE_DEFAULTS.maxRequestsPerAgentPerHour);
   const dailyGasBudget = positive("RISK_V1_DAILY_GAS_BUDGET", RISK_SERVICE_DEFAULTS.dailyGasBudget);
   const maxResponseGas = positive("RISK_V1_MAX_RESPONSE_GAS", RISK_SERVICE_DEFAULTS.maxResponseGas);
-  if (dailyGasBudget < maxResponseGas) {
-    problems.push(`RISK_V1_DAILY_GAS_BUDGET (${dailyGasBudget}) must be at least RISK_V1_MAX_RESPONSE_GAS (${maxResponseGas})`);
+  if (dailyGasBudget < maxResponseGas + OPERATOR_REPORT_GAS_CAP) {
+    problems.push(
+      `RISK_V1_DAILY_GAS_BUDGET (${dailyGasBudget}) must be at least RISK_V1_MAX_RESPONSE_GAS (${maxResponseGas}) plus the operator report cap (${OPERATOR_REPORT_GAS_CAP})`,
+    );
+  }
+  let rpcRequestsPerSecond: number = RISK_SERVICE_DEFAULTS.rpcRequestsPerSecond;
+  const rps = read("RISK_V1_RPC_REQUESTS_PER_SECOND");
+  if (rps !== undefined) {
+    const parsed = parseRequestsPerSecond(rps, "RISK_V1_RPC_REQUESTS_PER_SECOND");
+    if (parsed.ok) rpcRequestsPerSecond = parsed.value;
+    else problems.push(parsed.problem);
   }
   const llmRequestsPerMinute = count("RISK_V1_LLM_REQUESTS_PER_MINUTE", RISK_SERVICE_DEFAULTS.llmRequestsPerMinute);
   const llmTokensPerMinute = count("RISK_V1_LLM_TOKENS_PER_MINUTE", RISK_SERVICE_DEFAULTS.llmTokensPerMinute);
@@ -178,6 +191,7 @@ export function parseRiskServiceConfig(env: Record<string, string | undefined>, 
     maxRequestsPerAgentPerHour,
     dailyGasBudget,
     maxResponseGas,
+    rpcRequestsPerSecond,
     llmRequestsPerMinute,
     llmTokensPerMinute,
   };

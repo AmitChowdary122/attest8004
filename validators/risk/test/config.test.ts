@@ -46,6 +46,7 @@ describe("parseRiskServiceConfig", () => {
       maxRequestsPerAgentPerHour: 20,
       dailyGasBudget: 10_000_000n,
       maxResponseGas: 1_000_000n,
+      rpcRequestsPerSecond: 7,
       llmRequestsPerMinute: 30,
       llmTokensPerMinute: 8_000,
     });
@@ -201,5 +202,20 @@ describe("parseRiskServiceConfig", () => {
     expect(parseRiskServiceConfig({ ...base, RISK_V1_LLM_TOKENS_PER_MINUTE: String(RISK_V1.maxRequestTokens) }, ROOT).llmTokensPerMinute).toBe(
       RISK_V1.maxRequestTokens,
     );
+  });
+
+  it("RPC requests per second: default 7, 1–15 accepted, 0/16/\"x\" refused", () => {
+    expect(parseRiskServiceConfig(base, ROOT).rpcRequestsPerSecond).toBe(7);
+    expect(parseRiskServiceConfig({ ...base, RISK_V1_RPC_REQUESTS_PER_SECOND: "15" }, ROOT).rpcRequestsPerSecond).toBe(15);
+    for (const bad of ["0", "16", "x", "7.5"]) {
+      expect(errorOf({ ...base, RISK_V1_RPC_REQUESTS_PER_SECOND: bad })).toContain("RISK_V1_RPC_REQUESTS_PER_SECOND must be an integer from 1 to 15");
+    }
+  });
+
+  it("daily budget below response cap + report cap refused", () => {
+    expect(errorOf({ ...base, RISK_V1_DAILY_GAS_BUDGET: "1419999" })).toContain(
+      "RISK_V1_DAILY_GAS_BUDGET (1419999) must be at least RISK_V1_MAX_RESPONSE_GAS (1000000) plus the operator report cap (420000)",
+    );
+    expect(parseRiskServiceConfig({ ...base, RISK_V1_DAILY_GAS_BUDGET: "1420000" }, ROOT).dailyGasBudget).toBe(1_420_000n);
   });
 });

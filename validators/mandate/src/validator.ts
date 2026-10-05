@@ -1,19 +1,23 @@
 import {
   jsonLineLog,
   MAX_REQUEST_URI_BYTES,
+  sendOperatorReport,
   ValidatorBase,
   type Admission,
   type CheckResult,
   type CursorStore,
+  type InboxPort,
+  type RespondedResponse,
   type ValidationStatus,
   type ValidatorChain,
   type ValidatorOptions,
   type VerifiedRequest,
 } from "@attest8004/sdk";
-import { BaseError, keccak256, zeroHash, type Address, type Hash, type Hex } from "viem";
+import { BaseError, keccak256, zeroHash, type Address, type Hex } from "viem";
 import type { PreimageCache } from "./collect.ts";
 import { MANDATE_V1 } from "./params.ts";
 import { firstMandateRegistryBlock, mandateAddressesAt, type MandateContracts, type MandateReader } from "./reader.ts";
+import { mandateReport } from "./report.ts";
 import { mandateRequestOf, runMandateV1 } from "./run.ts";
 import type { PinnedBlock } from "./types.ts";
 
@@ -69,6 +73,11 @@ export type MandateValidatorOptions = Omit<ValidatorOptions, "tag" | "maxDeadlin
   pinPollMs?: number;
   /** The request parts already authenticated against their hash. Default: a new, empty map. */
   cache?: PreimageCache;
+  /**
+   * Where operator reports go (P7): after each response lands, a report is sealed to the agent's inbox key and posted
+   * to the FindingsBoard, if the agent has one. `null` or absent: no reports, and no inbox reads.
+   */
+  inbox?: InboxPort | null;
 };
 
 /**
@@ -98,7 +107,9 @@ export type MandateValidatorOptions = Omit<ValidatorOptions, "tag" | "maxDeadlin
  *   `pinPollMs`, and after `pinTimeoutMs` throws: nothing is posted, and the base retries the request
  *   later. This assumes one validator process per key.
  * - **`onResponded()`** records the response's block for the pin and settles the admission reservation
- *   to the gas limit actually sent. It never throws. **`onGaveUp()`** releases the reservation of a
+ *   to the gas limit actually sent. Then, with an `inbox`, it posts the operator report (`mandateReport`,
+ *   sealed to the agent's inbox key, an explicit gas limit) and settles the report's reservation; a report
+ *   that fails is logged and keeps its reservation. It never throws: the verdict has already landed. **`onGaveUp()`** releases the reservation of a
  *   request the base gave up on (`Admission.release`): no response will be sent for it.
  *
  * The tag is always `mandate-v1`, the deadline horizon always 3,600 s and the request size limit always
@@ -119,6 +130,7 @@ export class MandateValidator extends ValidatorBase {
   private readonly pinTimeoutMs: number;
   private readonly pinPollMs: number;
   private readonly emit: (entry: Record<string, unknown>) => void;
+  private readonly inbox: InboxPort | null;
   /** The highest block one of this process's responses landed in. */
   private lastResponseBlock: bigint | undefined;
   /** This process's most recent approval (score 100), until it is seen answered at a pinned block. */
@@ -128,7 +140,7 @@ export class MandateValidator extends ValidatorBase {
   private caughtUp = false;
 
   constructor(options: MandateValidatorOptions) {
-    const { reader, contracts, gates, admission, pinTimeoutMs, pinPollMs, cache, ...base } = options;
+    const { reader, contracts, gates, admission, pinTimeoutMs, pinPollMs, cache, inbox, ...base } = options;
     const log = options.log ?? jsonLineLog;
     super({
       ...base,
@@ -157,6 +169,7 @@ export class MandateValidator extends ValidatorBase {
     this.pinTimeoutMs = pinTimeoutMs ?? DEFAULT_PIN_TIMEOUT_MS;
     this.pinPollMs = pinPollMs ?? DEFAULT_PIN_POLL_MS;
     this.emit = log;
+    this.inbox = inbox ?? null;
   }
 
   /** The base's poll, plus one `info` line each time it catches up with the finalized head. */
@@ -228,7 +241,7 @@ export class MandateValidator extends ValidatorBase {
     return result;
   }
 
-  protected override onResponded(response: { requestHash: Hex; score: number; txHash: Hash; blockNumber: bigint; gasLimit: bigint }): void {
+  protected override async onResponded(response: RespondedResponse): Promise<void> {
     const { requestHash, blockNumber, gasLimit } = response;
     if (this.lastResponseBlock === undefined || blockNumber > this.lastResponseBlock) this.lastResponseBlock = blockNumber;
     try {
@@ -236,6 +249,31 @@ export class MandateValidator extends ValidatorBase {
     } catch (error) {
       try {
         this.logLine("error", "admission settle failed; the reservation stays at the maximum", { requestHash, error: errorMessage(error) });
+      } catch {
+        // The response already landed; nothing here may throw.
+      }
+    }
+    if (this.inbox) await this.postReport(this.inbox, response);
+  }
+
+  /** Posts the operator report for a landed response and settles its gas reservation. Never throws. */
+  private async postReport(inbox: InboxPort, response: RespondedResponse): Promise<void> {
+    const { requestHash } = response;
+    try {
+      const outcome = await sendOperatorReport(inbox, { report: mandateReport({ evidence: response.evidence, responseHash: response.responseHash }) });
+      if (outcome.kind === "posted") {
+        this.admission.settleReport({ requestHash, gasLimit: outcome.gasLimit, now: this.lastPinTimestamp });
+        const { txHash, blockNumber, gasLimit, envelopeBytes } = outcome;
+        this.logLine("info", "operator report posted", { requestHash, txHash, blockNumber, gasLimit, envelopeBytes });
+      } else if (outcome.kind === "skipped") {
+        this.admission.settleReport({ requestHash, gasLimit: 0n, now: this.lastPinTimestamp });
+        this.logLine("info", "operator report skipped", { requestHash, reason: outcome.reason });
+      } else {
+        this.logLine("error", "operator report failed; its gas reservation stays", { requestHash, error: outcome.error });
+      }
+    } catch (error) {
+      try {
+        this.logLine("error", "operator report failed; its gas reservation stays", { requestHash, error: errorMessage(error) });
       } catch {
         // The response already landed; nothing here may throw.
       }

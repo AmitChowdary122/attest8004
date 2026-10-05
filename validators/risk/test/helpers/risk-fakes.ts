@@ -36,6 +36,8 @@ import { NANSEN_NO_KEY_REASON, type NansenClient } from "../../src/nansen.ts";
 import { RISK_V1 } from "../../src/params.ts";
 import { riskAddressesAt, riskContractsFor, type RiskAddresses, type RiskContracts, type RiskReader } from "../../src/reader.ts";
 import type { CallFrame, TraceResult } from "../../src/trace.ts";
+import { riskParams } from "../../src/evidence.ts";
+import type { RiskRecord } from "../../src/types.ts";
 
 export const CHAIN_ID = 10_143;
 export const MODEL = "openai/gpt-oss-120b";
@@ -471,4 +473,68 @@ export function unavailableNansen(): NansenClient & { calls: number } {
 /** Calldata whose bytes include `text` as printable ASCII after a 4-byte selector. */
 export function calldataWith(text: string): Hex {
   return `0xa9059cbb${Buffer.from(text, "latin1").toString("hex")}` as Hex;
+}
+
+/** A realistic record: the pass-through traced, the sink looked up, one high finding. */
+export function sampleRiskRecord(over: Partial<RiskRecord> = {}): RiskRecord {
+  const { jsonB, rhB, rhA } = requestPair(fakeAction());
+  const request = mandateRequestOf(jsonB, rhB, 1_000n);
+  const raw = findingsJson([
+    { code: "FUNDS_FORWARDED", severity: "high", explanation: `The target forwards all of it to ${SINK}.`, sources: ["simulate_action"] },
+  ]);
+  const usage = { prompt: 1_000, completion: 50, total: 1_050 };
+  return {
+    block: blockAt(1_004n),
+    request: {
+      block: request.block,
+      chainId: request.chainId,
+      gate: request.gate,
+      agentId: request.agentId,
+      target: request.target,
+      value: request.value,
+      dataHash: keccak256(request.data),
+      selector: "0x00000000",
+      deadline: request.deadline,
+      salt: request.salt,
+    },
+    params: riskParams(ADDRESSES, VALIDATOR_A),
+    prerequisite: { validator: VALIDATOR_A, requestHash: rhA, score: 100, responseHash: keccak256(toHex("A")), tag: "mandate-v1", reasons: [] },
+    llm: {
+      host: "api.groq.com",
+      model: MODEL,
+      servedModels: [MODEL],
+      systemFingerprints: ["fp_1", null],
+      promptVersion: "risk-v1/1",
+      promptHash: keccak256(toHex("prompt")),
+      usage: { prompt: 2_000, completion: 100, total: 2_100 },
+    },
+    classifier: { model: RISK_V1.guardModel, threshold: "0.5", results: [{ source: "calldata_text", text: "memo text", score: "3.89e-05", flagged: false }] },
+    tools: { nansen: { available: false, reason: "NANSEN_API_KEY is not set" } },
+    toolCalls: [
+      {
+        id: "call_1",
+        name: "simulate_action",
+        arguments: {},
+        output: { ok: true, calls: [{ depth: 0, to: PASS_THROUGH, value: "1000000000000000" }], valueFlows: [], truncatedCalls: 0 },
+        onchain: true,
+      },
+      { id: "call_2", name: "nansen_flows", arguments: { address: SINK }, output: { available: false, reason: "NANSEN_API_KEY is not set" }, onchain: false },
+    ],
+    modelOutputs: [
+      {
+        content: null,
+        toolCalls: [{ id: "call_1", name: "simulate_action", arguments: "{}" }],
+        finishReason: "tool_calls",
+        servedModel: MODEL,
+        systemFingerprint: "fp_1",
+        usage,
+      },
+      { content: raw, toolCalls: [], finishReason: "stop", servedModel: MODEL, systemFingerprint: null, usage },
+    ],
+    finalOutput: { raw, attempts: 1 },
+    findings: [
+      { code: "FUNDS_FORWARDED", severity: "high", explanation: `The target forwards all of it to ${SINK}.`, sources: ["simulate_action"], origin: "model" },
+    ],
+    ...over,
+  };
 }

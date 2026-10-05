@@ -5,9 +5,13 @@
 import {
   Admission,
   currentMandateRegistry,
+  DEPLOYMENTS,
   jsonLineLog,
   mandateRegistryAbi,
+  OPERATOR_REPORT_GAS_CAP,
+  rateLimitedFetch,
   validationRegistryAbi,
+  viemInboxPort,
   viemValidatorChain,
 } from "@attest8004/sdk";
 import { FileCursorStore } from "@attest8004/sdk/node";
@@ -38,7 +42,10 @@ async function main(): Promise<void> {
   const chain = monadTestnet;
   const contracts = mandateContractsFor(chain.id);
   const account = privateKeyToAccount(config.privateKey);
-  const transport = http(config.rpcUrl);
+  // The public RPC refuses more than 15 requests a second per IP; both services may run on one host.
+  const transport = http(config.rpcUrl, {
+    fetchFn: rateLimitedFetch({ requestsPerSecond: config.rpcRequestsPerSecond, retries: 6, retryDelayMs: 1_000 }),
+  });
   const publicClient: PublicClient = createPublicClient({ chain, transport });
   const walletClient = createWalletClient({ account, chain, transport });
 
@@ -51,7 +58,13 @@ async function main(): Promise<void> {
     maxRequestsPerAgentPerHour: config.maxRequestsPerAgentPerHour,
     dailyGasBudget: config.dailyGasBudget,
     maxResponseGas: config.maxResponseGas,
+    rpcRequestsPerSecond: config.rpcRequestsPerSecond,
   });
+
+  // Operator reports (P7) go to the FindingsBoard, when one is recorded for this chain.
+  const inbox = viemInboxPort({ publicClient, walletClient, deployment: DEPLOYMENTS[chain.id] });
+  if (inbox === null) log("info", "operator reports off: no FindingsBoard recorded");
+  else log("info", "operator reports on", { findingsBoard: inbox.findingsBoard, maxReportGas: OPERATOR_REPORT_GAS_CAP });
 
   await startupChecks(publicClient, chain.id, contracts);
   await mkdir(dirname(config.cursorPath), { recursive: true });
@@ -72,7 +85,9 @@ async function main(): Promise<void> {
       agentWindowSeconds: AGENT_WINDOW_SECONDS,
       dailyGasBudget: config.dailyGasBudget,
       maxGasPerResponse: config.maxResponseGas,
+      maxGasPerReport: inbox === null ? 0n : OPERATOR_REPORT_GAS_CAP,
     }),
+    inbox,
     log: jsonLineLog,
   });
 
