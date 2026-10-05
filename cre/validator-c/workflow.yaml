@@ -1,0 +1,9 @@
+# Validator C's workflow (P11, docs/cre.md). Its workflow-name is part of every report's metadata as the first
+# 10 hex characters of sha256(name), "68ce083cf5", which CreValidator checks (workflowName()).
+monad-testnet-sim:
+  user-workflow:
+    workflow-name: "attest8004-validator-c"
+  workflow-artifacts:
+    workflow-path: "./main.ts"
+    config-path: "./config.monad-testnet.json"
+    secrets-path: ""

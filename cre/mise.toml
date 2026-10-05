@@ -1,0 +1,3 @@
+# The CRE CLI compiles TypeScript workflows with Bun (`bun cre-compile`); pinned here, used via `mise exec`.
+[tools]
+bun = "1.3.14"

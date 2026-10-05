@@ -1,0 +1,7 @@
+# CRE project settings (cre CLI v1.37.0). One target: local simulation against Monad testnet's public RPC.
+# Never put a key here: the broadcast key reaches the CLI only as CRE_ETH_PRIVATE_KEY in its environment
+# (pnpm cre:demo passes it; see docs/cre.md).
+monad-testnet-sim:
+  rpcs:
+    - chain-name: monad-testnet
+      url: https://testnet-rpc.monad.xyz

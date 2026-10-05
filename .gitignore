@@ -26,6 +26,10 @@ validators/risk/.state/
 indexer/generated/
 indexer/.envio/
 
+# CRE workflows (P11): the CLI's compile output
+cre/**/.cre_build_tmp.*
+cre/**/*.wasm
+
 # Web / Vercel
 .vercel/
 

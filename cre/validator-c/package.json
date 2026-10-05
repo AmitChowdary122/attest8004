@@ -1,0 +1,22 @@
+{
+  "name": "attest8004-validator-c",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Validator C: a Chainlink CRE workflow that orchestrates mandate-v1 verdicts on Monad testnet (P11)",
+  "license": "MIT",
+  "type": "module",
+  "scripts": {
+    "test": "bun test",
+    "typecheck": "tsc --noEmit && tsc --noEmit -p tsconfig.test.json",
+    "compile": "bun x cre-compile main.ts .cre_build_tmp.wasm"
+  },
+  "dependencies": {
+    "@chainlink/cre-sdk": "1.23.0",
+    "viem": "2.57.2",
+    "zod": "4.6.5"
+  },
+  "devDependencies": {
+    "@types/bun": "1.3.14",
+    "typescript": "5.9.3"
+  }
+}
