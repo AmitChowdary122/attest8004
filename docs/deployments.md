@@ -837,6 +837,58 @@ The screenshot, as taken on the phone: [`docs/img/p7-android-inbox-decrypt.jpg`]
 The page stores nothing on either device (`web/test/no-storage.test.ts`), and the private key exists only inside the
 decryption.
 
+## P9 demo run (testnet, 2026-10-05)
+
+`pnpm demo` ([docs/demo.md](./demo.md)) played SPEC §5 end to end on Monad testnet at `2361e80`, then `--scene 2` alone
+right after the reset at `542f9ec` (the same code plus the report-link ordering fix). Both validators ran in the
+runner's process. The logs are kept outside the repo (`../plans/p9-demo-live.log`, `p9-demo-reset-proof.log`).
+
+- **The demo rogue key:** `0x81F4a86250d74D5d8898f962bB8B555208631bda` (`DEMO_ROGUE_*` in `.env`, made by `hot-keys`).
+  It is agent 1984's forwarder key only between scenes 3 and 3b.
+- **Before the run:** agent 1984 at nonce 3, its mandate set at block 68215284. The hot key, the rogue key and validator
+  B were topped up from the faucet (`--fund` wasn't used). The preflight: no blockers, 4 takes left (limited by the
+  daily cap), 58,373 of 200,000 Groq tokens used in the last 24 h.
+
+| Scene | Transaction | What it shows |
+|---|---|---|
+| 1 | `setMandate` [`0x718b64ca…3f8d98`](https://monad-testnet.socialscan.io/tx/0x718b64ca9699c8ea789b9cf1d8ba77b0474e1adc30eb5445ae6f1853603f8d98) | The passkey-approved e2e mandate, nonce 3 → 4, block 68438225. Its trace: `P256VERIFY (0x0100)`, 6,900 gas, returned `…01` |
+| 2 | hot key → mandate-v1 [`0x428a7fd2…d297ed`](https://monad-testnet.socialscan.io/tx/0x428a7fd27aa4e21189c7ec90cb680e9274c1f79f0cfd2c37b0f70ccec4d297ed), → risk-v1 [`0x3e01248f…6f2af8`](https://monad-testnet.socialscan.io/tx/0x3e01248fbbffa4f3d57cfe15577a0d3008b3acc598d08d4afe40838fdd6f2af8) | 0.0005 MON to the owner, inside the mandate |
+| 2 | mandate-v1 [`0x29c34eb2…ba7c6e`](https://monad-testnet.socialscan.io/tx/0x29c34eb21b92590121f30f4e45e17d0857c3da6b22f7da3d2880ea2524ba7c6e), report [`0xa9fdd1d6…055d50`](https://monad-testnet.socialscan.io/tx/0xa9fdd1d66950b92a2c03e906a2751bc107158768623b072d99924b37d6055d50) | 100, no reasons (request `0xcc1c8a97…dd6ce77`) |
+| 2 | risk-v1 [`0x489211f4…c9cfaf`](https://monad-testnet.socialscan.io/tx/0x489211f48c07dd4259cbf82e45f4758ec2521f47dfc9642d883cc30bd6c9cfaf), report [`0xf93ff9cb…8fc266`](https://monad-testnet.socialscan.io/tx/0xf93ff9cb714f2757be24c6d444d067cff9f8eccfc57033d146cd3adfce8fc266) | 100, no findings, 10,592 tokens; tools: `simulate_action`, `get_mandate`, `counterparty_onchain`. The first live check of R1: right after scene 1's fresh `MandateSet` |
+| 2 | `execute` [`0xe5f1c3b4…369261`](https://monad-testnet.socialscan.io/tx/0xe5f1c3b44be0bfcc18e86f570f342106a140901bf775f85debb8a9e243369261) | Executed; the vault went from 0.007 to 0.0065 MON |
+| 3 | `setAgentKey` (the rogue key) [`0x4fc1f546…61c49d`](https://monad-testnet.socialscan.io/tx/0x4fc1f546f1bd6a2e858467c45233646cce25e74b405a57a65a5e2fe8c761c49d) | A permission change outside the mandate (`AgentKeySet`, block 68438630) |
+| 3 | rogue key → mandate-v1 [`0x44e46164…2a180f`](https://monad-testnet.socialscan.io/tx/0x44e46164b8022550662c52071416a4abe4eda0df5b4aa62a6b72f06fb22a180f), → risk-v1 [`0x3a486dc6…e42989`](https://monad-testnet.socialscan.io/tx/0x3a486dc665998ed50bf440d21f9b11d2ceb696f483e999ac525e668524e42989) | 0.001 MON to `0x156B0bE8b66b37Ad8D264095CaBd36c2c7A45477` (`address(keccak256("attest8004.demo.unknown"))`) |
+| 3 | mandate-v1 [`0xb693e95f…cec16c`](https://monad-testnet.socialscan.io/tx/0xb693e95f0a56962cb3335373d5686377ce77cab583d3b02397a20f2a38cec16c), report [`0xf600a52e…74f4a4`](https://monad-testnet.socialscan.io/tx/0xf600a52ea9986e22a7d640c94e1dc162c6c3277945b80abfa56a2f4cca74f4a4) | **0**: `TARGET_NOT_ALLOWED`, `PERMISSION_CHANGED_AFTER_MANDATE` (exactly the computed reasons; 0.0025 MON counted). `verify` re-ran it at block 68438638: the same score and responseHash (request `0x1624ddc4…71ade4a`) |
+| 3 | risk-v1 [`0x057cf6af…9bfa25`](https://monad-testnet.socialscan.io/tx/0x057cf6afc4c057ba8d0a2c5cf0a20c6c33dfefe477b3dc96293ddce3f49bfa25), report [`0x8ac61799…be8aa6`](https://monad-testnet.socialscan.io/tx/0x8ac617991bef49001385af342ec23724b2628bf1a616ccee452c2fa3f5be8aa6) | **0**: high `MANDATE_VIOLATION`, high `PERMISSION_CHANGE`, 8,297 tokens |
+| 3 | `execute`, simulated | Reverts `ScoreTooLow(validator A, 0x1624ddc4…, 0, 100)`; nothing sent |
+| 3b | `setAgentKey` (the hot key back) [`0x20de2897…3a99f7`](https://monad-testnet.socialscan.io/tx/0x20de289754a5ddcca765f6f9c00c5cdaed3dffcc37f76638fd884036e33a99f7) | The rogue key revoked |
+| 3b | `setMandate` [`0x9f97704a…326982`](https://monad-testnet.socialscan.io/tx/0x9f97704a11daedfc0ef05441c6d631079721649fb76af86a60b7fc0d35326982) | The re-approval, nonce 4 → 5. The permission rule was clean at once (blocks 68439855..68439864), and a mandate-v1 dry run scored the benign action 100 (pinned at block 68439855) |
+| 4 | — | The indexer was at block 68439929, past the take |
+| 5 | — | Four trusted encrypted reports found, one per request of the take |
+
+**After the reset** (`--scene 2` alone, the second live check of R1):
+
+| Transaction | What it shows |
+|---|---|
+| hot key → mandate-v1 [`0xb8fb530c…2667ed`](https://monad-testnet.socialscan.io/tx/0xb8fb530c5b45a0a57cdcb3c3d54be672d4943d56ba3901d060be2a274a2667ed), → risk-v1 [`0xadc57cd6…662349`](https://monad-testnet.socialscan.io/tx/0xadc57cd6d48f8a882272e9af0835b7acc1d109ff8fb38a511b23cbb46c662349) | 0.0005 MON to the owner, with both key changes and two mandates in the window, all before the current one |
+| mandate-v1 [`0x53e6c22e…9a3586`](https://monad-testnet.socialscan.io/tx/0x53e6c22e9fa8a14e42aafa1494b462c085833252bcd7d5a8b9e2b8cad49a3586), report [`0xa6ac1136…b83948`](https://monad-testnet.socialscan.io/tx/0xa6ac1136e4edc8294c18f542099fbca6b0f5e5a8a31a60d5c89e9c6d40b83948) | 100 (request `0x5eff875f…be75a8dd`) |
+| risk-v1 [`0xd68cd23f…38d458`](https://monad-testnet.socialscan.io/tx/0xd68cd23fb96b5e7212ab64d9ca2d66391d65676ceb28154b80a082f5ec38d458), report [`0xd0ed61c8…fc570b`](https://monad-testnet.socialscan.io/tx/0xd0ed61c8ef11cb48d29d033315a34c91483c8dba2767e5ad1f0de1ed8bfc570b) | 100, no findings, 10,474 tokens |
+| `execute` [`0x97465af8…469b47`](https://monad-testnet.socialscan.io/tx/0x97465af840dcbaa3c513e6278a720a772bcbefe8b993e6ff69b49f958f469b47) | Executed; the vault went from 0.0065 to 0.006 MON |
+
+- **Groq:** the take used 18,889 tokens and the reset proof 10,474. The recorded reset fixture
+  (`validators/risk/test/fixtures/llm/safe-after-reset.json`, no chain) used 8,028. Afterwards: 87,736 of 200,000 used
+  in the last 24 h.
+- **R1, three checks:** risk-v1 scored a benign action after a reset 100 with no findings in the fixture and in both live
+  runs. In none of the three did the model open `recent_permission_events`. Decision 22(a), the rubric clarification,
+  wasn't needed: the prompt stays `risk-v1/4`.
+- **The timing**, as the runner printed it (10:10 raw, 6:42 after cutting the pin and risk-v1 waits, 4:42 of it in the
+  browser), is in [docs/demo.md](./demo.md#real-durations-and-where-to-cut).
+- **In the browser** after the run:
+  - `/dashboard` listed the take's verdicts and agent 1984's permission events in order: `MANDATE_SET` (68438225),
+    `AGENT_KEY_SET` to the rogue key, `AGENT_KEY_SET` back to the hot key, `MANDATE_SET` (68439855);
+  - `/inbox` (Find reports) found 12 verdicts with 12 encrypted reports, each re-checked on chain;
+  - the console was clean on both.
+
 ## Canonical contracts used (not deployed by us)
 
 | Contract | Monad testnet (10143) | Monad mainnet (143) |

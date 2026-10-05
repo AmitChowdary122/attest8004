@@ -284,13 +284,26 @@ sequenceDiagram
 >
 > Details: [`docs/spec-notes.md`](./docs/spec-notes.md), rows 5, 7, 10 and 12.
 
-### 5.3 Blocked attack (demo: the Grok/Bankr pattern)
-1. A permission change happens outside the mandate: a new operator approval on the agent in the Identity Registry.
-2. The agent is induced to transfer funds to an unknown address.
-3. `mandate-v1` sees (a) a target not on the allowlist or above the cap, and (b) a permission change after the last passkey-approved mandate. It scores 0, with machine-readable reasons.
-4. `risk-v1` explains the risk from its tools (simulation, permission history, ERC-8004 reputation and Nansen data on the counterparty), and scores it low.
-5. `execute(action)` reverts at the gate.
-6. `risk-v1`'s evidence, including this explanation, is posted in public plaintext, the same as `mandate-v1`'s. P7 adds a separate encrypted findings inbox on top.
+### 5.3 Blocked attack (demo: the Grok/Bankr pattern), and recovery
+As built in P9 and played live by `pnpm demo` scenes 3 and 3b ([docs/demo.md](./docs/demo.md)):
+1. **A permission change happens outside the mandate.**
+   - **What changes:** the owner's wallet registers a new forwarder key for the agent (`AgentRequestForwarder.setAgentKey`, event `AgentKeySet`), with no passkey approval.
+   - **Why not an Identity Registry approval,** which mandate-v1 treats as the same kind of event: `approve` would replace the forwarder's own per-token approval, and `setApprovalForAll` would let a key kept in `.env` move every agent the owner holds.
+2. **The new key asks to send funds to an unknown address:** 0.001 MON to `address(keccak256("attest8004.demo.unknown"))`, which nobody controls.
+3. **`mandate-v1` scores it 0**, with machine-readable reasons:
+   - `TARGET_NOT_ALLOWED`: the target isn't on the allowlist;
+   - `PERMISSION_CHANGED_AFTER_MANDATE`: the `AgentKeySet` came after the last passkey-approved `MandateSet`;
+   - `DAILY_CAP_EXCEEDED` as well, when the counted spend leaves no room.
+4. **`risk-v1` runs anyway and explains the risk** from its tools: simulation, the mandate, permission history, the counterparty and ERC-8004 reputation, and Nansen data only when a key is set. Live, it scored 0, with high `MANDATE_VIOLATION` and `PERMISSION_CHANGE` findings.
+5. **`execute(action)` reverts at the gate:** `ScoreTooLow` at `mandate-v1`, the vault's first requirement. The demo simulates it and never sends it.
+6. **Both verdicts are public;** each validator also posts an encrypted operator report to the agent's inbox (§5.4).
+7. **Recovery is the same two factors:**
+   - the owner restores the agent's own key (`setAgentKey(agentId, hotKey)`, which revokes the rogue one);
+   - the owner approves the mandate again with the passkey.
+
+   `mandate-v1` compares the window's events with the **newest** `MandateSet`, so a mandate approved after the changes is clean at once, with no 6,000-block wait. The owner approved it with the changes in view. `risk-v1` sees those older events marked `afterMandate: false`, and its rubric rates only a change after the mandate as a finding. This is tested by a recorded fixture and by two live checks (docs/deployments.md, P9).
+
+   `pnpm demo --scene 3b` does exactly this, which is also how the demo resets between takes. The e2e still waits 6,000 blocks after any new mandate before it starts.
 
 ### 5.4 Private findings, any device
 
@@ -701,6 +714,7 @@ The recommended gate policy is *require `mandate-v1` = 100 **and** `risk-v1` ≥
 | Inbox key | X25519: the passkey's PRF output for `sha256("attest8004.inbox.v1")` → HKDF-SHA256 → clamp (§6) | **Nowhere.** Derived again in the browser for each ceremony (publishing it on `/approve`, decrypting on `/inbox`), then zeroed in `finally` together with the PRF output (§9) | Operator | Public key in MandateRegistry (`setInboxKey`, two factors) |
 | Operator wallet | secp256k1 | Operator's wallet | Operator | Agent owner in the Identity Registry |
 | Agent hot key | secp256k1 | Agent runtime (demo: `.env`, made by `scripts/src/hot-keys.ts`, funded for a few requests) | Agent | Registered with `AgentRequestForwarder.setAgentKey`. Calls `forwarder.request` for its own agent only. It is not an ERC-721 operator, so it can't transfer the agent NFT. `execute` is permissionless, so it may also submit validated actions. |
+| Demo rogue key (P9) | secp256k1 | `.env` (`DEMO_ROGUE_*`, made by `hot-keys`), funded for a few requests | Builder (demo only) | `0x81F4a86250d74D5d8898f962bB8B555208631bda`. Registered as agent 1984's forwarder key only between `pnpm demo` scenes 3 and 3b (§5.3), so it can request validations for agent 1984 then, never move the agent. A real random key, never one derived from a public label: anyone could use such a key while it is registered |
 | Validator A / B keys | secp256k1 | Validator service env (`.env`, never committed) | Validator operator | `validatorAddress` in requests and responses |
 | Deployer | secp256k1 | `.env` | Builder | Deploys only. No admin rights afterwards. |
 | LLM API key (`LLM_API_KEY`: an OpenAI-compatible endpoint, Groq today; also used for Prompt Guard) | Bearer token | Validator B's service env (`.env`, never committed), read by `validators/risk/src/config.ts`; also by `record-fixtures` | Validator B operator | None. Never logged or recorded: logs and evidence carry the endpoint's host only, and fixtures hold request and response bodies, never headers |
@@ -797,6 +811,7 @@ attest8004/
   web/              /approve (P6: src/approve/, headers in vercel.json; P7 adds the inbox key), /inbox (P7: src/inbox/), /dashboard (P8: src/dashboard/)
   cre/              (stretch) Chainlink CRE workflow
   scripts/          @attest8004/scripts: operational scripts (round trip, hot keys, demo agents, set-passkey, submit-approval, end to end,
-                    indexer-check and the hosted indexer's keep-alive)
+                    indexer-check and the hosted indexer's keep-alive), and `pnpm demo` (P9: src/demo*.ts, with the in-process
+                    validators shared with the e2e in src/live-validators.ts)
   docs/             quickstart, API ref, threat model, deployments, spec-notes.md, nansen.md, mera.md, security-review.md
 ```

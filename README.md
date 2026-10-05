@@ -131,7 +131,7 @@ and take a few minutes each. The recorded run (4 Oct 2026, `e2e OK`) is in
 - B used 12 model calls and 25,271 Groq tokens.
 
 ```bash
-pnpm --filter @attest8004/scripts hot-keys                     # one hot key per demo agent into .env; prints addresses only
+pnpm --filter @attest8004/scripts hot-keys                     # one hot key per demo agent, and pnpm demo's rogue key, into .env; prints addresses only
 pnpm --filter @attest8004/scripts setup-demo-agents            # register agents, approve the forwarder per agent, set each agent's key
 pnpm --filter @attest8004/scripts setup-demo-agents -- --fund  # top agent 1984's hot key up to 8 requests (one e2e run + 2 spare), 1985's up to 4
 pnpm --filter @attest8004/scripts setup-demo-agents -- --fund-validator    # top validator A up to 2 MON
@@ -187,6 +187,42 @@ same action, so run the `mandate-v1` service too. Like
 validator A it serves only its allowlisted (gate, agent) pairs (`RISK_V1_GATES`, by default the demo vault with agent
 1984), with the same per-agent rate limit and daily gas budget. It paces its LLM calls to Groq's free tier (30 requests
 and 8,000 tokens a minute for the main model; Prompt Guard has its own budget), so one check takes a few minutes.
+
+## Demo
+
+`pnpm demo` plays the SPEC §5 scenario live on Monad testnet, scene by scene, for a screen recording. Each scene ends
+with explorer links for its transactions, and the runner pauses for Enter between scenes.
+- **1, the mandate:** a passkey approves the mandate on `/approve`; the runner submits it, reads it back from chain, and
+  shows the `0x0100` P256VERIFY call in the transaction's trace.
+- **2, a benign action:** both validators pass it, and the vault executes it.
+- **3, the Grok/Bankr pattern:** a new forwarder key outside the mandate asks to send MON to an unknown address.
+  `mandate-v1` scores it 0, `risk-v1` explains why, and the gate's refusal is simulated.
+- **3b, recovery:** the rogue key is revoked and the mandate re-approved with the passkey.
+- **4 and 5:** the dashboard, and the phone decrypting the private findings.
+
+Both validators run in the runner's process, so stop the validator services first.
+
+```bash
+pnpm --loglevel silent demo --preflight   # balances, takes left today (Groq, the daily cap, each key), blockers; sends nothing
+pnpm --loglevel silent demo               # every scene; you approve on /approve in scenes 1 and 3b
+pnpm --loglevel silent demo --scene 3b    # one scene: 1, 2, 3, 3b, 4 or 5 (3b is also the reset after an interrupted take)
+pnpm --loglevel silent demo --fast        # no pauses between scenes
+pnpm --loglevel silent demo --fund        # top the hot key, the rogue key and both validators up to 4 takes from the deployer
+```
+
+**Taking another take:** scene 3b is also the reset. A mandate approved after the key changes is clean at once,
+because `mandate-v1` compares permission events with the newest `MandateSet`, so takes can follow each other without
+the e2e's 31-minute wait.
+
+**What a take costs:**
+- **Groq:** two `risk-v1` checks, about 19K of the free tier's 200K tokens a day;
+- **The daily cap:** 0.0005 MON of agent 1984's daily cap.
+
+When a key is short, the preflight prints its full address to paste into the faucet.
+
+[docs/demo.md](./docs/demo.md) is the 3-minute narration script, with the browser steps, the real durations from the
+live run, and where to cut the waiting time. The live run (5 Oct 2026) is in
+[docs/deployments.md](./docs/deployments.md).
 
 ## Trust API (Envio)
 

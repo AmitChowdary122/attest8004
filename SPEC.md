@@ -249,6 +249,14 @@ attest8004/
 4. The dashboard shows the record.
 5. The phone, using the same passkey, decrypts the private findings live.
 
+**As built in P9:** `pnpm demo` plays these scenes live, one at a time, for a screen recording ([docs/demo.md](./docs/demo.md) is the 3-minute script).
+- **Scene 3's permission change** is a new forwarder key for the agent (`AgentRequestForwarder.setAgentKey`), set from the owner's wallet without a passkey approval. The new key then asks to send MON to an address nobody controls.
+- **The verdicts:** `mandate-v1` scores it 0 with `TARGET_NOT_ALLOWED` and `PERMISSION_CHANGED_AFTER_MANDATE`, and `risk-v1` explains it. The gate's refusal (`ScoreTooLow`) is simulated, never sent.
+- **A scene 3b, recovery,** revokes the rogue key and re-approves the mandate with the passkey. Rule 11 compares events with the newest `MandateSet`, so actions pass again at once.
+- **The same scene resets the demo** between takes.
+
+Verified live on 5 Oct 2026 ([docs/deployments.md](./docs/deployments.md)).
+
 ## 6. Security requirements (judges check "correct and secure")
 - Check the precompile return length. Enforce low-s. Bind the challenge and nonce. Check the UV flag and rpIdHash.
 - Bind `requestHash` to the exact action, chain, gate, validator and deadline, and make each action single use.
