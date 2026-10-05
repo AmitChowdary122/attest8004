@@ -4,6 +4,120 @@ Running log, updated at the end of every session (CLAUDE.md, rule 10). Newest se
 
 ---
 
+## Mon 5 Oct 2026 · P7 the Mera findings inbox: FindingsBoard, encrypted operator reports, the cross-device decrypt
+
+### Done
+- **`FindingsBoard`** (`contracts/src/FindingsBoard.sol`), tests first. It is immutable, with no admin, no storage and no constructor arguments.
+  - **What it does:** `post(requestHash, agentId, envelope)` emits `FindingsPosted(requestHash, agentId, validator = msg.sender, envelope)`, indexed on all three; an envelope over 8,192 bytes reverts.
+  - **Tests:** 11 tests (no storage written, the ABI pinned, fuzz) plus the deploy script's tests.
+  - **Deployed** via CREATE2 at `0xa7d52B3B08FAB0cd0527c6242ca678f9Feee6a1c`: tx `0x1d43bad3…6136b`, block 68,296,810, limit 190,000 against an estimate of 154,319.
+- **The inbox crypto** (`packages/sdk/src/inbox-crypto.ts`, browser-safe, `@noble/*` 2.2.0 only). Built by a subagent and approved by a task review.
+  - **The key:** Mera PRF output (salt `sha256("attest8004.inbox.v1")`) → HKDF-SHA256 → clamped X25519 key.
+  - **The envelope:** `0x01 ‖ epk ‖ nonce ‖ AES-256-GCM ciphertext and tag`.
+  - **The AAD** binds the chain, the board, the registry, the request, the agent, the validator and the recipient.
+  - **Zeroing:** every secret is zeroed in `finally`.
+  - **Tests:** round trip, wrong key, one flipped bit, AAD swap, a non-validator post ignored, all secret buffers zero afterwards, and fixed vectors from `node:crypto`. The vectors are checked by `--check` in CI, and forge checks the AAD and the event topic.
+- **Operator reports** (`attest8004.report.v1`), posted from `onResponded`, and only when the agent has an inbox key:
+  - `mandate-v1`: its reasons and the agent's spend, in plain words;
+  - `risk-v1`: each finding's explanation, plus a recommended action from a fixed table in code (never the model).
+
+  **Gas and safety:**
+  - Each post's limit is Monad's estimate × 1.2, capped at `OPERATOR_REPORT_GAS_CAP` = 430,000 (a full 8 KB envelope's live estimate was 351,418).
+  - Admission counts report gas against the daily budget.
+  - A failed post is logged and never touches the verdict.
+  - A post that times out is aborted before it can broadcast, and the gas guard treats a replaced transaction as a failed send.
+- **`setInboxKey` approvals:**
+  - `attest8004.approval.v1`'s change is now a union (`setMandate` | `setInboxKey` with `x25519Pub`);
+  - `submit-approval` has the inbox path (dry run, `--confirm`, read back);
+  - the gas cap is 224,000, fork-measured;
+  - an SDK vector is replayed through the contract.
+- **The pages:**
+  - **`/approve` section 4** runs two ceremonies: a PRF ceremony that derives and shows the key, then an assertion restricted to the same credential.
+  - **`/inbox`** finds reports with public reads and applies the trust rule, then the passkey derives the key, the reports are decrypted and shown, and everything is zeroed.
+  - **Both** keep the P6 CSP and the no-URL-input rule. A source test forbids every kind of browser storage.
+- **Housekeeping:** `rateLimitedFetch` moved into the SDK.
+  - Both validator services' RPC clients now use it (default 7/s, `*_RPC_REQUESTS_PER_SECOND`), and the web client runs at 8/s.
+  - This closes P6's "services aren't rate-limited" item.
+- **Docs:**
+  - **`docs/mera.md`** (new): non-account use of Mera, the key lifecycle and what can't be zeroed, what's on chain, and the cross-device test. **Your addition 1:** the inbox is also the channel for licensed third-party data such as Nansen labels.
+  - **Also updated:** ARCHITECTURE (§4.1, §5.4, §6, the status line), SPEC §4.7 (as built, and Done when), the README and `docs/deployments.md`.
+- **Your addition 2:** the e2e preflight counts report gas: each validator needs its floor plus three reports at the cap and the max fee (A 1.15738 MON, B 0.65738 MON in the run).
+- **Whole-branch review (Opus):** no Critical, and two Important findings, both fixed test-first and confirmed ADDRESSED by a scoped re-review:
+  - I1: a report post abandoned at its timeout could broadcast late, and a replaced response could be taken as landed;
+  - I2: the e2e's report check could fail on a lagging RPC; it now retries.
+- **The live run** (docs/deployments.md, "P7 inbox run"):
+  - **The inbox key:** from laptop Chrome, the same GPM passkey derived `0x01a9c300…8d76a03f` and approved `setInboxKey` (tx `0x6b328dde…b70c160`, nonce 2 → 3). The approval is now the vector `contracts/test/vectors/passkey-03-laptop-chrome-inbox.json`, replayed by forge and verified by vitest.
+  - **`e2e OK`** on attempt 2, on `409335f`. Attempt 1 stopped in preflight because the hot key was short; nothing was sent.
+    - **The verdicts:** S 100/100, executed; R 100/0, refused; O 0/0, refused.
+    - **Six trusted reports**, 479–1,252 bytes each, at 51,468–88,940 gas.
+    - **`verify`** matched all six verdicts.
+    - **After the restart:** all six requests were skipped, and there was still exactly one report per request.
+    - **Groq:** 30,557 tokens.
+  - **The cross-device decrypt:**
+    - Laptop Chrome showed "This passkey derives `0x01a9c300…8d76a03f`: agent 1984's inbox key. Key zeroed."
+    - Android Chrome, with the same synced passkey and the screen lock, showed the same line. Its screenshot shows four decrypted reports, each "Matches the verdict onchain", among them `risk-v1`'s `FUNDS_FORWARDED`/`FRESH_COUNTERPARTY` report on R with its recommended actions.
+- **Tests:** forge 222 (default and ci profiles), fork 17, typecheck, and TS 1,275 (sdk 305, mandate 303, risk 522, cli 76, scripts 59, web 10). Also green: the web build, all three vector checks, and gitleaks over the full history.
+
+### Next
+- **P8:** index `FindingsPosted` and `InboxKeySet`, next to P6's items: both MandateRegistries by block range, `PasskeySet` and `PasskeyRotated`.
+  - This lifts `/inbox`'s 600-block limit: today a report posted more than 600 blocks after its verdict isn't found.
+  - It also removes the per-verdict log scans.
+- **P10 (your addition 1): Nansen and a possible `risk-v2`.** If Nansen credits arrive, `risk-v1`'s public evidence would include Nansen tool outputs, because it records every tool output. Decide then whether a `risk-v2` is needed that keeps Nansen data out of the public evidence and only in the inbox. No recorded run so far has had a Nansen key, so no Nansen data is public.
+- **P10 threat-model items from P7:**
+  - **Report metadata is public:** who posted for which request and agent, when, and how long the report is.
+  - **A key change orphans earlier reports:** `/inbox` derives only the current key.
+  - **The trust rule trusts whichever validator the agent's hot key asked for.** `/inbox` labels our two validators, but another validator is shown only by its address.
+  - **The public RPC is a trust root for `/inbox`'s reads**, as for `/approve`.
+- **Deferred minors** (task reviews and the final review; triaged, none blocking):
+  - `make-inbox-vectors.ts` relies on `import.meta.main` (Node ≥ 22.18, the engines floor); it keeps dead `sharedSecret`/`aeadKey` returns and unused exports;
+  - the zeroing tests assert at least 3 (seal) and 2 (open) tracked buffers, below the real 4 and 3;
+  - `sealEnvelope` accepts an all-zero passed ephemeral key (a test-only option on the exported API);
+  - `inbox-crypto.test.ts` re-implements the clamp;
+  - ARCHITECTURE §6 says an envelope "fails to decrypt" for another recipient (with the original key it is `RECIPIENT_MISMATCH`);
+  - `SET_INBOX_KEY_GAS_CAP` was fork-measured warm (172,264) and the assertion message says "~130k". The live estimate was 133,847, well under the cap; re-measure isolated;
+  - `describeInboxKeyChange` says old reports stay readable by the passkey that derived them, but `/inbox` derives only the current key;
+  - `/inbox` says "within 600 blocks" even when the search stopped at the head (show `searchedTo`);
+  - an unknown validator is labelled only by its address, styled like ours, and docs/mera.md's "a stranger can't slip a fake report" needs the hot-key qualifier;
+  - `openInbox` doesn't re-apply `isTrustedPost` itself (for other SDK callers);
+  - `submit-approval`'s last line says reports are posted even with no board recorded;
+  - docs/mera.md's "can't be zeroed" list omits noble's internal byte copies;
+  - the services' budget check reserves the report cap even with no board recorded;
+  - a report differing only in `responseHash` reads "for an earlier response (score 100); … now is 100";
+  - the `/approve` wrong-passkey refusal has no automated test;
+  - the plan's Review Focus 2 and Task 3 disagree on a tag mismatch (the code follows Task 3: `REPORT_MISMATCH`);
+  - Admission under-reserves only if a validator gets an inbox without `maxGasPerReport` (document the pairing);
+  - ARCHITECTURE credits the replaced-send protection to `writeWithGasGuard` only; it lives in the shared `successfulReceipt`.
+
+### Blockers or decisions needed
+- **Your side:**
+  - The P7 commits are pushed. I read CI's result after the push.
+  - Groq used 30,557 tokens today in this run.
+- **For your information:** one of the crypto subagent's gitleaks runs scanned the working tree, which includes the gitignored `.env`. The output was redacted (rule, file and line only), and the file was never opened.
+- **Rulings I made during P7** (every `Ruling:` from the build ledger, in order, each with what it costs if wrong):
+
+1. The crypto subagent added a gitleaks allowlist so secret-shaped vector fields could be committed. I reverted it: the vectors now store no secret-shaped hex (secret inputs are public labels hashed at run time, and intermediates are dropped). Cost if wrong: the vectors document fewer intermediates.
+2. Added `make-inbox-vectors.ts --check` to CI's TypeScript job. Cost if wrong: one CI step.
+3. Squashed two unpushed local commits (`4787cc5` + `70f3a23` → `f4bd335`), because the first one's JSON tripped the full-history gitleaks scan. Nothing had been pushed. Cost if wrong: one fewer commit in history.
+4. Kept the plan's 60 s timeout on a report post. The final review challenged this, and I1's fix resolved it (ruling 16). Cost if wrong: an occasional retried response send.
+5. `openInbox` maps an `openEnvelope` throw (only possible with a malformed caller context) to `MALFORMED` for that post, so one bad post can't hide the others. Cost if wrong: none.
+6. `viemInboxPort` takes the chain id from the wallet client and throws without one. Cost if wrong: one constructor argument.
+7. The report builders read their own just-built evidence through a narrow zod view, not the strict parser. `verify` still uses the strict one. Cost if wrong: none.
+8. `riskReport` clips an explanation to 600 characters, the schema's limit. Cost if wrong: a clipped explanation in the inbox; the full one stays in the public evidence.
+9. The requests-per-second parser lives in the SDK (`parseRequestsPerSecond`), not duplicated in each service. Cost if wrong: none.
+10. Moved risk's sample evidence fixture into `test/helpers/risk-fakes.ts`. Cost if wrong: none (test code).
+11. **The approval's field is `x25519Pub`, not the plan's `inboxKey`:** gitleaks' generic-api-key rule flags `"inboxKey": "0x<64 hex>"`. `x25519Pub` is the contract's own name, and the scanner config stays stock. Cost if wrong: a field rename.
+12. `SET_INBOX_KEY_GAS_CAP` = 224,000, from the fork measurement × 1.3 (P6's basis). Cost if wrong: a refused send, never an overpaid one.
+13. `make-webauthn-vector.ts` takes `[mandate|inbox|all]` and was run with `inbox` only, so the committed mandate vector kept its bytes. Cost if wrong: none.
+14. Web's `deployment` is typed `Deployment`, so `findingsBoard` keeps its `| null` type. Cost if wrong: none.
+15. The post-restart report check runs right after `execute(S)`, so its reads don't eat `execute(S)`'s deadline margin. Cost if wrong: none.
+16. Resolved the timeout disagreement with I1's fix: abort before broadcast, and a replaced send counts as failed. I kept the timeout. Cost if wrong: a slow post reported as failed while it still lands (its reservation stays).
+17. `OPERATOR_REPORT_GAS_CAP` moved from 420,000 to 430,000, from the live estimate. Cost if wrong: a refused report, never an overpaid one.
+18. Took the plan's optional step: the laptop's `setInboxKey` approval is a real-device vector, replayed in forge and checked in vitest. Cost if wrong: one vector file and one test.
+19. The Android record says exactly what the screenshot shows (four of the six cards), not "all six". Cost if wrong: an under-claim you can correct.
+20. Deferred minors stay deferred; the docs pass resolved only the README's pre-run present tense. Cost if wrong: none.
+
+---
+
 ## Mon 5 Oct 2026 · P6 passkey mandates via `0x0100`, the registry history and `/approve`
 
 ### Done

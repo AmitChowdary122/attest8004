@@ -113,4 +113,25 @@ the phone derives the same inbox key and decrypts the same reports, with nothing
 4. On Android Chrome, the same page: **Find reports**, **Decrypt with passkey**, screen lock. The inbox key line
    must equal the laptop's, and the six reports must be the same.
 
-**Results:** the P7 live run is pending; it is recorded here and in `docs/deployments.md` once done.
+**Results (5 Oct 2026, production build `409335f`):**
+1. Laptop Chrome derived the inbox key `0x01a9c30086e8174910ef33b9fc3a5bb3a148ee09bafc428ed0c476678d76a03f` from agent
+   1984's passkey (credential `0QGvcMotO-w-2c_gJbwNSA`). The same credential then signed `setInboxKey`'s challenge, and
+   the owner submitted it (tx `0x6b328dde…b70c160`, block 68,300,784, nonce 2 → 3). The approval is the test vector
+   `contracts/test/vectors/passkey-03-laptop-chrome-inbox.json`.
+2. The e2e passed (`e2e OK`). Both validators posted a report for each of the three actions: six envelopes of 479 to
+   1,252 bytes, at 51,468 to 88,940 gas each. All six passed the trust rule, and after a restart there was still
+   exactly one per request.
+3. Laptop Chrome, `/inbox`: "This passkey derives `0x01a9c300…8d76a03f`: agent 1984's inbox key. Key zeroed."
+4. Android Chrome, the same passkey synced: **Find reports** showed the inbox key onchain and "6, with 6 encrypted
+   report(s)". **Decrypt with passkey** (screen lock) showed **the same inbox key line** and the decrypted reports. The
+   screenshot shows four of them, each headed "Matches the verdict onchain":
+   - `risk-v1` on R: "Score 0: 1 high, 1 medium, 0 low finding(s)": high `FUNDS_FORWARDED` → "Don't execute it. Find
+     out where the target sends the value; if that isn't expected, remove the target from the mandate.", and medium
+     `FRESH_COUNTERPARTY` → "Confirm the counterparty out of band before executing; an address that has never
+     transacted is unknown.";
+   - `risk-v1` on O (high `MANDATE_VIOLATION` → "Don't execute it. mandate-v1's report names the rule that failed.");
+   - `risk-v1` on S ("Score 100: no findings.");
+   - `mandate-v1` on O ("Refused: 3 mandate rule(s) failed (score 0).").
+
+The same passkey derived the same key on two devices, and nothing was stored on either. Every transaction and the
+full report table are in `docs/deployments.md` ("P7 inbox run").

@@ -62,6 +62,7 @@ Every Attest8004 deployment is recorded here: chain, contract, address, the comm
   code present, `MAX_ENVELOPE_BYTES()` = 8192.
 - **A report's gas:** Monad's estimate for `post` with a full 8,192-byte envelope was 351,418 (a 2,048-byte one:
   105,288), so the SDK's `OPERATOR_REPORT_GAS_CAP` is 430,000 (×1.2, rounded up to 10k).
+- **First reports:** the P7 run's six, below (51,468–88,940 gas each).
 - **Not upgradeable, no owner, no storage, holds no funds.**
 
 ### MandateRegistry v2 (testnet) details
@@ -688,6 +689,111 @@ byte. The full output is kept outside the repo (`../plans/p6-e2e.log`).
 | 2026-10-05 | validationResponse R → 0 (B, `risk-v1`) | [`0xe69d5cde…6ad4c05`](https://monad-testnet.socialscan.io/tx/0xe69d5cdee7933daeff2e1c7aa8531dd663de1da57c03e8be7477654736ad4c05) | 68,223,368 | 596,932 (497,443) |
 | 2026-10-05 | validationResponse O → 0 (B, `risk-v1`) | [`0x3d327cfa…044d665`](https://monad-testnet.socialscan.io/tx/0x3d327cfa2e7055fbf1e04712d166c73d755ca3b8fb1febfcb79836ffc044d665) | 68,223,571 | 401,237 (334,364) |
 | 2026-10-05 | execute(S) (deployer) | [`0xa21e2f7d…6cc507d`](https://monad-testnet.socialscan.io/tx/0xa21e2f7d1778a57402eec82c59a0e79b0674ed883a26326af2b0506206cc507d) | 68,223,644 | 121,000 (99,578) |
+
+## P7 inbox run: agent 1984's inbox key, six encrypted operator reports, the cross-device decrypt (testnet, 2026-10-05)
+
+The same Google Password Manager passkey as P6 (credential `0QGvcMotO-w-2c_gJbwNSA`), on production build `409335f`.
+
+- **The inbox key** came from laptop Chrome, `/approve` section 4:
+  - a Mera PRF ceremony (salt `sha256("attest8004.inbox.v1")`) derived the X25519 public key
+    `0x01a9c30086e8174910ef33b9fc3a5bb3a148ee09bafc428ed0c476678d76a03f`;
+  - a second ceremony, restricted to the same credential, signed `setInboxKey`'s challenge at nonce 2.
+
+  The approval is public data and is kept as `contracts/test/vectors/passkey-03-laptop-chrome-inbox.json`.
+  `PasskeyVectors.t.sol` replays it through the contract after both P6 mandates (nonce 2 → 3, the same key stored),
+  and the SDK's vitest verifies it.
+- **`submit-approval` checked it first:** it re-checked the approval against the chain and verified the assertion
+  locally, printed the key change in plain words, and sent only with `--confirm 0x224105c7`. It then read back
+  `inboxKeyOf(1984)`, the nonce (2 → 3) and the `InboxKeySet` event.
+
+| Transaction | Block | Estimate | Limit |
+|---|---|---|---|
+| `setInboxKey(1984, x25519Pub, laptop assertion)`, nonce 2 → 3 [`0x6b328dde…b70c160`](https://monad-testnet.socialscan.io/tx/0x6b328dde8791b4d7fc6099e925330d44ffa9d1c933e81c4297509630db70c160) | 68,300,784 | 133,847 | 160,617 |
+| Fund validator B to 1 MON (+0.283573872 MON) [`0xa57763a8…3e0d094`](https://monad-testnet.socialscan.io/tx/0xa57763a8dac1be0dc727ab5c30077210e6cfe11591fd119806caabd203e0d094) | 68,300,861 | 21,000 | 26,000 |
+| Fund agent 1984's hot key to 8 requests (+0.19278 MON) [`0x8a574151…0bf3036`](https://monad-testnet.socialscan.io/tx/0x8a57415115cc99e88e5235dd7f962a08242333acfcff155726a0fee600bf3036) | 68,301,133 | 21,000 | 26,000 |
+
+`setInboxKey`'s limit is the live estimate × 1.2, under `submit-approval`'s cap of 224,000 (fork-measured: 172,264).
+
+### Verified end-to-end run with operator reports (P7, 2026-10-05)
+
+`pnpm --filter @attest8004/scripts e2e` printed **`e2e OK`** on attempt 2, on the code of commit `409335f`. The full
+output is kept outside the repo (`../plans/p7-e2e.log`). Attempt 1 stopped in the read-only preflight and sent nothing:
+agent 1984's hot key held 0.11466 MON, but six requests need 0.23058 MON. It was funded (above), and attempt 2 ran.
+The preflight now includes report gas: each validator must hold its floor plus three reports at
+`OPERATOR_REPORT_GAS_CAP` (430,000) and the max fee. At this run's max fee, that was 1.15738 MON for A and 0.65738 MON
+for B.
+
+| Action | Validator A, `mandate-v1` (≥ 100) | Validator B, `risk-v1` (≥ 80) | The gate |
+|---|---|---|---|
+| S: 0.001 MON to the deployer | **100**, no reasons; pinned block 68,301,243 | **100**, no findings; pinned block 68,301,321 | **executed** (block 68,302,498) |
+| R: 0.001 MON to `DemoPassThrough` | **100**, no reasons; pinned block 68,301,325 | **0**: high `FUNDS_FORWARDED`, medium `FRESH_COUNTERPARTY`; pinned block 68,301,558 | **refused**, `ScoreTooLow(validator B, requestHash R, 0, 80)` (simulated) |
+| O: 0.003 MON to an unlisted target | **0**: `TARGET_NOT_ALLOWED`, `VALUE_OVER_TX_CAP`, `DAILY_CAP_EXCEEDED`; pinned block 68,301,380 | **0**: high `MANDATE_VIOLATION`; pinned block 68,301,970 | **refused**, `ScoreTooLow(validator A, requestHash O, 0, 100)` (simulated) |
+
+- **Six operator reports, one per verdict.** Each validator posted right after its response landed. The e2e found
+  every report the way `/inbox` does: it read the agent's verdicts, then the `FindingsPosted` events in the 600
+  blocks after each response, and kept a post only when `getValidationStatus` names its poster and agent. Each report
+  is a version-1 envelope from the right validator, with a gas limit under the cap:
+
+  | Verdict | requestHash | Report tx | Block | Gas limit | Envelope (bytes) |
+  |---|---|---|---|---|---|
+  | S ← A | `0xe1cd863d…ef18d99` | [`0x6fd8d35c…3bed8a2`](https://monad-testnet.socialscan.io/tx/0x6fd8d35cd46a012bf9bb6bcdf58bf4bc63c40e06054e70734182239763bed8a2) | 68,301,327 | 54,707 | 540 |
+  | S ← B | `0x22248e57…5dc11e9` | [`0x14a86f4a…77e508b`](https://monad-testnet.socialscan.io/tx/0x14a86f4af6ae1fe7c22fbb9914ef8a66845e5faf3023fe5cc3cbcb33b77e508b) | 68,301,564 | 51,468 | 479 |
+  | R ← A | `0xfe91c15a…13757af` | [`0xb3d23efd…80cd21e`](https://monad-testnet.socialscan.io/tx/0xb3d23efdfa0d006c1ac8ba1ca08e5ea37fe2a66ba0b7c6ddf4ec4653780cd21e) | 68,301,384 | 54,693 | 540 |
+  | R ← B | `0x140788f1…2269586` | [`0x829c1aaa…89a4a9e`](https://monad-testnet.socialscan.io/tx/0x829c1aaa674ef183486ed2e9590e62ff80da5541196e89a29eae02d5389a4a9e) | 68,301,974 | 84,951 | 1,174 |
+  | O ← A | `0x5d4a12ef…46f00f4` | [`0x7d672958…238333a`](https://monad-testnet.socialscan.io/tx/0x7d672958a0984bc1a7768bf985109bb1c357feed2e6ac4c95cd2691cd238333a) | 68,301,436 | 88,940 | 1,252 |
+  | O ← B | `0x64390f69…8e9ab49` | [`0x07294be6…e04462b`](https://monad-testnet.socialscan.io/tx/0x07294be6aab26abb4feb8e9aae02197f34f32c0275ef0a659143c4892e04462b) | 68,302,368 | 69,618 | 864 |
+
+  Each limit is Monad's estimate × 1.2. The six reports' limits sum to 404,377 gas, less than one full-size cap.
+- **`verify`:** all six match. For `risk-v1` it re-ran 3, 3 and 2 onchain tool calls; the model output is recorded,
+  not re-run.
+- **Restart:** freshly started validators skipped all six requests (`ALREADY_RESPONDED`), and B made no model call.
+  After `execute(S)`, discovery still found exactly one trusted report per request, so a restart posts nothing twice.
+- **Groq:** 30,557 tokens in 14 calls (S 10,532, R 11,497, O 8,528). Every call was served by `openai/gpt-oss-120b`, and
+  every final answer came on the first attempt. Prompt Guard made 0 calls, and Nansen was unavailable (no key), so no
+  Nansen data is in any evidence or report.
+- **Daily cap:** A counted 0.002 MON of earlier approvals before S, 0.003 MON before R and 0.004 MON before O, hence O's
+  `DAILY_CAP_EXCEEDED`.
+
+| Date | Transaction | Hash | Block | Limit (estimate) |
+|---|---|---|---|---|
+| 2026-10-05 | forwarder.request S → A (hot key) | [`0x9e092fe3…a624f26`](https://monad-testnet.socialscan.io/tx/0x9e092fe3562a3c1714511ca30cbf7128e56c476e5b5939b8f74e2ab12a624f26) | 68,301,205 | 315,000 (251,903) |
+| 2026-10-05 | forwarder.request S → B (hot key) | [`0x7efc820e…a572cb8`](https://monad-testnet.socialscan.io/tx/0x7efc820e250504c389081fbe88b8bc56a849601288a34885baf4bc4d4a572cb8) | 68,301,213 | 315,000 (251,903) |
+| 2026-10-05 | forwarder.request R → A (hot key) | [`0xd5e8fa7c…1ca2f0e`](https://monad-testnet.socialscan.io/tx/0xd5e8fa7c8e7636391c51baa7a9beade0559a9149d2b2152573c3a135d1ca2f0e) | 68,301,219 | 315,000 (251,903) |
+| 2026-10-05 | forwarder.request R → B (hot key) | [`0x6baa706c…91f33f2`](https://monad-testnet.socialscan.io/tx/0x6baa706c56f468323f14e12a8410b1555fcd2ba681e4aa79d3421d82291f33f2) | 68,301,226 | 315,000 (251,903) |
+| 2026-10-05 | forwarder.request O → A (hot key) | [`0x1c0cf835…59dd6a6`](https://monad-testnet.socialscan.io/tx/0x1c0cf835bab41c13d9d9b9b570e16ec0e876f30cc1d76c2e14db0a6b959dd6a6) | 68,301,233 | 315,000 (251,890) |
+| 2026-10-05 | forwarder.request O → B (hot key) | [`0xd83b3176…bcc6ebe`](https://monad-testnet.socialscan.io/tx/0xd83b3176d090d94bb421b1823f5acbeed3f822dc0c842a0b9cb1c8246bcc6ebe) | 68,301,239 | 315,000 (251,903) |
+| 2026-10-05 | validationResponse S → 100 (A, `mandate-v1`) | [`0xf1e2f898…060d3ed`](https://monad-testnet.socialscan.io/tx/0xf1e2f89894d4d36816b812c1be7f0ea772edb4656ccb617a8b534785b060d3ed) | 68,301,321 | 236,660 (197,216) |
+| 2026-10-05 | validationResponse R → 100 (A, `mandate-v1`) | [`0xa5dc4b7d…71af3fb`](https://monad-testnet.socialscan.io/tx/0xa5dc4b7dc7fe88fbd2635e6983c13dadc536ec3e1eebab152ca6987e971af3fb) | 68,301,379 | 252,152 (210,126) |
+| 2026-10-05 | validationResponse O → 0 (A, `mandate-v1`) | [`0x39099f4d…27f5d92`](https://monad-testnet.socialscan.io/tx/0x39099f4dd64375d0293fe8b5a278ad0a0adb8c7fcf8c694178f88d3e127f5d92) | 68,301,430 | 271,988 (226,656) |
+| 2026-10-05 | validationResponse S → 100 (B, `risk-v1`) | [`0xb956916b…de12fbe`](https://monad-testnet.socialscan.io/tx/0xb956916ba352152b0dba8272f65e6e4238a9390c73269553b935a1104de12fbe) | 68,301,558 | 401,782 (334,818) |
+| 2026-10-05 | validationResponse R → 0 (B, `risk-v1`) | [`0x0b142945…5b7580f`](https://monad-testnet.socialscan.io/tx/0x0b1429457a27fd0110322404e232f54bda693be30f49dd8763fe2f82a5b7580f) | 68,301,969 | 587,693 (489,744) |
+| 2026-10-05 | validationResponse O → 0 (B, `risk-v1`) | [`0xbebd80f3…f518e7a`](https://monad-testnet.socialscan.io/tx/0xbebd80f328ebdcd8657bc474833c656f3884e9b29be86aa38d7e20453f518e7a) | 68,302,363 | 494,118 (411,765) |
+| 2026-10-05 | execute(S) (deployer) | [`0x93d1d734…237bbbf`](https://monad-testnet.socialscan.io/tx/0x93d1d73405f5ea4b0b1cd2e0bb4ab8e221790dc1f5cd1030590e2f355237bbbf) | 68,302,498 | 121,000 (99,578) |
+
+### The cross-device decrypt (P7, 2026-10-05)
+
+| Device | What `/inbox` showed for agent 1984 |
+|---|---|
+| **Laptop Chrome** (Linux) | **Find reports**, then **Decrypt with passkey** (GPM PIN): "This passkey derives `0x01a9c30086e8174910ef33b9fc3a5bb3a148ee09bafc428ed0c476678d76a03f`: agent 1984's inbox key. Key zeroed." |
+| **Android Chrome**, the same passkey synced | **Find reports**: inbox key onchain `0x01a9c300…8d76a03f`, "6, with 6 encrypted report(s)". **Decrypt with passkey** (screen lock): the same "This passkey derives `0x01a9c300…8d76a03f`: agent 1984's inbox key. Key zeroed." line, and the decrypted reports. The screenshot shows four of them (validator B's on O, R and S, and validator A's on O), each headed "Matches the verdict onchain" (below) |
+
+What the Android screenshot shows, verbatim from the decrypted reports:
+- **B on O:** "Matches the verdict onchain: risk-v1 scored 0." "Score 0: 1 high, 0 medium, 0 low finding(s)." One item:
+  high `MANDATE_VIOLATION`, with the model's explanation and the action "Don't execute it. mandate-v1's report names the
+  rule that failed."
+- **B on R:** "Matches the verdict onchain: risk-v1 scored 0." "Score 0: 1 high, 1 medium, 0 low finding(s)."
+  - high `FUNDS_FORWARDED` → "Don't execute it. Find out where the target sends the value; if that isn't expected,
+    remove the target from the mandate.";
+  - medium `FRESH_COUNTERPARTY` → "Confirm the counterparty out of band before executing; an address that has never
+    transacted is unknown."
+- **B on S:** "Matches the verdict onchain: risk-v1 scored 100." "Score 100: no findings."
+- **A on O:** "Matches the verdict onchain: mandate-v1 scored 0." "Refused: 3 mandate rule(s) failed (score 0)." (its
+  items are below the fold).
+- **Each `risk-v1` report ends** with "Explanations are the model's (advisory; recorded, not re-run); the score is
+  computed in code from the severities."
+
+The page stores nothing on either device (`web/test/no-storage.test.ts`), and the private key exists only inside the
+decryption.
 
 ## Canonical contracts used (not deployed by us)
 
