@@ -2,7 +2,8 @@
 // tested: what the deployer must hold, how long the restart check may take before execute(S) runs out of time,
 // whether agent 1984's mandate is old enough for risk-v1's permission window, and a zero-token check of the LLM
 // endpoint. Messages are our own fixed text: never a URL, a key or a library's message.
-import { formatEther } from "viem";
+import { OPERATOR_REPORT_GAS_CAP, type FindingsBoardDeployment } from "@attest8004/sdk";
+import { formatEther, type Hex } from "viem";
 
 const mon = (wei: bigint): string => `${formatEther(wei)} MON`;
 
@@ -25,6 +26,25 @@ export function deployerNeed(o: {
   const scaled = gas * o.maxFeePerGas * (100n + BigInt(o.marginPercent));
   const gasWithMargin = (scaled + 99n) / 100n;
   return { topUp, gasWithMargin, total: topUp + gasWithMargin };
+}
+
+/**
+ * Whether this run's verdicts get encrypted operator reports (P7): only when agent 1984 has an inbox key and a
+ * FindingsBoard is recorded. The line is what the preflight prints.
+ */
+export function reportsExpected(o: { inboxKey: Hex; findingsBoard: FindingsBoardDeployment | null }): { expected: boolean; line: string } {
+  if (o.findingsBoard === null) return { expected: false, line: "operator reports: off (no FindingsBoard recorded for this chain)" };
+  if (BigInt(o.inboxKey) === 0n) return { expected: false, line: "operator reports: off (agent 1984 has no inbox key: no report will be posted)" };
+  return { expected: true, line: `operator reports: on (inbox key ${o.inboxKey}, FindingsBoard ${o.findingsBoard.address})` };
+}
+
+/**
+ * The least a validator must hold before the run: its `floor`, plus, when reports are on, its three reports at
+ * `OPERATOR_REPORT_GAS_CAP` and the current max fee (each validator answers three requests, so six reports across A
+ * and B), so a validator short of report gas stops the run before any request is sent.
+ */
+export function validatorNeed(o: { floor: bigint; reports: boolean; maxFeePerGas: bigint }): bigint {
+  return o.floor + (o.reports ? 3n * OPERATOR_REPORT_GAS_CAP * o.maxFeePerGas : 0n);
 }
 
 /** Why the deployer can't pay for the run (`held` below `need.total`), or `null` when it can. */

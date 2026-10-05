@@ -1,6 +1,16 @@
-import { parseEther, parseGwei } from "viem";
+import { OPERATOR_REPORT_GAS_CAP } from "@attest8004/sdk";
+import { getAddress, parseEther, parseGwei, type Hex } from "viem";
 import { describe, expect, it, vi } from "vitest";
-import { checkModelsEndpoint, deployerNeed, deployerShortfall, executeTimeLeft, permissionWindowWait, restartBudget } from "./e2e-preflight.ts";
+import {
+  checkModelsEndpoint,
+  deployerNeed,
+  deployerShortfall,
+  executeTimeLeft,
+  permissionWindowWait,
+  reportsExpected,
+  restartBudget,
+  validatorNeed,
+} from "./e2e-preflight.ts";
 
 const FEE = parseGwei("100");
 const BUDGET = {
@@ -155,5 +165,31 @@ describe("checkModelsEndpoint", () => {
       expect(JSON.stringify(result)).not.toContain("llm.example.test");
       expect(JSON.stringify(result)).not.toContain(KEY);
     }
+  });
+});
+
+describe("operator reports (P7)", () => {
+  const KEY: Hex = "0x8520f0098930a754748b7ddcb43ef75a0dbf3a0d26381af4eba4a98eaa9b4e6a";
+  const ZERO: Hex = `0x${"00".repeat(32)}`;
+  const BOARD = { address: getAddress("0xa7d52b3b08fab0cd0527c6242ca678f9feee6a1c"), fromBlock: 68_300_000n };
+
+  it("reportsExpected: on with a key and a board; off without a key; off without a board", () => {
+    expect(reportsExpected({ inboxKey: KEY, findingsBoard: BOARD })).toEqual({
+      expected: true,
+      line: `operator reports: on (inbox key ${KEY}, FindingsBoard ${BOARD.address})`,
+    });
+    expect(reportsExpected({ inboxKey: ZERO, findingsBoard: BOARD })).toEqual({
+      expected: false,
+      line: "operator reports: off (agent 1984 has no inbox key: no report will be posted)",
+    });
+    expect(reportsExpected({ inboxKey: KEY, findingsBoard: null })).toEqual({
+      expected: false,
+      line: "operator reports: off (no FindingsBoard recorded for this chain)",
+    });
+  });
+
+  it("validatorNeed: the floor alone when reports are off; floor + 3 × cap × maxFee when on", () => {
+    expect(validatorNeed({ floor: parseEther("0.5"), reports: false, maxFeePerGas: FEE })).toBe(parseEther("0.5"));
+    expect(validatorNeed({ floor: parseEther("0.5"), reports: true, maxFeePerGas: FEE })).toBe(parseEther("0.5") + 3n * OPERATOR_REPORT_GAS_CAP * FEE);
   });
 });

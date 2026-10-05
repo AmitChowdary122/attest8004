@@ -20,8 +20,10 @@
  *      deployer the vault's top-up plus the fund's and execute(S)'s gas with a 50% margin), the mandate's age (set at
  *      least 6,000 blocks ago, about 31 minutes, so risk-v1's recent_permission_events doesn't show its MandateSet),
  *      the LLM settings and a zero-token GET /models on B's endpoint (the key works and both models are listed;
- *      never a completion), and agent 1984's counted spend: S and R must both still fit under the daily cap. Any
- *      failure stops the run before it sends anything.
+ *      never a completion), and agent 1984's counted spend: S and R must both still fit under the daily cap. P7:
+ *      agent 1984's inbox key says whether operator reports are expected (a key and a recorded FindingsBoard), and
+ *      when they are, each validator's balance must also cover its three reports at OPERATOR_REPORT_GAS_CAP and the
+ *      current max fee, so a low validator B stops the run here. Any failure stops the run before it sends anything.
  *   2. Fund the vault up to 0.01 MON if it holds less than the three actions' values together (0.005 MON).
  *   3. Build S, R and O, all expiring 1,800 s after the latest block.
  *   4. Simulate (never send) two refused requests: the owner, and agent 1985's hot key, calling the forwarder for
@@ -35,13 +37,17 @@
  *      DAILY_CAP_EXCEEDED when its own evidence's spend (which must count S and R) plus 0.003 MON is over the
  *      0.005 MON daily cap. B: S at least 80; R 0 with at least one high finding; O answered. Both validators'
  *      evidence (A's reasons; B's findings, models, tokens and sizes) is printed before any score is asserted.
+ *      With reports on, each response's encrypted operator report is found the way /inbox finds it (the agent's
+ *      verdicts, then FindingsPosted with the trust rule): exactly one trusted post per request, a version-1 envelope
+ *      of 62 to 8,192 bytes, sent by that validator with a gas limit at most OPERATOR_REPORT_GAS_CAP. With reports
+ *      off, none exists.
  *   7. Simulate execute(R): ScoreTooLow(validator B, R's request to B, 0, 80); and execute(O): ScoreTooLow(validator A,
  *      O's request to A, 0, 100). Freshly started validators re-read the same blocks and must skip all 6
  *      (ALREADY_RESPONDED), validator B without a single model or guard call; exactly one response exists for each.
  *      The restart may take at most 5 minutes, and never past S's deadline minus 120 s (left for execute(S)).
  *   8. awaitVerdict and isValidated confirm S; the deployer submits execute(S) (permissionless), never with less
  *      than 60 s before S's deadline. Check the ActionConsumed event, the vault's balance and consumed(); a replay
- *      must be refused (ActionAlreadyConsumed).
+ *      must be refused (ActionAlreadyConsumed). Then the reports again: the restart posted none (still exactly one each).
  *   9. verifyRequest re-runs A's three verdicts at their pinned blocks, and verifyRiskRequest re-checks B's three
  *      from their public evidence (the score from the recorded findings, every onchain tool call re-run at the
  *      pinned block, A's verdict there; the model output is recorded, not re-run). All six must match.
@@ -85,7 +91,11 @@ import {
   Attest8004Client,
   DEFAULT_GAS,
   DEPLOYMENTS,
+  ENVELOPE_OVERHEAD_BYTES,
+  ENVELOPE_VERSION,
+  MAX_ENVELOPE_BYTES,
   MemoryCursorStore,
+  OPERATOR_REPORT_GAS_CAP,
   agentRequestForwarderAbi,
   attestGateAbi,
   blockWindows,
@@ -96,15 +106,19 @@ import {
   E2E_MANDATE_TERMS,
   decodeJsonDataUri,
   encodeJsonDataUri,
+  findInboxEntries,
   identityRegistryAbi,
   mandateRegistryAbi,
   requestHashOfJson,
   sendWithGasGuard,
   validationRegistryAbi,
   validationResponseEvent,
+  viemInboxPort,
+  viemInboxReader,
   viemValidatorChain,
   writeWithGasGuard,
   type Action,
+  type Deployment,
   type Outcome,
   type RequestedValidation,
   type ValidatorBase,
@@ -139,7 +153,16 @@ import {
 } from "@attest8004/validator-risk";
 import { assertChain, chain, check, mon, printTx, publicClient, requireAddress, requireEnv, walletFor } from "./common.ts";
 import { dailyCapShortfall, expectedReasonsO } from "./e2e-cap.ts";
-import { checkModelsEndpoint, deployerNeed, deployerShortfall, executeTimeLeft, permissionWindowWait, restartBudget } from "./e2e-preflight.ts";
+import {
+  checkModelsEndpoint,
+  deployerNeed,
+  deployerShortfall,
+  executeTimeLeft,
+  permissionWindowWait,
+  reportsExpected,
+  restartBudget,
+  validatorNeed,
+} from "./e2e-preflight.ts";
 
 /**
  * Explicit gas limits (Monad charges for the limit): Monad testnet eth_estimateGas x 1.2, rounded up to 1k.
@@ -165,6 +188,7 @@ const MANDATE_ADMISSION = {
   agentWindowSeconds: 3_600n,
   dailyGasBudget: 10_000_000n,
   maxGasPerResponse: MANDATE_RESPONSE_GAS.max,
+  maxGasPerReport: OPERATOR_REPORT_GAS_CAP,
 } as const;
 /**
  * Validator B's response limit, as its service sends them (validators/risk/src/main.ts and config.ts): risk-v1's
@@ -177,6 +201,7 @@ const RISK_ADMISSION = {
   agentWindowSeconds: 3_600n,
   dailyGasBudget: 10_000_000n,
   maxGasPerResponse: RISK_RESPONSE_GAS.max,
+  maxGasPerReport: OPERATOR_REPORT_GAS_CAP,
 } as const;
 /** The main model's free-tier pacing (validators/risk/src/config.ts), unless RISK_V1_LLM_* override it as for the service. */
 const LLM_PACING_DEFAULTS = { requestsPerMinute: 30, tokensPerMinute: 8_000 } as const;
@@ -460,6 +485,7 @@ function mandateValidator(fromBlock: bigint, name: string): MandateValidator {
     contracts,
     gates: [{ gate: vault, agentId }],
     admission: new Admission(MANDATE_ADMISSION),
+    inbox: viemInboxPort({ publicClient, walletClient: walletFor(validatorA), deployment }),
     log: logAs(name),
   });
 }
@@ -516,6 +542,7 @@ function riskValidator(fromBlock: bigint, name: string, clients: { llm: ChatClie
     mandateValidator: getAddress(deployment.validators.mandateV1),
     gates: [{ gate: vault, agentId }],
     admission: new Admission(RISK_ADMISSION),
+    inbox: viemInboxPort({ publicClient, walletClient: walletFor(validatorB), deployment }),
     llm: clients.llm,
     guard: chatPromptGuard(clients.guard, RISK_V1.guardModel),
     nansen,
@@ -583,6 +610,7 @@ async function main(): Promise<void> {
     vaultBalance,
     fees,
     latest,
+    inboxKey,
   ] = await Promise.all([
     read("validationRegistry"),
     read("requirements"),
@@ -607,6 +635,7 @@ async function main(): Promise<void> {
     publicClient.getBalance({ address: vault }),
     publicClient.estimateFeesPerGas(),
     publicClient.getBlock(),
+    publicClient.readContract({ address: mandateRegistry, abi: mandateRegistryAbi, functionName: "inboxKeyOf", args: [agentId] }),
   ]);
 
   // Validator B's two model clients, each with its own free-tier pacer, as the service builds them. Built before
@@ -682,8 +711,15 @@ async function main(): Promise<void> {
   );
   check("the DemoPassThrough has code", passThroughCode !== undefined && passThroughCode !== "0x", "no code");
   check(`the DemoPassThrough forwards to ${SINK}`, getAddress(passThroughSink) === SINK, passThroughSink);
-  check(`validator A holds at least ${mon(MIN_VALIDATOR_A_BALANCE)}`, validatorABalance >= MIN_VALIDATOR_A_BALANCE, mon(validatorABalance));
-  check(`validator B holds at least ${mon(MIN_VALIDATOR_B_BALANCE)}`, validatorBBalance >= MIN_VALIDATOR_B_BALANCE, mon(validatorBBalance));
+  // Operator reports (P7): on when agent 1984 has an inbox key and a FindingsBoard is recorded. Then each validator
+  // also pays for its three reports, so its floor grows by three reports at the cap and the current max fee.
+  const reports = reportsExpected({ inboxKey, findingsBoard: (deployment as Deployment).findingsBoard });
+  console.log(`  ${reports.line}`);
+  const reportNote = reports.expected ? " (its floor plus three reports at OPERATOR_REPORT_GAS_CAP and the max fee)" : "";
+  const needA = validatorNeed({ floor: MIN_VALIDATOR_A_BALANCE, reports: reports.expected, maxFeePerGas: fees.maxFeePerGas });
+  const needB = validatorNeed({ floor: MIN_VALIDATOR_B_BALANCE, reports: reports.expected, maxFeePerGas: fees.maxFeePerGas });
+  check(`validator A holds at least ${mon(needA)}${reportNote}`, validatorABalance >= needA, mon(validatorABalance));
+  check(`validator B holds at least ${mon(needB)}${reportNote}`, validatorBBalance >= needB, mon(validatorBBalance));
   const requestsCost = REQUESTS * DEFAULT_GAS.forwarderRequest * fees.maxFeePerGas;
   check(`the hot key can pay for ${REQUESTS} requests (${mon(requestsCost)})`, hotBalance >= requestsCost, mon(hotBalance));
   // The deployer pays for the vault's top-up (if any) and execute(S).
@@ -874,6 +910,43 @@ async function main(): Promise<void> {
     const found = outcome(label, side);
     check(`${side} answered ${label}`, found?.kind === "responded", json(found));
   }
+
+  /**
+   * Each request's encrypted operator report, found the way /inbox finds it (the SDK's discovery: the agent's six
+   * newest verdicts, then FindingsPosted near each, kept by the trust rule): exactly one per request when reports are
+   * on, none when they are off. The run can't decrypt them (no passkey); /inbox does, in person.
+   */
+  const checkReports = async (heading: string): Promise<void> => {
+    console.log(`\n${heading}`);
+    const board = (deployment as Deployment).findingsBoard;
+    const entries = board === null ? [] : await findInboxEntries(viemInboxReader({ publicClient, deployment }), { agentId, findingsBoard: board, maxResponses: 6 });
+    for (const [label, side] of pairs) {
+      const entry = entries.find((e) => e.status.requestHash === hashOf(label, side));
+      const posts = entry?.posts ?? [];
+      if (!reports.expected) {
+        check(`${label} <- ${side}: no report (reports are off)`, posts.length === 0, String(posts.length));
+        continue;
+      }
+      const post = posts[0];
+      check(`${label} <- ${side}: exactly one trusted report`, entry !== undefined && posts.length === 1 && post !== undefined, String(posts.length));
+      if (post === undefined) throw new Error("unreachable");
+      const bytes = (post.envelope.length - 2) / 2;
+      check(
+        `${label} <- ${side}'s report is a version-${ENVELOPE_VERSION} envelope of ${ENVELOPE_OVERHEAD_BYTES + 1} to ${MAX_ENVELOPE_BYTES} bytes`,
+        post.envelope.slice(0, 4) === "0x01" && bytes > ENVELOPE_OVERHEAD_BYTES && bytes <= MAX_ENVELOPE_BYTES,
+        `${post.envelope.slice(0, 4)}, ${bytes} bytes`,
+      );
+      const tx = await publicClient.getTransaction({ hash: post.txHash });
+      check(
+        `${label} <- ${side}'s report was sent by ${validatorOf[side]} with a gas limit at most ${OPERATOR_REPORT_GAS_CAP}`,
+        getAddress(tx.from) === validatorOf[side] && tx.gas <= OPERATOR_REPORT_GAS_CAP,
+        `${tx.from}, ${tx.gas}`,
+      );
+      console.log(`report (${label} <- ${side}) ${post.txHash}  block ${post.blockNumber}, gas limit ${tx.gas}, envelope ${bytes} bytes`);
+      txs[`report${label}${side}`] = post.txHash;
+    }
+  };
+  await checkReports("operator reports (found as /inbox finds them: the agent's verdicts, then FindingsPosted kept by the trust rule)");
 
   // Every response, read back: who sent it, its limit, and Monad's estimate for it; then the SDK's awaitVerdict for
   // each, scanning from its request's block (all six at once: B's responses land minutes after the requests).
@@ -1106,6 +1179,10 @@ async function main(): Promise<void> {
   check("consumed(actionHash S) is true", consumed, String(consumed));
   await expectRevert("a replay of S", { address: vault, abi: vaultAbi, functionName: "execute", args: [actions.S] }, owner.address, "ActionAlreadyConsumed");
   check("isValidated(S) after execute is false", !(await client.isValidated({ gate: vault, action: actions.S })), "true");
+
+  // After the restart (which answered nothing), still exactly one report per request: checked here, after execute(S),
+  // so the discovery's reads never eat into S's deadline margin.
+  await checkReports("operator reports after the restart (still exactly one per request)");
 
   // 9. verify: A's verdicts re-run at their pinned blocks; B's re-checked from their evidence and the chain.
   console.log(`\nverify ${MANDATE_V1.tag} (a fresh reader and an empty cache per verdict)`);
