@@ -69,8 +69,6 @@
  * the oldest counted approval leaves the window.
  */
 import {
-  BaseError,
-  ContractFunctionRevertedError,
   getAddress,
   keccak256,
   parseAbi,
@@ -80,21 +78,18 @@ import {
   stringToBytes,
   toBytes,
   zeroHash,
-  type Abi,
   type Address,
   type Hash,
   type Hex,
 } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
 import {
-  Admission,
   Attest8004Client,
   DEFAULT_GAS,
   DEPLOYMENTS,
   ENVELOPE_OVERHEAD_BYTES,
   ENVELOPE_VERSION,
   MAX_ENVELOPE_BYTES,
-  MemoryCursorStore,
   OPERATOR_REPORT_GAS_CAP,
   agentRequestForwarderAbi,
   attestGateAbi,
@@ -113,16 +108,12 @@ import {
   sendWithGasGuard,
   validationRegistryAbi,
   validationResponseEvent,
-  viemInboxPort,
   viemInboxReader,
-  viemValidatorChain,
   writeWithGasGuard,
   type Action,
   type Deployment,
-  type Outcome,
   type RequestedValidation,
   type ValidatorBase,
-  type ValidatorChain,
   type Verdict,
 } from "@attest8004/sdk";
 import {
@@ -138,11 +129,7 @@ import {
 } from "@attest8004/validator-mandate";
 import {
   RISK_V1,
-  RatePacer,
   RiskValidator,
-  chatPromptGuard,
-  nansenClient,
-  openAiCompatibleClient,
   parseRiskEvidence,
   riskContractsFor,
   verifyRiskRequest,
@@ -152,6 +139,7 @@ import {
   type RiskVerifyReport,
 } from "@attest8004/validator-risk";
 import { assertChain, chain, check, mon, printTx, publicClient, requireAddress, requireEnv, walletFor } from "./common.ts";
+import { GAS, GUARD_PACING, MANDATE_RESPONSE_GAS, READER_CONCURRENCY, RISK_RESPONSE_GAS, counted, liveValidators, llmSettingsFromEnv, pollAll, revertOf, type Call } from "./live-validators.ts";
 import { dailyCapShortfall, expectedReasonsO } from "./e2e-cap.ts";
 import {
   checkModelsEndpoint,
@@ -165,54 +153,9 @@ import {
   validatorNeed,
 } from "./e2e-preflight.ts";
 
-/**
- * Explicit gas limits (Monad charges for the limit): Monad testnet eth_estimateGas x 1.2, rounded up to 1k.
- * fund 21,212 (P2, and again on 3 Oct 2026 in P3). execute was 87,626 through the one-requirement P3 vault (P4).
- * This vault also checks each verdict's tag, and reads a second verdict: in forge with Monad gas (cold, 4 Oct 2026)
- * the second requirement added 12,631, so about 100,300, and 121,000 with the headroom. Provisional until this run
- * prints the live estimate. The forwarded requests use the SDK's DEFAULT_GAS.forwarderRequest.
- */
-const GAS = {
-  fund: 26_000n,
-  execute: 121_000n,
-} as const;
-
-/**
- * Validator A's response limit, as its service sends them (validators/mandate/src/main.ts): mandate-v1's evidence
- * varies in size with the mandate and the agent's activity, so each response gets its own estimate x 1.2, capped at
- * 400,000.
- */
-const MANDATE_RESPONSE_GAS = { headroomPercent: 20, max: 400_000n } as const;
-/** Validator A's admission defaults (validators/mandate/src/config.ts): 20 requests per agent per hour, 10,000,000 gas a day. */
-const MANDATE_ADMISSION = {
-  maxRequestsPerAgent: 20,
-  agentWindowSeconds: 3_600n,
-  dailyGasBudget: 10_000_000n,
-  maxGasPerResponse: MANDATE_RESPONSE_GAS.max,
-  maxGasPerReport: OPERATOR_REPORT_GAS_CAP,
-} as const;
-/**
- * Validator B's response limit, as its service sends them (validators/risk/src/main.ts and config.ts): risk-v1's
- * evidence is bigger (typically 8 to 12 KB), so the estimate x 1.2, capped at 1,000,000.
- */
-const RISK_RESPONSE_GAS = { headroomPercent: 20, max: 1_000_000n } as const;
-/** Validator B's admission defaults (validators/risk/src/config.ts): mandate-v1's limits, 1,000,000 gas per response. */
-const RISK_ADMISSION = {
-  maxRequestsPerAgent: 20,
-  agentWindowSeconds: 3_600n,
-  dailyGasBudget: 10_000_000n,
-  maxGasPerResponse: RISK_RESPONSE_GAS.max,
-  maxGasPerReport: OPERATOR_REPORT_GAS_CAP,
-} as const;
-/** The main model's free-tier pacing (validators/risk/src/config.ts), unless RISK_V1_LLM_* override it as for the service. */
-const LLM_PACING_DEFAULTS = { requestsPerMinute: 30, tokensPerMinute: 8_000 } as const;
-/** Prompt Guard's own pacer (validators/risk/src/main.ts): Groq's free tier for llama-prompt-guard-2-86m. */
-const GUARD_PACING = { requestsPerMinute: 30, tokensPerMinute: 15_000 } as const;
 /** How often the report check looks again for a report a lagging RPC node didn't show yet, and how long it waits between. */
 const REPORT_DISCOVERY_ATTEMPTS = 4;
 const REPORT_DISCOVERY_DELAY_MS = 5_000;
-/** JSON-RPC requests each validator's reader keeps in flight at once, as the services do. */
-const READER_CONCURRENCY = 8;
 
 const VALUE_S = parseEther("0.001");
 const VALUE_R = parseEther("0.001");
@@ -300,36 +243,9 @@ for (const [name, account] of [
   if (address && getAddress(address) !== account.address) throw new Error(`${name}_ADDRESS does not match ${name}_PRIVATE_KEY`);
 }
 
-/** A setting as validator B's service reads it (validators/risk/src/config.ts): trimmed, and blank counts as unset. */
-const setting = (name: string): string | undefined => process.env[name]?.trim() || undefined;
-const requiredSetting = (name: string): string => {
-  const value = setting(name);
-  if (value === undefined) throw new Error(`${name} is not set (expected in .env)`);
-  return value;
-};
-/** Validator B's model endpoint, as its service reads it. Never printed but the host. */
-const LLM = {
-  baseUrl: requiredSetting("LLM_BASE_URL"),
-  apiKey: requiredSetting("LLM_API_KEY"),
-  model: requiredSetting("LLM_MODEL"),
-} as const;
+/** Validator B's model endpoint and pacing, as its service reads them. Never printed but the host. */
+const LLM = llmSettingsFromEnv(process.env);
 
-/** A positive decimal integer from the environment, or `fallback` when unset; the value itself is never echoed. */
-function positiveEnv(name: string, fallback: number): number {
-  const value = setting(name);
-  if (value === undefined) return fallback;
-  if (!/^[1-9][0-9]*$/.test(value) || !Number.isSafeInteger(Number(value))) throw new Error(`${name} must be a positive decimal integer`);
-  return Number(value);
-}
-const LLM_PACING = {
-  requestsPerMinute: positiveEnv("RISK_V1_LLM_REQUESTS_PER_MINUTE", LLM_PACING_DEFAULTS.requestsPerMinute),
-  tokensPerMinute: positiveEnv("RISK_V1_LLM_TOKENS_PER_MINUTE", LLM_PACING_DEFAULTS.tokensPerMinute),
-};
-if (LLM_PACING.tokensPerMinute < RISK_V1.maxRequestTokens) {
-  throw new Error(`RISK_V1_LLM_TOKENS_PER_MINUTE must be at least ${RISK_V1.maxRequestTokens}, the largest request risk-v1 sends`);
-}
-
-const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 /** JSON with bigints as decimal strings. */
 const json = (value: unknown, space?: number) =>
   JSON.stringify(value, (_k, v: unknown) => (typeof v === "bigint" ? v.toString() : v), space);
@@ -339,35 +255,15 @@ const LABELS = ["S", "R", "O"] as const;
 type Label = (typeof LABELS)[number];
 type Side = "A" | "B";
 
-type Call = { address: Address; abi: Abi; functionName: string; args: readonly unknown[] };
-
-/**
- * Simulates a call that must revert, and returns the custom error it reverted with. Sends nothing. Throws if the
- * simulation succeeds. Only viem's short message is kept: the full one can carry the RPC URL.
- */
-async function revertOf(label: string, call: Call, account: Address): Promise<{ name?: string; args: readonly unknown[]; detail: string }> {
-  try {
-    await publicClient.simulateContract({ ...call, account } as never);
-  } catch (error) {
-    const reverted = error instanceof BaseError ? error.walk((e) => e instanceof ContractFunctionRevertedError) : null;
-    if (reverted instanceof ContractFunctionRevertedError && reverted.data) {
-      const { errorName, args = [] } = reverted.data;
-      return { name: errorName, args, detail: `${errorName}(${args.map(String).join(", ")})` };
-    }
-    return { args: [], detail: error instanceof BaseError ? error.shortMessage : String(error) };
-  }
-  throw new Error(`check failed: ${label} (the simulation succeeded)`);
-}
-
 /** Simulates a call and checks that it reverts with `errorName`. Sends nothing. */
 async function expectRevert(label: string, call: Call, account: Address, errorName: string): Promise<void> {
-  const { name, detail } = await revertOf(label, call, account);
+  const { name, detail } = await revertOf(publicClient, label, call, account);
   check(`${label} reverts ${errorName} (simulated)`, name === errorName, detail);
 }
 
 /** Simulates execute(action) and checks the gate refuses it with ScoreTooLow(validator, requestHash, score, minScore). */
 async function expectScoreTooLow(label: string, action: Action, validator: Address, requestHash: Hex, score: number, minScore: number) {
-  const refusal = await revertOf(`execute(${label})`, { address: vault, abi: vaultAbi, functionName: "execute", args: [action] }, owner.address);
+  const refusal = await revertOf(publicClient, `execute(${label})`, { address: vault, abi: vaultAbi, functionName: "execute", args: [action] }, owner.address);
   const [refusedValidator, refusedHash, refusedScore, refusedMin] = refusal.args;
   check(
     `the gate refuses ${label}: ScoreTooLow(${validator}, ${requestHash}, ${score}, ${minScore}) (simulated)`,
@@ -389,171 +285,15 @@ async function checkSent(label: string, hash: Hash, from: Address, gasLimit: big
   check(`${label} was sent by ${from} with gas limit ${gasLimit}`, sender === from && tx.gas === gasLimit, `${sender}, ${tx.gas}`);
 }
 
-/**
- * Polls `validator` until it has an outcome for every one of `requestHashes`, `giveUpAt` passes (`budget` names it
- * in the error), or `stop` aborts (the other validator failed). Outcomes for other requests (anyone may ask either
- * validator) are left to the validator; a request it gives up on fails the run.
- */
-async function pollUntilAll(
-  name: string,
-  validator: ValidatorBase,
-  requestHashes: readonly Hex[],
-  giveUpAt: number,
-  budget: string,
-  stop: AbortSignal,
-): Promise<Map<Hex, Outcome>> {
-  const wanted = new Set(requestHashes.map(lower));
-  const found = new Map<Hex, Outcome>();
-  for (;;) {
-    if (stop.aborted) throw new Error(`${name}: stopped, since the other validator failed`);
-    if (Date.now() > giveUpAt) throw new Error(`${name}: no outcome for every request within ${budget} (${found.size}/${wanted.size})`);
-    const { outcomes, caughtUp, retryAfterMs } = await validator.pollOnce();
-    for (const outcome of outcomes) {
-      const key = lower(outcome.requestHash);
-      if (!wanted.has(key)) continue;
-      if (outcome.kind === "gave-up") throw new Error(`${name} gave up on ${outcome.requestHash}: ${outcome.error}`);
-      // A retry after a failed cycle re-reads from the failed request's block, so a request answered earlier in that
-      // block comes back as ALREADY_RESPONDED: the response this run saw is the outcome that counts.
-      if (found.get(key)?.kind !== "responded") found.set(key, outcome);
-    }
-    if (found.size === wanted.size) return found;
-    if (retryAfterMs !== undefined) await sleep(Math.max(0, Math.min(retryAfterMs, giveUpAt - Date.now() + 1)));
-    else if (caughtUp) await sleep(500);
-  }
-}
-
-/**
- * Polls every validator concurrently until each has an outcome for all of its requests, under one shared deadline.
- * The first failure stops the others at their next cycle (a risk-v1 check already running finishes first).
- */
-async function pollAll(
-  jobs: readonly { name: string; validator: ValidatorBase; requestHashes: readonly Hex[] }[],
-  timeoutMs: number,
-  budget: string,
-): Promise<Map<Hex, Outcome>> {
-  const stop = new AbortController();
-  const giveUpAt = Date.now() + timeoutMs;
-  const results = await Promise.all(
-    jobs.map((job) =>
-      pollUntilAll(job.name, job.validator, job.requestHashes, giveUpAt, budget, stop.signal).catch((error: unknown) => {
-        stop.abort();
-        throw error;
-      }),
-    ),
-  );
-  return new Map(results.flatMap((found) => [...found]));
-}
-
-/** What each response cost: Monad's estimate for its exact arguments, and the limit the validator actually sent. */
-const responseGas = new Map<Hex, { estimate: bigint; limit: bigint }>();
-
-/** `port`, wrapped only to record each response's gas: a fresh estimate first, then the service's own send. */
-function measured(port: ValidatorChain, from: Address): ValidatorChain {
-  return {
-    ...port,
-    async respond(response) {
-      const { requestHash, response: score, responseURI, responseHash, tag } = response;
-      const estimate = await publicClient.estimateContractGas({
-        address: registry,
-        abi: validationRegistryAbi,
-        functionName: "validationResponse",
-        args: [requestHash, score, responseURI, responseHash, tag],
-        account: from,
-      });
-      const sent = await port.respond(response);
-      responseGas.set(lower(requestHash), { estimate, limit: sent.gasLimit });
-      return sent;
-    },
-  };
-}
-
 /** Prints a validator's log entries, indented and labelled. Entries never carry keys or URLs. */
 const logAs = (name: string) => (entry: Record<string, unknown>) => console.log(`    ${name}: ${json(entry)}`);
 
-/**
- * Validator A as its service runs it (validators/mandate/src/main.ts), from just before `fromBlock`, in memory: the
- * evidence-sized response limit, a reader at concurrency 8, the vault for agent 1984 as its only (gate, agent) pair
- * and a fresh admission policy with the service's defaults.
- */
-function mandateValidator(fromBlock: bigint, name: string): MandateValidator {
-  const port = viemValidatorChain({
-    publicClient,
-    walletClient: walletFor(validatorA),
-    validationRegistry: registry,
-    gasLimit: MANDATE_RESPONSE_GAS,
-  });
-  return new MandateValidator({
-    chain: measured(port, validatorA.address),
-    cursor: new MemoryCursorStore(fromBlock - 1n),
-    reader: viemMandateReader({ publicClient, contracts, concurrency: READER_CONCURRENCY }),
-    contracts,
-    gates: [{ gate: vault, agentId }],
-    admission: new Admission(MANDATE_ADMISSION),
-    inbox: viemInboxPort({ publicClient, walletClient: walletFor(validatorA), deployment }),
-    log: logAs(name),
-  });
-}
-
-/** A chat client's calls (each `complete()`, before it is sent) and what its answers report, for the run's totals. */
-interface ClientStats {
-  calls: number;
-  servedModels: string[];
-  usage: { prompt: number; completion: number; total: number };
-}
-
-/** `client`, wrapped only to count its calls and add up the usage its answers report. */
-function counted(client: ChatClient): { client: ChatClient; stats: ClientStats } {
-  const stats: ClientStats = { calls: 0, servedModels: [], usage: { prompt: 0, completion: 0, total: 0 } };
-  return {
-    stats,
-    client: {
-      host: client.host,
-      async complete(request) {
-        stats.calls += 1;
-        const response = await client.complete(request);
-        stats.usage.prompt += response.usage.prompt;
-        stats.usage.completion += response.usage.completion;
-        stats.usage.total += response.usage.total;
-        if (!stats.servedModels.includes(response.servedModel)) stats.servedModels.push(response.servedModel);
-        return response;
-      },
-    },
-  };
-}
-
-/** Nansen for validator B's two offchain tools, as the service builds it: unavailable without NANSEN_API_KEY. */
-const nansen = nansenClient({ apiKey: setting("NANSEN_API_KEY") });
-
-/**
- * Validator B as its service runs it (validators/risk/src/main.ts), from just before `fromBlock`, in memory: the
- * evidence-sized response limit (capped at 1,000,000), a risk reader at concurrency 8, validator A from
- * DEPLOYMENTS as the prerequisite, the vault for agent 1984 as its only (gate, agent) pair, a fresh admission policy
- * with the service's defaults, the main model and Prompt Guard through their own paced clients, and Nansen from
- * NANSEN_API_KEY (unavailable without it).
- */
-function riskValidator(fromBlock: bigint, name: string, clients: { llm: ChatClient; guard: ChatClient }): RiskValidator {
-  const port = viemValidatorChain({
-    publicClient,
-    walletClient: walletFor(validatorB),
-    validationRegistry: registry,
-    gasLimit: RISK_RESPONSE_GAS,
-  });
-  return new RiskValidator({
-    chain: measured(port, validatorB.address),
-    cursor: new MemoryCursorStore(fromBlock - 1n),
-    reader: viemRiskReader({ publicClient, contracts: riskContracts, concurrency: READER_CONCURRENCY }),
-    contracts: riskContracts,
-    mandateValidator: getAddress(deployment.validators.mandateV1),
-    gates: [{ gate: vault, agentId }],
-    admission: new Admission(RISK_ADMISSION),
-    inbox: viemInboxPort({ publicClient, walletClient: walletFor(validatorB), deployment }),
-    llm: clients.llm,
-    guard: chatPromptGuard(clients.guard, RISK_V1.guardModel),
-    nansen,
-    model: LLM.model,
-    log: logAs(name),
-  });
-}
+/** Both validators as their services run them, for the vault and agent 1984 only (live-validators.ts). */
+const live = liveValidators({ publicClient, walletFor, chainId: chain.id, validatorA, validatorB, vault, agentId, llm: LLM, nansenApiKey: process.env.NANSEN_API_KEY });
+const { nansen, responseGas } = live;
+const mandateValidator = (fromBlock: bigint, name: string): MandateValidator => live.mandate(fromBlock, logAs(name));
+const riskValidator = (fromBlock: bigint, name: string, clients: { llm: ChatClient; guard: ChatClient }): RiskValidator =>
+  live.risk(fromBlock, clients, logAs(name));
 
 /** The evidence document a response posted, as decoded text from its inline `data:` URI. */
 function evidenceText(label: string, responseURI: string): string {
@@ -644,8 +384,8 @@ async function main(): Promise<void> {
 
   // Validator B's two model clients, each with its own free-tier pacer, as the service builds them. Built before
   // anything is sent, so a malformed LLM_BASE_URL stops the run here; nothing is called until B's first check.
-  const llm = openAiCompatibleClient({ baseUrl: LLM.baseUrl, apiKey: LLM.apiKey, pacer: new RatePacer(LLM_PACING) });
-  const guardClient = openAiCompatibleClient({ baseUrl: LLM.baseUrl, apiKey: LLM.apiKey, pacer: new RatePacer(GUARD_PACING) });
+  const llm = live.llm;
+  const guardClient = live.guard;
 
   console.log(`DemoAgentVault        ${vault} (chain ${chain.id})`);
   console.log(`AgentRequestForwarder ${forwarder}`);
@@ -655,7 +395,7 @@ async function main(): Promise<void> {
   console.log(`validator A           ${validatorA.address} (${MANDATE_V1.tag})`);
   console.log(`validator B           ${validatorB.address} (${RISK_V1.tag})`);
   console.log(`B's model             ${LLM.model} at ${llm.host}; guard ${RISK_V1.guardModel}`);
-  console.log(`B's pacing            main ${LLM_PACING.requestsPerMinute} RPM / ${LLM_PACING.tokensPerMinute} TPM, guard ${GUARD_PACING.requestsPerMinute} RPM / ${GUARD_PACING.tokensPerMinute} TPM`);
+  console.log(`B's pacing            main ${LLM.pacing.requestsPerMinute} RPM / ${LLM.pacing.tokensPerMinute} TPM, guard ${GUARD_PACING.requestsPerMinute} RPM / ${GUARD_PACING.tokensPerMinute} TPM`);
   console.log(`B's Nansen            ${nansen.available ? "available" : `unavailable (${nansen.reason})`}`);
   console.log(`pass-through          ${passThrough} (forwards to sink ${SINK})`);
   console.log(`unlisted target       ${UNLISTED}\n`);
