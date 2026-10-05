@@ -26,6 +26,7 @@ Attest8004 provides that answer onchain. It has five parts:
     ([`validators/risk/test/fixtures/llm/`](./validators/risk/test/fixtures/llm/))
 - **Private findings inbox (Mera)**: after each verdict, each validator posts an operator report (its reasons, the agent's spend, each finding with a recommended action) to `FindingsBoard`, encrypted to an X25519 key derived from the operator's passkey through Mera's PRF. The key is derived on demand, never stored, and zeroed after use; any device with the same synced passkey derives the same key (in P7's live run, laptop Chrome and Android Chrome derived the same key and decrypted the same reports, [docs/mera.md](./docs/mera.md)). The public evidence stays public, for `verify`.
 - **Trust API (Envio)**: an Envio HyperIndex indexer of every Attest8004 contract (and the Identity Registry's ownership events for our agents) behind the SDK's `getAgentTrust()`, `/dashboard` and `/inbox`. Every record links back to its transaction, and the SDK re-checks what matters on chain: the indexer is a convenience, never a trust root ([below](#trust-api-envio)).
+- **Validator C, orchestrated by Chainlink CRE** (P11): the same deterministic `mandate-v1` check, run by a CRE workflow: a log trigger, its own chain reads, the evaluation API through CRE consensus, cross-checks, and a write through CRE's forwarder into `CreValidator`. It runs as a CRE workflow (simulation forwarder, not a trust root); see [Chainlink CRE](#chainlink-cre-validator-c).
 
 Monad's ERC-8004 docs list the Validation Registry as "coming soon", and the canonical [`erc-8004-contracts`](https://github.com/erc-8004/erc-8004-contracts) repo has no Validation Registry deployed on any chain. Attest8004 fills that gap.
 
@@ -280,6 +281,36 @@ pnpm --filter @attest8004/indexer test      # handler tests (Envio's test framew
 
 `pnpm --filter @attest8004/indexer exec envio stop` stops the containers and deletes the local database.
 
+## Chainlink CRE (validator C)
+
+Validator C is `mandate-v1` with a [Chainlink CRE](https://docs.chain.link/cre) workflow as its orchestration layer
+([docs/cre.md](./docs/cre.md), the full account and the 2-minute video script). For a `ValidationRequest` naming C,
+the workflow ([`cre/validator-c/`](./cre/validator-c/)):
+1. **reads Monad itself:** the request's block and hash, that the request names C, finality, the deadline, that it's
+   unanswered;
+2. **asks the unchanged `mandate-v1` logic** over HTTP (`POST /evaluate` on 127.0.0.1, read-only, no keys) through
+   identical-aggregation consensus;
+3. **cross-checks the evidence** against its own reads, and computes the response hash itself;
+4. **writes the verdict** through CRE's forwarder into `CreValidator`
+   ([`0x6D12F00870cB6edA2d8e389696f6B5d050423B95`](https://monad-testnet.socialscan.io/address/0x6d12f00870cb6eda2d8e389696f6b5d050423b95)),
+   which posts it to the ValidationRegistry under the `mandate-v1` tag;
+5. **reads the verdict back** to confirm it landed.
+
+```bash
+pnpm cre:demo -- --preflight   # the vault excludes C, the mandate, balances and takes left, the CRE CLI, Bun; sends nothing
+pnpm cre:demo                  # a benign request (C → 100) and a violating one (C → 0), each simulated with --broadcast
+```
+
+- **Not a trust root.** C is a **CRE workflow (simulation forwarder, not a trust root)**. It runs with
+  `cre workflow simulate --broadcast` against CRE's mock forwarder, through which anyone can deliver a report. So no
+  gate requires it: the demo vault requires validators A and B only, and a fork test pins that.
+- **What consensus proves.** Identical aggregation makes CRE's nodes agree on what `/evaluate` answered; it doesn't
+  compute the score.
+- **What makes a C verdict checkable.** `pnpm attest8004 verify <requestHash>` re-executes it, as it does an A verdict.
+- **First live take, 6 Oct 2026:** C scored 100 and 0 (`TARGET_NOT_ALLOWED`), both matched by `verify`
+  ([docs/deployments.md](./docs/deployments.md#p11-cre-run-validator-c-orchestrated-by-chainlink-cre-testnet-2026-10-06)).
+  CRE CLI v1.37.0, `@chainlink/cre-sdk` 1.23.0, Bun 1.3.14; simulation only, no CRE-network deployment.
+
 ## Integrations
 
 **Any escrow with a verifier hook can require Attest8004 verdicts on its verifier's releases.** Name an AttestGate vault
@@ -311,6 +342,7 @@ gone.
 | Monad testnet (10143) | `FindingsBoard` (encrypted operator reports for the Mera inbox, P7) | [`0xa7d52B3B08FAB0cd0527c6242ca678f9Feee6a1c`](https://monad-testnet.socialscan.io/address/0xa7d52b3b08fab0cd0527c6242ca678f9feee6a1c) |
 | Monad testnet (10143) | `DemoAgentVault` (AttestGate demo, demo agent 1984, requires `mandate-v1` and `risk-v1`) | [`0x12fAb3E3cA810Cc44bD9f537613a230a2be8D614`](https://monad-testnet.socialscan.io/address/0x12fab3e3ca810cc44bd9f537613a230a2be8d614) |
 | Monad testnet (10143) | `DemoPassThrough` (AttestGate demo target, forwards every payment to `SINK`) | [`0xEEEBBa55620afC42E9c88b5d962476367b8da338`](https://monad-testnet.socialscan.io/address/0xeeebba55620afc42e9c88b5d962476367b8da338) |
+| Monad testnet (10143) | `CreValidator`: validator C, the Chainlink CRE workflow's receiver (P11). CRE workflow (simulation forwarder, not a trust root): no gate requires it | [`0x6D12F00870cB6edA2d8e389696f6B5d050423B95`](https://monad-testnet.socialscan.io/address/0x6d12f00870cb6eda2d8e389696f6b5d050423b95) |
 | Monad testnet (10143) | `DemoAgentVault`, agent 1984, validator A only (**superseded**) | [`0x23BfBD12545CCd1501ddA1B65a54518FD6212a96`](https://monad-testnet.socialscan.io/address/0x23bfbd12545ccd1501dda1b65a54518fd6212a96) |
 | Monad testnet (10143) | `DemoAgentVault`, P2, agent 1982 (**superseded**) | [`0x7A5EC388CCbfD3B255CFa94fc2062c0807F2C4CD`](https://monad-testnet.socialscan.io/address/0x7a5ec388ccbfd3b255cfa94fc2062c0807f2c4cd) |
 | Vercel | Web app, production (the WebAuthn rpId for P6; never a preview URL) | [`attest8004.vercel.app`](https://attest8004.vercel.app) |
@@ -361,6 +393,12 @@ Known gaps, stated plainly. The full threat model is P12's.
   `approve`, …) doesn't cap the token amount. Together with the previous point, **an action that moves tokens is today
   bounded only by the mandate's target and selector allowlist**, so allowlist such selectors only with targets you'd
   trust with the whole balance ([ARCHITECTURE §9](./ARCHITECTURE.md#9-security-design-decisions)).
+- **Validator C (Chainlink CRE) runs in simulation only.** It trusts CRE's mock forwarder, through which anyone can
+  deliver a report. So no gate requires it, and anyone can fill its write-once slot first with a forged verdict:
+  griefing that affects only C, which `verify` shows as a MISMATCH.
+  - **Its daily-spend view** is as of each request's block.
+  - **The production path** is on the roadmap: a new receiver with CRE's KeystoneForwarder, a DON deployment, and
+    `/evaluate` at a public URL ([docs/cre.md §11](./docs/cre.md#11-the-production-path)).
 
 ## Built with AI
 
@@ -387,9 +425,13 @@ At runtime, `risk-v1` calls a **Groq-hosted** model through an OpenAI-compatible
 | [@scure/base](https://github.com/paulmillr/scure-base) | MIT | Mera's dependency (bundled into the web app) |
 | [Envio HyperIndex](https://docs.envio.dev) (`envio` 3.12.1) | Envio's own licences, **not OSI**: per the package's `licenses/README.md`, the generated indexer code is under Envio's EULA (self-hosting allowed) and the code generator under a non-commercial licence | The indexer (`indexer/`): codegen, the runtime and its test framework. Our handlers, schema and config are MIT |
 | [yaml](https://eemeli.org/yaml) 2.9.1 | ISC | The indexer's config test |
+| [`@chainlink/cre-sdk`](https://www.npmjs.com/package/@chainlink/cre-sdk) 1.23.0 (Chainlink) | MIT | Validator C's CRE workflow (`cre/validator-c/`), compiled to WASM with its Javy plugin |
+| [CRE CLI](https://docs.chain.link/cre) v1.37.0 (Chainlink) | Chainlink's terms | Not included: runs `cre workflow simulate --broadcast` locally |
+| [Bun](https://bun.sh) 1.3.14 | MIT | Runs the CRE SDK's compiler and the workflow's tests (`cre/mise.toml`) |
 
 **Standards and reference code:**
 
+- `contracts/src/interfaces/IReceiver.sol` is Chainlink's `IReceiver`, copied from the CRE documentation's sample ([smartcontractkit/documentation](https://github.com/smartcontractkit/documentation), `public/samples/CRE/IReceiver.sol`, MIT), with its `IERC165` import pointed at OpenZeppelin's identical file.
 - `contracts/src/interfaces/IValidationRegistry.sol` copies the function and event signatures from the [EIP-8004](https://eips.ethereum.org/EIPS/eip-8004) text (CC0).
 - `ValidationRegistry` was written for this project. Its behaviour deliberately matches the reference [`erc-8004/erc-8004-contracts`](https://github.com/erc-8004/erc-8004-contracts) `ValidationRegistryUpgradeable` (MIT), but no code was copied from it. The differences are in [docs/spec-notes.md](./docs/spec-notes.md).
 - The expected values in the shared hash vectors (`packages/sdk/test/vectors.json`) are generated with Foundry's `cast`.

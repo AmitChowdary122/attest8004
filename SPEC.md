@@ -237,6 +237,18 @@ attest8004/
 - A log trigger on `ValidationRequest`, then an HTTP call to the validator logic and Nansen, then an EVM write of `validationResponse`.
 - Run `cre workflow simulate … --broadcast` on Monad testnet (CLI v1.30.0+). No production deployment.
 
+**As built in P11** ([docs/cre.md](./docs/cre.md)):
+- **Validator C** is a CRE workflow (`cre/validator-c/`, TypeScript SDK 1.23.0, CLI v1.37.0) that orchestrates
+  `mandate-v1`. Its pieces:
+  - a log trigger on `ValidationRequest` naming C;
+  - its own EVM reads;
+  - an HTTP call to `mandate-v1`'s read-only `/evaluate`, through identical-aggregation consensus;
+  - evidence cross-checks;
+  - an EVM write through CRE's forwarder into `CreValidator`, which posts under the `mandate-v1` tag.
+- **Nansen:** the brief for P11 dropped the Nansen call. `mandate-v1` reads only the chain.
+- **Simulation only:** `cre workflow simulate --broadcast`, live on 6 Oct 2026. C is a CRE workflow (simulation
+  forwarder, not a trust root): no gate requires it, and `verify` re-executes its verdicts.
+
 ---
 
 ## 5. Demo scenario (must run end to end, live, on testnet)

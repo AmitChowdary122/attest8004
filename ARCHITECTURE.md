@@ -1,6 +1,6 @@
 # Attest8004 — Architecture
 
-> **Status:** design reference v0.1 (2 Oct 2026), kept in sync with the code as it is built (P4, 3 Oct 2026: the owner-set MandateRegistry, the `mandate-v1` validator and `verify`, and per-agent forwarder approvals in the demo; P5, 4 Oct 2026: `risk-v1` is built (§5.6, its evidence in §6) and tested against fakes and recorded Groq runs; the gate's tag requirement (§4.1, §4.4), the two-validator vault and the demo "risky but mandated" target `DemoPassThrough` are **deployed**; the `verify` CLI now lives in `packages/cli` and re-checks both validators' tags (§5.5); agent 1984's mandate now allowlists `DemoPassThrough` next to the deployer. **The live end-to-end run with both validators passed** on 4 Oct 2026: `risk-v1`'s first testnet verdicts, and all six verdicts `match` under `verify` (docs/deployments.md)). P6, in progress: MandateRegistry v2 (every mandate, passkey and inbox-key change needs the owner's transaction **and** a passkey assertion verified through `0x0100`, §4.1, §7, §9) is **deployed** on testnet at `0x2Ee5f78149762DE630c6bFF8CD81166010D0454B` (block 68,196,462), with P4's registry kept in the history for older verdicts (§6); the `/approve` page is live (§5.1). On 5 Oct 2026 a real Google Password Manager passkey approved agent 1984's mandate from laptop Chrome and, synced, from Chrome on Android, and the e2e passed against v2 (docs/deployments.md). P7: the Mera findings inbox is built: `FindingsBoard` is **deployed** on testnet at `0xa7d52B3B08FAB0cd0527c6242ca678f9Feee6a1c` (block 68,296,810), the validators post encrypted operator reports (§5.4, §6), and `/approve` (section 4) and `/inbox` are live. On 5 Oct 2026 agent 1984's passkey published its inbox key from laptop Chrome, the e2e posted six trusted reports, and laptop Chrome and, synced, Android Chrome both decrypted them (docs/deployments.md, docs/mera.md). P8: the Envio trust API is live (hosted on Envio Cloud, `DEPLOYMENTS[10143].trustApi`, docs/deployments.md): an indexer of every Attest8004 contract and the canonical Identity Registry's ownership events for our agents (§6), the SDK's trust API with its chain re-checks (§5.7), `/inbox` finding reports through it (§5.4) and `/dashboard` (§9). It is a convenience, never a trust root (§7).
+> **Status:** design reference v0.1 (2 Oct 2026), kept in sync with the code as it is built (P4, 3 Oct 2026: the owner-set MandateRegistry, the `mandate-v1` validator and `verify`, and per-agent forwarder approvals in the demo; P5, 4 Oct 2026: `risk-v1` is built (§5.6, its evidence in §6) and tested against fakes and recorded Groq runs; the gate's tag requirement (§4.1, §4.4), the two-validator vault and the demo "risky but mandated" target `DemoPassThrough` are **deployed**; the `verify` CLI now lives in `packages/cli` and re-checks both validators' tags (§5.5); agent 1984's mandate now allowlists `DemoPassThrough` next to the deployer. **The live end-to-end run with both validators passed** on 4 Oct 2026: `risk-v1`'s first testnet verdicts, and all six verdicts `match` under `verify` (docs/deployments.md)). P6, in progress: MandateRegistry v2 (every mandate, passkey and inbox-key change needs the owner's transaction **and** a passkey assertion verified through `0x0100`, §4.1, §7, §9) is **deployed** on testnet at `0x2Ee5f78149762DE630c6bFF8CD81166010D0454B` (block 68,196,462), with P4's registry kept in the history for older verdicts (§6); the `/approve` page is live (§5.1). On 5 Oct 2026 a real Google Password Manager passkey approved agent 1984's mandate from laptop Chrome and, synced, from Chrome on Android, and the e2e passed against v2 (docs/deployments.md). P7: the Mera findings inbox is built: `FindingsBoard` is **deployed** on testnet at `0xa7d52B3B08FAB0cd0527c6242ca678f9Feee6a1c` (block 68,296,810), the validators post encrypted operator reports (§5.4, §6), and `/approve` (section 4) and `/inbox` are live. On 5 Oct 2026 agent 1984's passkey published its inbox key from laptop Chrome, the e2e posted six trusted reports, and laptop Chrome and, synced, Android Chrome both decrypted them (docs/deployments.md, docs/mera.md). P8: the Envio trust API is live (hosted on Envio Cloud, `DEPLOYMENTS[10143].trustApi`, docs/deployments.md): an indexer of every Attest8004 contract and the canonical Identity Registry's ownership events for our agents (§6), the SDK's trust API with its chain re-checks (§5.7), `/inbox` finding reports through it (§5.4) and `/dashboard` (§9). It is a convenience, never a trust root (§7). P11 (6 Oct 2026): **validator C**, a Chainlink CRE workflow orchestrating `mandate-v1` (§5.8), is live on testnet as `CreValidator` `0x6D12F00870cB6edA2d8e389696f6B5d050423B95` behind CRE's mock forwarder: a CRE workflow (simulation forwarder, not a trust root); no gate requires it (§7, §9; docs/cre.md).
 > **Rule:** any change to an interface, flow, data format or trust assumption updates this file **in the same commit**.
 > Build scope and acceptance criteria live in [`SPEC.md`](./SPEC.md). This file explains *how the system works and why*.
 
@@ -92,7 +92,9 @@ flowchart LR
 | Offchain | `attest8004` CLI | `packages/cli/` | `pnpm attest8004 verify <requestHash>`: reads the response's tag and re-runs a `mandate-v1` verdict or re-checks a `risk-v1` one (model output recorded, not re-run). Read-only. |
 | Data | Envio indexer | `indexer/` | Envio HyperIndex V3 (`config.yaml`, `schema.graphql`, handlers in `src/handlers/`): indexes every Attest8004 contract from its deploy block (both MandateRegistries each in its own epoch), and the canonical Identity Registry's `Transfer`/`Approval`/`ApprovalForAll` for agents that use our contracts. Derives per-request, per-validator and per-agent summaries; serves GraphQL. **A convenience, never a trust root** (§7). |
 | Client | Web app | `web/` | `/approve` (passkey and mandate), `/inbox` (Mera decrypt), `/dashboard` (trust data). |
-| Stretch | CRE workflow | `cre/` | Chainlink CRE orchestration of a validator: log trigger, HTTP call, EVM write. |
+| Onchain | `CreValidator` (validator C, P11) | `contracts/src/` | Chainlink CRE's `IReceiver`: accepts a report only from its forwarder (CRE's mock forwarder on testnet), checks the report's workflow owner and name, refuses a request that already has a response, and posts `validationResponse` under the fixed tag `mandate-v1`. No owner, setters, funds or upgrade path. **CRE workflow (simulation forwarder, not a trust root)** (§7). |
+| Offchain | `mandate-v1` `/evaluate` (P11) | `validators/mandate/src/evaluate*.ts` | Read-only `POST /evaluate` on 127.0.0.1: `mandate-v1`'s verdict and canonical evidence at a given pin (`evaluateAtPin`: verify's `requestAt`, `runMandateV1`, `buildEvidence`), as a memoized long-poll. No keys; validator A's (gate, agent) allowlist. |
+| Orchestration | Validator C's CRE workflow (P11) | `cre/validator-c/` | Chainlink CRE (TypeScript SDK, `cre workflow simulate --broadcast`): log trigger on `ValidationRequest` naming C, its own EVM reads, `/evaluate` through identical-aggregation consensus, evidence cross-checks, a gas-guarded write through the forwarder, a landing check (§5.8; docs/cre.md). |
 
 ---
 
@@ -459,6 +461,59 @@ sequenceDiagram
 - **Re-checking:** `confirmIndexedVerdict` compares an indexed verdict with `getValidationStatus` now (validator, agent, score, `responseHash`, tag); a hash the registry never saw (its `UnknownRequest` revert) is `NOT_FOUND`, and for a report `UNTRUSTED`, while an RPC failure is thrown, never an answer. `confirmIndexedReport` applies the trust rule against `getValidationStatus`, then checks that the post's transaction receipt carries exactly that `FindingsPosted` log (`postMatchesReceipt`: the board's address, the log index, the topics and the envelope). The receipt check matters because the envelope's encryption doesn't authenticate the sender: anyone can seal a report to an agent's public inbox key and name any validator in its AAD; only the chain's `msg.sender` says who posted it. To re-run a verdict itself, `pnpm attest8004 verify <requestHash>` reads only the chain.
 - **The endpoint** is `DEPLOYMENTS[10143].trustApi.graphqlUrl` (`null` until the hosted indexer is recorded). On Envio's free plan it changes with every deployment, so a redeploy updates it there, in `web/vercel.json`'s CSP and in `docs/deployments.md`.
 
+### 5.8 DON-orchestrated verdict: validator C (Chainlink CRE, P11)
+
+Validator C is `mandate-v1` with a Chainlink CRE workflow as its orchestration layer; the full account is
+[docs/cre.md](./docs/cre.md). The workflow (`cre/validator-c/src/workflow.ts`) connects Monad and `mandate-v1`'s
+evaluation API, and refuses (writing nothing) at any step:
+
+```mermaid
+sequenceDiagram
+  autonumber
+  participant HK as Agent hot key
+  participant VR as ValidationRegistry
+  participant WF as CRE workflow (validator C)
+  participant EV as mandate-v1 /evaluate (127.0.0.1)
+  participant MF as MockKeystoneForwarder
+  participant C as CreValidator
+  HK->>VR: validationRequest(C, …) via the forwarder
+  VR-->>WF: log trigger (topic1 = C); P = the log's block
+  WF->>VR: own reads: header(P) = log's block hash, request at P names C, finalized ≥ P+5, unanswered, deadline window
+  loop ≤ 10 polls, identical aggregation
+    WF->>EV: POST /evaluate {requestHash, pinnedBlock: P}
+    EV-->>WF: pending | done | declined
+  end
+  WF->>WF: cross-check the evidence; responseURI and responseHash computed here; sign the report
+  WF->>MF: writeReport, gas = max(onReport estimate + routing, calldata floor) × 1.2
+  MF->>C: onReport → validationResponse(…, "mandate-v1")
+  WF->>VR: read C's verdict back, or fail
+```
+
+1. **The trigger.** A `ValidationRequest` from the registry naming C, at `CONFIDENCE_LEVEL_FINALIZED`. The workflow
+   parses the log's data: URI with the repo SDK and recomputes its `requestHash`. The request must name C, its agent
+   and chain 10143 through a (gate, agent) pair it serves.
+2. **The pin and finality.** `P` is the log's block, identical on every node. The header at `P` must be the log's block.
+   Nothing is read at `P` until the finalized head is `PIN_LAG_BLOCKS` (5) past it; validator A waits the same way. The
+   action's deadline must not have passed and be at most 3,600 s after `P`'s time; the request must be unanswered.
+3. **The evaluation.** `POST /evaluate` runs `evaluateAtPin`: verify's own `requestAt`, then `runMandateV1` at `P` as
+   validator C, then `buildEvidence` and canonical JSON. A run takes ~13 s and CRE cuts HTTP at 10 s, so one memoized
+   job per (requestHash, `P`) answers `pending` until done (6 s hold); the workflow polls (9 s timeout, ≤ 10 times)
+   through identical aggregation. A deterministic validator gives every node the same bytes. Consensus agrees on the
+   answer; it does not compute the score (§7).
+4. **The cross-checks.** The evidence must be canonical, ≤ 16,384 bytes, hash to the service's claim, be `mandate-v1`'s
+   for this `requestHash`, pin the block the workflow read (number, hash, time) and evaluate the request the trigger
+   carried. The workflow then builds `responseURI` and `responseHash` from those exact bytes.
+5. **The write.** `runtime.report(abi.encode(requestHash, score, responseURI, responseHash))` goes to `writeReport`
+   through CRE's mock forwarder, with an explicit gas limit (Monad charges it):
+   `max(eth_estimateGas(CreValidator.onReport as the forwarder) + 60,000, 49,000 + 40 × raw bytes) × 1.2`, at most
+   1,130,000. The simulator's reply isn't proof (the forwarder swallows a receiver's revert), so the workflow reads C's
+   verdict back.
+6. **The re-check.** `pnpm attest8004 verify <requestHash>` re-executes a C verdict exactly as an A verdict (§5.5): the
+   evidence format and the tag are `mandate-v1`'s.
+
+Run it with `pnpm cre:demo` (two live requests, the exact `cre workflow simulate --broadcast` commands, the landed
+verdicts and `verify`), or by hand ([docs/cre.md §9](./docs/cre.md#9-how-to-run-it)).
+
 ## 6. Data formats
 
 **Request JSON v1.** Referenced by `requestURI` as a `data:application/json` URI (base64 or percent-encoded), so no hosting is needed. There is one per validator, because `validator` is part of `requestHash`.
@@ -649,7 +704,23 @@ Encodings are `mandate-v1`'s: every `bigint` (block numbers, timestamps, wei, ga
 - **Discovery through the indexer** (P8, `findInboxEntriesViaIndexer`, and `discoverInbox`, which `/inbox` runs): the same candidates from the chain, then **one** `findIndexedReports({agentId, requests})` query for every post on them by each verdict's own validator, with no limit on how long after its verdict a report was posted (an answer that hit its row limit is `INCOMPLETE` and falls back to the chain). Each indexed post is kept only if `isTrustedPost` holds against the **chain's** status (never the indexer's flag) and the post's transaction receipt carries exactly that `FindingsPosted` log (`postMatchesReceipt`); one the receipt doesn't carry is dropped as `NOT_ON_CHAIN`. A verdict whose 600-block report window ends after the indexer's progress block (its `lastUpdate` is later than that of block `indexedTo − 599`) is searched on chain as above, so a lagging indexer can't hide a fresh report. Any `TrustApiError` (unreachable, rate-limited, timed out after 10 s, a malformed answer) falls back to the chain search over the same verdicts, and the page names the reason.
 - **Opening** (`openInbox`): refused outright with no inbox key (`NO_INBOX_KEY`) or when this passkey's key isn't the agent's onchain key (`KEY_MISMATCH`), before anything is opened. Each post: the envelope problems above, then `decodeReport` (`NOT_UTF8`, `NOT_JSON`, `SCHEMA`), then `REPORT_MISMATCH` when the report's request, agent or tag differs from its log and status; otherwise the report, marked `matchesOnchain` when its score and `responseHash` equal the status (else it belongs to an earlier response). Every decrypted plaintext is wiped once decoded.
 
-**Tags:** `mandate-v1` and `risk-v1`. The tag goes in `validationResponse(..., tag)` and is used by `getSummary` and the indexer.
+**Validator C (P11).**
+- **`POST /evaluate`** (127.0.0.1:8787). It takes `{"requestHash": "0x…64 hex", "pinnedBlock": "<decimal < 2^64>"}`
+  (strict, ≤ 1,024 bytes, `content-type: application/json`) and answers in canonical JSON:
+  - `{"status":"done","score","reasons","evidence":"<the canonical evidence text>","evidenceHash"}`;
+  - `{"status":"pending"}`;
+  - `{"status":"declined","code","detail"}`, where `code` is one of `PIN_BEFORE_FIRST_REGISTRY`, `REQUEST_NOT_FOUND`,
+    `NOT_THIS_VALIDATOR`, `PIN_NOT_REQUEST_BLOCK`, `REQUEST_INVALID`, `GATE_NOT_SERVED`, `GATE_NOT_FOR_AGENT` or
+    `EVIDENCE_TOO_LARGE`;
+  - or 503 `{"status":"unavailable"}` (a failed read, never a verdict) or `{"status":"busy"}`.
+
+  `GET /health` answers `{"ok":true,"tag":"mandate-v1","validator":<C>}`.
+- **The report** CreValidator decodes: `abi.encode(bytes32 requestHash, uint8 response, string responseURI, bytes32
+  responseHash)`, after CRE's 109-byte raw-report header. The forwarder passes `rawReport[45:109]` as metadata:
+  workflowId ‖ workflowName (bytes10: the first 10 hex characters of `sha256(name)`) ‖ workflowOwner ‖ reportId.
+- **Its evidence** is the `mandate-v1` evidence v1 document above, unchanged, pinned at the request's own block.
+
+**Tags:** `mandate-v1` (validators A and C) and `risk-v1`. The tag goes in `validationResponse(..., tag)` and is used by `getSummary` and the indexer.
 
 **Trust API entities (P8, `indexer/schema.graphql`).** The Envio indexer's GraphQL schema. Every id and hex value is lowercase (`address_format: lowercase`); uint256 values (agent ids, wei amounts, caps) are **decimal strings**, so no reader loses precision above 2^53; block numbers and timestamps are `BigInt`; counts are `Int`. Every row carries its onchain anchors (transaction, log index, block) so a reader can re-check it against the chain.
 - `ValidationRequest` (id: `requestHash`): the agent, the validator, the request's block, time and transaction, and **its latest response** as `getValidationStatus` reports it (score, tag, `responseHash`, block, transaction), plus `responses` (how many response events), `firstResponseBlock`, and:
@@ -677,6 +748,7 @@ Encodings are `mandate-v1`'s: every `bigint` (block numbers, timestamps, wei, ga
 | MandateRegistry (v2) | Storing each agent's mandate, passkey public key and inbox public key, and changing them only with both factors (owner transaction + passkey assertion); revoking with the owner alone | Recovering a lost passkey (there is no recovery, below) | Open source, immutable, no admin, no funds. Tests use real `vm.signP256` assertions against the real precompile: wrong challenge (each field), replay, UV/UP missing, another site's rpIdHash, high-s, a mocked empty precompile return, non-owner, no passkey, rotation, transfer, revoke, cross-operation and cross-agent replay, fuzzed nonces, challenges and indices |
 | P256 precompile `0x0100` | Raw ECDSA P-256 verification | WebAuthn semantics, low-s | OpenZeppelin's `WebAuthn`/`P256` check the challenge, type, flags and low-s, and never treat an empty return as valid; MandateRegistry checks the rpIdHash itself (§9) |
 | `mandate-v1` | A deterministic verdict | — | **Anyone can re-execute it** (§5.5) |
+| Validator C (`CreValidator` + its CRE workflow, P11): CRE workflow (simulation forwarder, not a trust root) | A `mandate-v1` verdict, delivered through CRE's mock forwarder | Being a trust root; who delivered a report (the mock checks no DON signature and its `route()` is public); that the score is right (consensus only agrees on what `/evaluate` answered) | `verify` re-executes it like an A verdict (§5.5). **No gate may require C:** the live vault requires A + B only (`testFork_liveVaultExcludesC`, and `pnpm cre:demo`'s preflight) |
 | `risk-v1` | Advisory risk score and explanation; and its operator, for the claim that the recorded model output is what the model returned | Being "correct". LLMs can be wrong or manipulated | Evidence hash committed onchain and the full trace in public evidence. Re-checking that evidence (`pnpm attest8004 verify`, §5.5) proves three things: **the score follows from the recorded findings; every onchain fact shown to the model was true at `P`; the injection rule was applied.** It does **not** prove that the recorded output came from the model: trusting `risk-v1` means trusting validator B's operator, which is why the gate also requires `mandate-v1`, which anyone can fully reproduce. Never the only gate |
 | FindingsBoard | Carrying each post with its sender as `validator` | Deciding who may post, or anything about the content | Open source, immutable, no admin, no storage, no calls. Readers keep only posts from the validator `getValidationStatus` names for that request and agent; the envelope's AAD binds the chain, the board, the registry, the request, the agent, the validator and the recipient key, so a ciphertext can't be replayed under another of them (§6, §9) |
 | Consumer (gate deployer) | Choosing which validators to require and each one's minimum score | — | Fixed at deployment in immutables, readable with `requirements()` |
@@ -716,6 +788,7 @@ The recommended gate policy is *require `mandate-v1` = 100 **and** `risk-v1` ≥
 | Agent hot key | secp256k1 | Agent runtime (demo: `.env`, made by `scripts/src/hot-keys.ts`, funded for a few requests) | Agent | Registered with `AgentRequestForwarder.setAgentKey`. Calls `forwarder.request` for its own agent only. It is not an ERC-721 operator, so it can't transfer the agent NFT. `execute` is permissionless, so it may also submit validated actions. |
 | Demo rogue key (P9) | secp256k1 | `.env` (`DEMO_ROGUE_*`, made by `hot-keys`), funded for a few requests | Builder (demo only) | `0x81F4a86250d74D5d8898f962bB8B555208631bda`. Registered as agent 1984's forwarder key only between `pnpm demo` scenes 3 and 3b (§5.3), so it can request validations for agent 1984 then, never move the agent. A real random key, never one derived from a public label: anyone could use such a key while it is registered |
 | Validator A / B keys | secp256k1 | Validator service env (`.env`, never committed) | Validator operator | `validatorAddress` in requests and responses |
+| CRE broadcast key (`CRE_ETH_PRIVATE_KEY`, P11) | secp256k1 | `.env`; `pnpm cre:demo` hands it to the CRE CLI in the CLI's environment with only `PATH` and `HOME` | Builder (hackathon-only) | Sends CRE's mock forwarder `report()` transactions; it is **not** validator C (C is the `CreValidator` contract) and holds no rights over it. `/evaluate` holds no key |
 | Deployer | secp256k1 | `.env` | Builder | Deploys only. No admin rights afterwards. |
 | LLM API key (`LLM_API_KEY`: an OpenAI-compatible endpoint, Groq today; also used for Prompt Guard) | Bearer token | Validator B's service env (`.env`, never committed), read by `validators/risk/src/config.ts`; also by `record-fixtures` | Validator B operator | None. Never logged or recorded: logs and evidence carry the endpoint's host only, and fixtures hold request and response bodies, never headers |
 | Nansen API key (`NANSEN_API_KEY`, optional) | API key header | Validator B's service env | Builder | None. Without it both Nansen tools answer "unavailable" |
@@ -757,6 +830,33 @@ The LLM never sees or holds any private key. Validators sign; the model only pro
   - **Read-only tools.** Every tool reads the chain at `P` (or Nansen); none signs, sends or writes. An address argument must already be in scope (the target, the gate, the owner, a mandate target, or an address an earlier tool returned), so injected text can't steer paid Nansen calls to arbitrary addresses.
   - **No keys.** The model never sees a private key, the LLM key or the Nansen key; the validator signs only after code has scored the findings, and the evidence records the endpoint's host only.
 - **Inbox secrets are zeroed, within JavaScript's limits** (`packages/sdk/src/inbox-crypto.ts`). `inboxPublicKeyFromPrf` and `withInboxKey` zero the PRF output and the private key in `finally`, also when the callback throws; `sealEnvelope` zeroes the ephemeral private key, the shared secret and the AEAD key; `openEnvelope` zeroes the shared secret and the AEAD key, on success and on failure; the HKDF PRK between extract and expand is zeroed too. Every function takes an optional `SecretTracker`, and the tests assert that every tracked buffer, and the caller's PRF buffer, end up all zero. AES-GCM comes from `@noble/ciphers` rather than WebCrypto because a WebCrypto `CryptoKey` can't be zeroed. **The limits:** noble's internal copies and bigints (the clamped scalar copy, the ladder's field elements, HKDF's internal output block), the browser's own PRF `ArrayBuffer` that Mera copies from, and JS strings (a decrypted report, once decoded as text) can't be zeroed, and the garbage collector may have copied a buffer before it was wiped. Zeroing shortens the time a secret sits in memory; it doesn't guarantee none is left.
+- **Validator C is not a trust root (P11).** CRE's mock forwarder, which C trusts on testnet, verifies no DON
+  signature, and the deployed build's `route()` is public: anyone can deliver any report, with any metadata, to C.
+  - **On the mock, the owner and name check protects nothing.** C checks the metadata's workflow owner and name, but the
+    simulator's placeholders (owner `0xaaaa…aaaa`) are forgeable through that route. On the production
+    KeystoneForwarder the same check binds C to one owner's workflow (§12).
+  - **No gate requires C.** `testFork_liveVaultExcludesC` and the demo's preflight pin that the live vault doesn't.
+  - **A C verdict is checkable** only because `verify` re-executes it.
+- **Consensus agrees on the answer; it doesn't compute the score (P11).** Identical aggregation makes the DON agree on
+  what `/evaluate` answered; it does not compute the score itself.
+  - The workflow's own reads pin the facts it can check: the block, the request's fields, the evidence's hash.
+  - The score's correctness is proven only by `verify`'s re-execution.
+  - In production a single `/evaluate` endpoint is the one source of the score, unless each node operator runs its own.
+- **Write-once, and its griefing on the mock (P11).** CreValidator refuses a request that already has a response, so
+  nobody can overwrite C's verdict later.
+  - **The flip side:** anyone can fill C's slot first with a forged verdict through the mock's public `route()`, and
+    the real workflow then can't write. This griefing affects only C (no gate requires it).
+  - **It is visible:** `verify` shows the forged verdict as a MISMATCH, and `pnpm cre:demo` prints `verify`'s result
+    for an already-answered request instead of simulating.
+- **A successful CRE write isn't a landed verdict (P11).** Both Keystone forwarders swallow a receiver's revert:
+  - the transaction succeeds, and only `ReportProcessed.result` says whether `onReport` did;
+  - CRE's simulator reports success from the receipt alone, and even without `--broadcast`.
+
+  So the workflow reads C's verdict back after writing, and the demo also checks `ReportProcessed`.
+- **Validator C's spend is judged at the request's block (P11).** Validator A pins after its own last response, so
+  back-to-back approvals see each other in its daily spend. C's stateless workflow pins at the request's block, so two
+  requests made before C answers the first are each judged against C's spend as of their own block. `verify`
+  reproduces exactly that, and no gate requires C. C's approvals never count toward A's spend (spend is per validator).
 - **`/dashboard` (P8) shows indexed data as plain text only.** Tags, reasons and reports are strings that strangers can put on chain, and the indexer's answers are untrusted too. React text nodes render them; a source test (`web/test/no-html.test.ts`) forbids `dangerouslySetInnerHTML`, `innerHTML`, `insertAdjacentHTML`, `document.write`, `DOMParser`, `srcdoc` and string evaluation in every page, and holds every `href` to a fixed route, the docs link, or `web/src/explorer.ts`, which builds explorer links only from well-formed hex. The SDK has already validated every field (§5.7). The page keeps P6's CSP; `connect-src` gains exactly the hosted indexer's GraphQL URL (with its path) once `DEPLOYMENTS[10143].trustApi` records it, and `web/test/headers.test.ts` derives the expected list from `DEPLOYMENTS`, so the two can't drift. The no-URL-input and no-storage rules hold; a local indexer can stand in only under `vite dev` (`VITE_TRUST_API_URL`, compiled out of production builds). Our own validators and demo agents are labelled as ours, and every number is an indexed count, never seeded. When the indexer is unreachable, the page shows the contracts to read directly, the `verify` line and that `/inbox` still works from the chain.
 - **Secrets:** gitleaks runs as a pre-commit hook and over the full history before the repo goes public. Only `.env.example` is committed.
 - **No upgradeability or admin** in our registries, so nothing can be swapped out after deployment. The canonical Identity Registry they read *is* upgradeable by its owner (§7).
@@ -792,7 +892,17 @@ The web app is deployed early to a **fixed domain**, because passkeys are bound 
 - **Economic security:** validator staking and slashing for provably wrong `mandate-v1` verdicts (proved by re-execution).
 - **More validator types:** TEE-attested validators and zk proofs of model inference, using the ERC-8004 `supportedTrust` modes.
 - **Paid validations:** validators charge per request via x402 (Monad facilitator).
-- **Orchestration:** a Chainlink CRE workflow as a decentralised validator runner.
+- **Production validator C (CRE, P11 → roadmap).** Validator C runs in simulation today against CRE's mock forwarder.
+  The production path:
+  1. **CRE deployment access**, and the workflow deployed to a DON.
+  2. **A new `CreValidator`** with Monad's production KeystoneForwarder (testnet
+     `0xF8344CFd5c43616a4366C34E3EEE75af79a74482`) and our real workflow owner and name, where the DON's signatures make
+     the metadata check meaningful. A stricter option pins the workflow ID; that needs a new C for every workflow or
+     config change.
+  3. **`/evaluate` at an HTTPS URL the nodes can reach.** A single endpoint is the one source of the score unless each
+     node operator runs its own, against its own RPC. With independent evaluations, identical aggregation becomes a
+     real cross-check.
+  4. **No gate requires C** until then.
 - **`risk-v2`: token flows in the simulation (not built).**
   - **What it adds:** it would decode ERC-20 `Transfer` logs from the call trace and give the model each token movement (token, from, to, amount) next to `valueFlows`, so the rubric's `FUNDS_FORWARDED` and caps-style checks reach tokens (§9).
   - **Feasible on Monad:** the public testnet RPC serves `callTracer` with `withLog: true`. Checked 5 Oct 2026 with `debug_traceTransaction` on AgentPassport job 1's release, where the USDC `Transfer` appears in the token's frame; `debug_traceCall`, which the validator uses, is assumed to accept the same option.
@@ -817,7 +927,7 @@ attest8004/
   validators/       mandate/ (mandate-v1: the service and verifyRequest), risk/ (risk-v1, P5: the validator and verifyRiskRequest)
   indexer/          Envio HyperIndex V3 (P8): config.yaml, schema.graphql, src/handlers/ (one file per contract), src/lib/ (pure decoders)
   web/              /approve (P6: src/approve/, headers in vercel.json; P7 adds the inbox key), /inbox (P7: src/inbox/), /dashboard (P8: src/dashboard/)
-  cre/              (stretch) Chainlink CRE workflow
+  cre/              validator C (P11): validator-c/, a Chainlink CRE workflow (TypeScript, Bun via cre/mise.toml; outside the pnpm workspace)
   scripts/          @attest8004/scripts: operational scripts (round trip, hot keys, demo agents, set-passkey, submit-approval, end to end,
                     indexer-check and the hosted indexer's keep-alive), and `pnpm demo` (P9: src/demo*.ts, with the in-process
                     validators shared with the e2e in src/live-validators.ts)
