@@ -167,7 +167,7 @@ export function ApproveChange({ enabled }: { enabled: boolean }) {
           chainId,
           registry,
           agentId: prepared.agentId,
-          mandate: prepared.mandate,
+          change: { kind: "setMandate", mandate: prepared.mandate },
           nonce: prepared.nonce,
           passkey: { credentialId, ...prepared.passkey },
           auth,

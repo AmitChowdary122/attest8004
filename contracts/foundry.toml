@@ -18,6 +18,7 @@ fs_permissions = [
     { access = "read", path = "../packages/sdk/test/passkey-vectors.json" },
     # test/PasskeyVectors.t.sol replays approval documents: the SDK-built one and the real device vectors.
     { access = "read", path = "../packages/sdk/test/webauthn-vector.json" },
+    { access = "read", path = "../packages/sdk/test/webauthn-inbox-vector.json" },
     # test/InboxVectors.t.sol checks the findings envelope's AAD and FindingsPosted's topic (ARCHITECTURE §6).
     { access = "read", path = "../packages/sdk/test/inbox-vectors.json" },
     { access = "read", path = "./test/vectors" },

@@ -1,7 +1,7 @@
 // submit-approval's and set-passkey's decisions (scripts/src/submit-approval.ts, set-passkey.ts), kept free of env and
 // RPC so they can be unit tested. Everything an approval file claims is re-checked against the chain before a send.
 import { isAbsolute, resolve } from "node:path";
-import { approvalSelfProblems, type Approval, type Mandate } from "@attest8004/sdk";
+import { approvalChange, approvalSelfProblems, type Approval, type Mandate } from "@attest8004/sdk";
 import { getAddress, type Address, type Hex } from "viem";
 
 /**
@@ -25,6 +25,12 @@ export function resolveInputPath(arg: string, env: NodeJS.ProcessEnv): string {
  *   storage slot and its calldata, so the cap grows 40,000 per entry, up to 16 targets and 16 selectors.
  */
 export const SET_PASSKEY_GAS_CAP = 170_000n;
+/**
+ * `setInboxKey` (P7), on the same basis: contracts/test/fork/MandateRegistry.fork.t.sol's `testFork_Gas_SetInboxKey`
+ * measured the live shape (after a mandate, the inbox key's first set, Chrome's extra clientDataJSON key) at frame
+ * 143,832 + 21,000 intrinsic + 7,432 calldata = 172,264, × 1.3 → 224,000.
+ */
+export const SET_INBOX_KEY_GAS_CAP = 224_000n;
 const SET_MANDATE_GAS_CAP_BASE = 470_000n;
 const SET_MANDATE_GAS_PER_EXTRA_ENTRY = 40_000n;
 const E2E_MANDATE_ENTRIES = 3;
@@ -93,9 +99,15 @@ export interface ApprovalChainState {
   owner: Address;
   /** The account submit-approval sends from. */
   sender: Address;
-  /** The registry's own `mandateHashOf(mandate)` and `challengeFor(agentId, changeHash, nonce)` for this approval. */
-  contractMandateHash: Hex;
+  /**
+   * The registry's own hash of this change (`mandateHashOf(mandate)` for a mandate), or `null` when the registry has
+   * no view for it (`setInboxKey`: its change hash is pinned by the cast-computed passkey-vectors.json instead).
+   */
+  contractChangeHash: Hex | null;
+  /** The registry's own `challengeFor(agentId, changeHash, nonce)` for this approval. */
   contractChallenge: Hex;
+  /** `inboxKeyOf(agentId)`; zero when none is set. */
+  currentInboxKey: Hex;
 }
 
 const ZERO32: Hex = `0x${"00".repeat(32)}`;
@@ -103,8 +115,8 @@ const same = (a: string, b: string) => a.toLowerCase() === b.toLowerCase();
 
 /**
  * Why `approval` must not be sent, each as `CODE: detail`; empty means send. Checks the chain, the registry, the
- * nonce (a stale approval says to approve again), the agent's passkey, the sender, the registry's own hashes, then
- * the approval's internal consistency and its assertion (`approvalSelfProblems`).
+ * nonce (a stale approval says to approve again), the agent's passkey, the sender, the registry's own hashes, an
+ * inbox key that is already set, then the approval's internal consistency and its assertion (`approvalSelfProblems`).
  */
 export async function approvalProblems(approval: Approval, chain: ApprovalChainState): Promise<string[]> {
   const problems: string[] = [];
@@ -127,8 +139,12 @@ export async function approvalProblems(approval: Approval, chain: ApprovalChainS
   if (getAddress(chain.sender) !== getAddress(chain.owner)) {
     problems.push(`NOT_OWNER: the sender ${chain.sender} doesn't own agent ${agent} (its owner is ${chain.owner})`);
   }
-  if (!same(chain.contractMandateHash, approval.changeHash)) {
-    problems.push(`CHANGE_HASH_MISMATCH: the registry hashes this mandate to ${chain.contractMandateHash}, the approval says ${approval.changeHash}`);
+  if (chain.contractChangeHash !== null && !same(chain.contractChangeHash, approval.changeHash)) {
+    problems.push(`CHANGE_HASH_MISMATCH: the registry hashes this change to ${chain.contractChangeHash}, the approval says ${approval.changeHash}`);
+  }
+  const change = approvalChange(approval);
+  if (change.kind === "setInboxKey" && BigInt(change.x25519Pub) !== 0n && same(change.x25519Pub, chain.currentInboxKey)) {
+    problems.push(`INBOX_KEY_UNCHANGED: agent ${agent}'s inbox key is already ${chain.currentInboxKey}; nothing to send`);
   }
   if (!same(chain.contractChallenge, approval.challenge)) {
     problems.push(`CHALLENGE_MISMATCH: the registry's challenge is ${chain.contractChallenge}, the approval signed ${approval.challenge}`);
@@ -140,7 +156,8 @@ export async function approvalProblems(approval: Approval, chain: ApprovalChainS
 }
 
 const SELF_DETAIL: Record<string, string> = {
-  CHANGE_HASH_MISMATCH: "the approval's changeHash isn't its own mandate's hash",
+  CHANGE_HASH_MISMATCH: "the approval's changeHash isn't its own change's hash",
+  INBOX_KEY_ZERO: "the inbox key is zero, which the registry refuses (ZeroInboxKey)",
   CHALLENGE_MISMATCH: "the approval's challenge doesn't recompute from its own fields",
   RP_ID_HASH: "the assertion is for another site than attest8004.vercel.app",
   USER_NOT_PRESENT: "the authenticator didn't report user presence",

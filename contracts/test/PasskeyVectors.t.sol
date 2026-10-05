@@ -16,6 +16,8 @@ contract PasskeyVectorsTest is Test {
     uint256 internal constant P256_N = 0xFFFFFFFF00000000FFFFFFFFFFFFFFFFBCE6FAADA7179E84F3B9CAC2FC632551;
     bytes32 internal constant RP_ID_HASH = sha256("attest8004.vercel.app");
     string internal constant SDK_VECTOR = "../packages/sdk/test/webauthn-vector.json";
+    /// The SDK-built setInboxKey approval (P7), signed by the same test key at nonce 1, after SDK_VECTOR.
+    string internal constant SDK_INBOX_VECTOR = "../packages/sdk/test/webauthn-inbox-vector.json";
 
     address internal identity = makeAddr("identity registry");
     address internal owner = makeAddr("agent owner");
@@ -24,6 +26,34 @@ contract PasskeyVectorsTest is Test {
         string[] memory files = new string[](1);
         files[0] = SDK_VECTOR;
         _replay(files, identity);
+    }
+
+    /// The TS-built inbox approval sets the inbox key through the contract: the change hash and challenge the SDK
+    /// computed are the contract's, and the assertion verifies (nonce 1 → 2).
+    function test_SdkInboxVector_SetsInboxKeyThroughTheContract() public {
+        string[] memory files = new string[](1);
+        files[0] = SDK_VECTOR;
+        MandateRegistry registry = _replay(files, identity);
+
+        string memory json = vm.readFile(SDK_INBOX_VECTOR);
+        uint256 agentId = vm.parseJsonUint(json, ".agentId");
+        assertEq(vm.parseJsonString(json, ".change.kind"), "setInboxKey");
+        assertEq(vm.parseJsonAddress(json, ".registry"), address(registry));
+        assertEq(registry.nonceOf(agentId), vm.parseJsonUint(json, ".nonce"));
+        bytes32 x25519Pub = vm.parseJsonBytes32(json, ".change.x25519Pub");
+        bytes32 changeHash = keccak256(abi.encode(registry.SET_INBOX_KEY(), x25519Pub));
+        assertEq(changeHash, vm.parseJsonBytes32(json, ".changeHash"), "changeHash");
+        assertEq(
+            registry.challengeFor(agentId, changeHash, registry.nonceOf(agentId)),
+            vm.parseJsonBytes32(json, ".challenge"),
+            "challenge"
+        );
+
+        vm.prank(owner);
+        registry.setInboxKey(agentId, x25519Pub, _auth(json));
+
+        assertEq(registry.inboxKeyOf(agentId), x25519Pub);
+        assertEq(registry.nonceOf(agentId), 2);
     }
 
     function test_SdkBuiltVector_HighSFails() public {

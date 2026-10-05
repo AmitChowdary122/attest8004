@@ -7,8 +7,12 @@ import {
   RP_ID_HASH,
   ROTATE_PASSKEY,
   SET_INBOX_KEY,
+  approvalChange,
   approvalSchema,
   approvalSelfProblems,
+  buildApproval,
+  changeHashOf,
+  describeInboxKeyChange,
   base64UrlDecode,
   base64UrlEncode,
   describeMandate,
@@ -36,6 +40,7 @@ interface PasskeyVectors {
 
 const vectors = JSON.parse(readFileSync(new URL("./passkey-vectors.json", import.meta.url), "utf8")) as PasskeyVectors;
 const sdkVector: unknown = JSON.parse(readFileSync(new URL("./webauthn-vector.json", import.meta.url), "utf8"));
+const sdkInboxVector: unknown = JSON.parse(readFileSync(new URL("./webauthn-inbox-vector.json", import.meta.url), "utf8"));
 
 describe("passkey-vectors.json (cast-computed, shared with forge)", () => {
   it("rpId and rpIdHash", () => {
@@ -77,16 +82,74 @@ describe("approvalSchema", () => {
     await expect(approvalSelfProblems(valid)).resolves.toEqual([]);
   });
 
-  it("rejects unknown keys, non-decimal uints and a kind other than setMandate", () => {
+  it("rejects unknown keys, non-decimal uints, an unknown kind and a kind with the other kind's fields", () => {
     const raw = sdkVector as Record<string, unknown>;
     expect(approvalSchema.safeParse({ ...raw, extra: 1 }).success).toBe(false);
     expect(approvalSchema.safeParse({ ...raw, nonce: "0x01" }).success).toBe(false);
     expect(approvalSchema.safeParse({ ...raw, nonce: "01" }).success).toBe(false);
     expect(approvalSchema.safeParse({ ...raw, change: { ...(raw.change as object), kind: "setInboxKey" } }).success).toBe(false);
+    expect(approvalSchema.safeParse({ ...raw, change: { ...(raw.change as object), kind: "rotatePasskey" } }).success).toBe(false);
     expect(approvalSchema.safeParse({ ...raw, auth: { ...(raw.auth as object), extra: true } }).success).toBe(false);
   });
 
+  it("approvalSchema accepts a setInboxKey change and rejects an unknown kind and extra keys", () => {
+    const raw = sdkInboxVector as Record<string, unknown>;
+    const parsed = approvalSchema.parse(raw);
+    expect(parsed.change.kind).toBe("setInboxKey");
+    expect(approvalSchema.safeParse({ ...raw, change: { kind: "setInboxKey", x25519Pub: (raw.change as { x25519Pub: string }).x25519Pub, extra: 1 } }).success).toBe(false);
+    expect(approvalSchema.safeParse({ ...raw, change: { kind: "setInboxKey", x25519Pub: "0x1234" } }).success).toBe(false);
+    expect(approvalSchema.safeParse({ ...raw, change: { kind: "setInboxKey" } }).success).toBe(false);
+  });
+
+  it("the SDK inbox vector is consistent and its assertion verifies (it follows the mandate vector, at nonce 1)", async () => {
+    const inbox = approvalSchema.parse(sdkInboxVector);
+    expect(inbox.nonce).toBe("1");
+    expect(inbox.passkey).toEqual(valid.passkey);
+    await expect(approvalSelfProblems(inbox)).resolves.toEqual([]);
+  });
+
+  it("buildApproval(setInboxKey) has changeHash = inboxKeyChangeHash = passkey-vectors.json's value", () => {
+    const { x25519Pub, expected } = vectors.inboxKeyChangeHash;
+    expect(changeHashOf({ kind: "setInboxKey", x25519Pub: x25519Pub })).toBe(expected);
+    expect(changeHashOf({ kind: "setMandate", mandate: e2eMandate(vectors.e2eMandate) })).toBe(vectors.e2eMandate.mandateHash);
+    const built = buildApproval({
+      chainId: valid.chainId,
+      registry: valid.registry,
+      agentId: BigInt(valid.agentId),
+      change: { kind: "setInboxKey", x25519Pub: x25519Pub },
+      nonce: 1n,
+      passkey: valid.passkey,
+      auth: valid.auth,
+    });
+    expect(built.change).toEqual({ kind: "setInboxKey", x25519Pub: x25519Pub });
+    expect(built.changeHash).toBe(expected);
+    expect(built.challenge).toBe(passkeyChallenge({ chainId: valid.chainId, registry: valid.registry, agentId: BigInt(valid.agentId), changeHash: expected, nonce: 1n }));
+    expect(approvalChange(built)).toEqual({ kind: "setInboxKey", x25519Pub: x25519Pub });
+    expect(approvalChange(valid)).toEqual({ kind: "setMandate", mandate: e2eMandate(vectors.e2eMandate) });
+  });
+
+  it("approvalSelfProblems flags INBOX_KEY_ZERO and CHANGE_HASH_MISMATCH for an inbox approval", async () => {
+    const inbox = approvalSchema.parse(sdkInboxVector);
+    const zero = `0x${"00".repeat(32)}` as Hex;
+    expect(await approvalSelfProblems({ ...inbox, change: { kind: "setInboxKey", x25519Pub: zero } })).toEqual(expect.arrayContaining(["INBOX_KEY_ZERO", "CHANGE_HASH_MISMATCH"]));
+    const other = `0x${"11".repeat(32)}` as Hex;
+    expect(await approvalSelfProblems({ ...inbox, change: { kind: "setInboxKey", x25519Pub: other } })).toEqual(expect.arrayContaining(["CHANGE_HASH_MISMATCH"]));
+  });
+
+  it("describeInboxKeyChange says what the owner's transaction sets and replaces", () => {
+    const zero = `0x${"00".repeat(32)}` as Hex;
+    const next = `0x${"ab".repeat(32)}` as Hex;
+    const current = `0x${"cd".repeat(32)}` as Hex;
+    expect(describeInboxKeyChange(next, zero)).toEqual([
+      `Sets the agent's inbox key to ${next}.`,
+      "It replaces: no inbox key (validators post no reports until one is set).",
+      "Validators will encrypt operator reports to this key; only the passkey that derived it can read them.",
+    ]);
+    expect(describeInboxKeyChange(next, current)[1]).toBe(`It replaces: ${current} (reports encrypted to it stay readable only by the passkey that derived it).`);
+  });
+
   it("approvalSelfProblems names a changed mandate, nonce and signature", async () => {
+    if (valid.change.kind !== "setMandate") throw new Error("the SDK vector is a mandate approval");
     const mandate = { ...valid.change.mandate, maxValuePerDay: "6000000000000000" };
     expect(await approvalSelfProblems({ ...valid, change: { kind: "setMandate", mandate } })).toEqual(expect.arrayContaining(["CHANGE_HASH_MISMATCH"]));
     expect(await approvalSelfProblems({ ...valid, nonce: "1" })).toEqual(expect.arrayContaining(["CHALLENGE_MISMATCH"]));

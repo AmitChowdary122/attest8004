@@ -91,6 +91,45 @@ contract MandateRegistryForkTest is WebAuthnFixture {
         registry.setMandate(AGENT_ID, mandate, auth);
     }
 
+    /// The basis of scripts' SET_INBOX_KEY_GAS_CAP (approval-plan.ts): setInboxKey for live agent 1984 against the
+    /// canonical Identity Registry (a proxy, so ownerOf costs ~27k in-frame), as it runs live: after a mandate (the
+    /// nonce goes nonzero to nonzero), the inbox key's first set, Chrome's extra clientDataJSON key. Logs the frame gas
+    /// plus the 21,000 intrinsic gas and the calldata's cost; the cap is that total × 1.3.
+    function testFork_Gas_SetInboxKey() public {
+        address owner = IDENTITY.ownerOf(AGENT_ID);
+        vm.prank(owner);
+        registry.setPasskey(AGENT_ID, passkey.qx, passkey.qy);
+        MandateRegistry.Mandate memory mandate = _validMandate(owner);
+        WebAuthn.WebAuthnAuth memory mandateAuth = _approval(mandate);
+        vm.prank(owner);
+        registry.setMandate(AGENT_ID, mandate, mandateAuth);
+
+        bytes32 inboxKey = keccak256("fork inbox key");
+        bytes32 changeHash = keccak256(abi.encode(registry.SET_INBOX_KEY(), inboxKey));
+        bytes32 challenge =
+            sha256(abi.encode(block.chainid, address(registry), AGENT_ID, changeHash, registry.nonceOf(AGENT_ID)));
+        WebAuthn.WebAuthnAuth memory auth = _assertWith(
+            passkey, challenge, AssertOpts({flags: FLAGS_SYNCED_UV, rpIdHash: RP_ID_HASH, highS: false, extraKey: true})
+        );
+        bytes memory data = abi.encodeCall(MandateRegistry.setInboxKey, (AGENT_ID, inboxKey, auth));
+        uint256 calldataGas;
+        for (uint256 i; i < data.length; ++i) {
+            calldataGas += data[i] == 0 ? 4 : 16;
+        }
+
+        vm.prank(owner);
+        uint256 before = gasleft();
+        registry.setInboxKey(AGENT_ID, inboxKey, auth);
+        uint256 frame = before - gasleft();
+
+        assertEq(registry.inboxKeyOf(AGENT_ID), inboxKey);
+        assertEq(registry.nonceOf(AGENT_ID), 2);
+        emit log_named_uint("setInboxKey frame gas", frame);
+        emit log_named_uint("setInboxKey calldata gas", calldataGas);
+        emit log_named_uint("setInboxKey total (frame + 21,000 + calldata)", frame + 21_000 + calldataGas);
+        assertLt(frame + 21_000 + calldataGas, 200_000, "far above the expected ~130k: re-measure the cap");
+    }
+
     function _challengeFor(MandateRegistry.Mandate memory mandate) internal view returns (bytes32) {
         return sha256(
             abi.encode(

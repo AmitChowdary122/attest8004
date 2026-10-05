@@ -217,8 +217,10 @@ sequenceDiagram
   MR->>P: verify(sha256(authData ‖ sha256(clientDataJSON)), r, s, qx, qy)
   P-->>MR: 32 bytes ...01 (or empty = invalid)
   MR-->>Op: MandateSet event; nonce + 1
-  Op->>W: open /inbox → passkey PRF → X25519 public key
-  W->>MR: setInboxKey(agentId, x25519Pub, webauthnAuth)  [owner wallet tx; same two factors]
+  Op->>W: /approve section 4: Mera PRF (salt sha256("attest8004.inbox.v1")) → HKDF → X25519; the page keeps only the public key
+  W->>W: WebAuthn assertion over challengeFor(agentId, keccak256(abi.encode(SET_INBOX_KEY, x25519Pub)), nonce), allowCredentials = that same credential; verified locally against the onchain key
+  W-->>Op: approval file (public, change.kind "setInboxKey")
+  Op->>MR: submit-approval → setInboxKey(agentId, x25519Pub, webauthnAuth)  [owner wallet tx; same two factors]
 ```
 
 > **P4 vs. P6.** The `MandateRegistry` steps above are MandateRegistry v2 as built in P6 (`contracts/src/MandateRegistry.sol`), deployed on testnet at `0x2Ee5f78149762DE630c6bFF8CD81166010D0454B` from block 68,196,462. P4's registry (`0x2523…D17c`), where the owner's wallet alone called `setMandate(agentId, mandate)` and `revokeMandate(agentId)` with no passkey, now only serves verdicts pinned before that block (§6). In v2, `revokeMandate(agentId)` stays owner-only (no passkey) and also increments the nonce (§7). `/approve` is built (P6); `/inbox` is still design.
@@ -565,9 +567,10 @@ Encodings are `mandate-v1`'s: every `bigint` (block numbers, timestamps, wei, ga
   - `auth` is OpenZeppelin's `WebAuthnAuth`:
     - `s` is always low: authenticators return either form, and the SDK replaces `s > n/2` with `n − s`, an equally valid signature.
     - The two indices are **byte offsets** into the UTF-8 `clientDataJSON`, exactly as the browser returned it. They are found by search, never by matching a template, because Chrome sometimes adds keys such as `other_keys_can_be_added_here`.
-  - `change.kind` is `setMandate` in P6; P7 adds `setInboxKey`. Rotation has a contract path but no page.
+  - `change` is `{kind: "setMandate", mandate}` (P6) or `{kind: "setInboxKey", x25519Pub}` (P7: the agent's X25519 inbox public key, 32 bytes, never zero), a discriminated union under the same schema id. `changeHash` is `mandateHash(mandate)` or `inboxKeyChangeHash(x25519Pub)` (`changeHashOf`). Rotation has a contract path but no page.
+  - `submit-approval` sends either kind. For `setInboxKey` there is no registry view for the change hash, so it relies on the SDK function the cast-computed `passkey-vectors.json` pins; it also refuses a key that is already set (`INBOX_KEY_UNCHANGED`). Its gas cap is fork-measured (`SET_INBOX_KEY_GAS_CAP`, 224,000). `InboxKeySet` isn't a permission event, so a new inbox key starts no 6,000-block wait.
   - **Before export or send**, `approvalSelfProblems` recomputes both hashes, then runs `verifyAssertionLocally` (WebCrypto ECDSA P-256). That check makes every check the contract makes (the registry's rpIdHash, then OpenZeppelin's type and challenge at their indices, UP, UV, BE/BS, low-s and the signature), though not in the same order, so a failing assertion can be reported under a different first problem than the contract would revert with. `submit-approval` adds the chain checks on top: the current registry, `nonceOf` (a stale approval says to approve again), `passkeyOf`, the owner, and the registry's own `mandateHashOf` and `challengeFor`.
-  - `packages/sdk/test/webauthn-vector.json` is such a document, signed by a fixed test key with node:crypto and parsed by the SDK. `contracts/test/PasskeyVectors.t.sol` replays it through the contract, and the real laptop and Android assertions join it once they are recorded.
+  - `packages/sdk/test/webauthn-vector.json` is such a document, signed by a fixed test key with node:crypto and parsed by the SDK, and `webauthn-inbox-vector.json` a `setInboxKey` approval by the same key at nonce 1. `contracts/test/PasskeyVectors.t.sol` replays both through the contract, in order, next to the real laptop and Android assertions.
 
 **Findings envelope** (P7, `packages/sdk/src/inbox-crypto.ts`). Encrypted to the agent's inbox key and carried by FindingsBoard's `FindingsPosted` event (§4.1), which is also its announcement: there is no findings URI. It is **never `responseURI`**, which stays each validator's public plaintext evidence (`mandate-v1`'s and `risk-v1`'s alike; `verify` and spend accounting depend on it).
 - **The inbox key.** `ikm` is the passkey's 32-byte PRF output (Mera) for the salt `INBOX_PRF_SALT = sha256("attest8004.inbox.v1")`. The private key is `HKDF-SHA256(ikm, salt = empty, info = "attest8004.inbox.x25519.v1", L = 32)`, clamped per RFC 7748 (`k[0] &= 248; k[31] &= 127; k[31] |= 64`); an empty salt is RFC 5869's all-zero salt, and the PRF output is already uniform. The public key `X25519(priv, 9)` is what `setInboxKey` publishes.

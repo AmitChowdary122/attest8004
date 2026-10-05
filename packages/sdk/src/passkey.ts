@@ -172,15 +172,19 @@ export const registrationSchema = z.strictObject({
 export type PasskeyRegistration = z.output<typeof registrationSchema>;
 
 /**
- * `attest8004.approval.v1`: one signed approval, public data only. `change.kind` is `setMandate` in P6 (P7 adds
- * `setInboxKey`). `passkey` is the key the approval was checked against (the agent's onchain passkey).
+ * `attest8004.approval.v1`: one signed approval, public data only. `change` is `{kind: "setMandate", mandate}` (P6)
+ * or `{kind: "setInboxKey", x25519Pub}` (P7, the agent's X25519 inbox public key). `passkey` is the key the approval
+ * was checked against (the agent's onchain passkey).
  */
 export const approvalSchema = z.strictObject({
   schema: z.literal(APPROVAL_SCHEMA_V1),
   chainId: z.number().int().positive().refine(Number.isSafeInteger, "must be a safe integer"),
   registry: zAddress,
   agentId: zDecimal(UINT256_MAX),
-  change: z.strictObject({ kind: z.literal("setMandate"), mandate: mandateJsonSchema }),
+  change: z.discriminatedUnion("kind", [
+    z.strictObject({ kind: z.literal("setMandate"), mandate: mandateJsonSchema }),
+    z.strictObject({ kind: z.literal("setInboxKey"), x25519Pub: zBytes32 }),
+  ]),
   changeHash: zBytes32,
   nonce: zDecimal(UINT256_MAX),
   challenge: zBytes32,
@@ -188,7 +192,22 @@ export const approvalSchema = z.strictObject({
   auth: authJsonSchema,
 });
 export type Approval = z.output<typeof approvalSchema>;
-export type MandateJson = Approval["change"]["mandate"];
+export type MandateJson = z.output<typeof mandateJsonSchema>;
+
+/** What an approval changes: a mandate (`setMandate`) or the agent's inbox key (`setInboxKey`). */
+export type ApprovalChange = { kind: "setMandate"; mandate: Mandate } | { kind: "setInboxKey"; x25519Pub: Hex };
+
+/** The `changeHash` an approval of `change` binds: `mandateHash` or `inboxKeyChangeHash`. */
+export function changeHashOf(change: ApprovalChange): Hex {
+  return change.kind === "setMandate" ? mandateHash(change.mandate) : inboxKeyChangeHash(change.x25519Pub);
+}
+
+/** An approval document's change, decoded. */
+export function approvalChange(approval: Approval): ApprovalChange {
+  return approval.change.kind === "setMandate"
+    ? { kind: "setMandate", mandate: mandateFromJson(approval.change.mandate) }
+    : { kind: "setInboxKey", x25519Pub: approval.change.x25519Pub.toLowerCase() as Hex };
+}
 
 export function mandateFromJson(json: MandateJson): Mandate {
   return {
@@ -222,23 +241,26 @@ export function authArgs(auth: WebAuthnAuthJson): {
   return { ...auth, challengeIndex: BigInt(auth.challengeIndex), typeIndex: BigInt(auth.typeIndex) };
 }
 
-/** Builds the approval document for a `setMandate` change, computing its `changeHash` and `challenge`. */
+/** Builds the approval document for a change, computing its `changeHash` and `challenge`. */
 export function buildApproval(o: {
   chainId: number;
   registry: Address;
   agentId: bigint;
-  mandate: Mandate;
+  change: ApprovalChange;
   nonce: bigint;
   passkey: { credentialId: string; qx: Hex; qy: Hex };
   auth: WebAuthnAuthJson;
 }): Approval {
-  const changeHash = mandateHash(o.mandate);
+  const changeHash = changeHashOf(o.change);
   return {
     schema: APPROVAL_SCHEMA_V1,
     chainId: o.chainId,
     registry: getAddress(o.registry),
     agentId: o.agentId.toString(),
-    change: { kind: "setMandate", mandate: mandateToJson(o.mandate) },
+    change:
+      o.change.kind === "setMandate"
+        ? { kind: "setMandate", mandate: mandateToJson(o.change.mandate) }
+        : { kind: "setInboxKey", x25519Pub: o.change.x25519Pub.toLowerCase() as Hex },
     changeHash,
     nonce: o.nonce.toString(),
     challenge: passkeyChallenge({ chainId: o.chainId, registry: o.registry, agentId: o.agentId, changeHash, nonce: o.nonce }),
@@ -247,16 +269,19 @@ export function buildApproval(o: {
   };
 }
 
-export type ApprovalSelfProblem = "CHANGE_HASH_MISMATCH" | "CHALLENGE_MISMATCH" | AssertionProblem;
+export type ApprovalSelfProblem = "CHANGE_HASH_MISMATCH" | "CHALLENGE_MISMATCH" | "INBOX_KEY_ZERO" | AssertionProblem;
 
 /**
  * What an approval document says about itself, before any chain read: its `changeHash` and `challenge` recompute
- * from its own fields, and its assertion passes {@link verifyAssertionLocally} against its `passkey`. Empty means
- * consistent; the chain checks (registry, nonce, passkey, owner) are the caller's.
+ * from its own fields, an inbox key isn't zero (the registry reverts `ZeroInboxKey`), and its assertion passes
+ * {@link verifyAssertionLocally} against its `passkey`. Empty means consistent; the chain checks (registry, nonce,
+ * passkey, owner) are the caller's.
  */
 export async function approvalSelfProblems(approval: Approval): Promise<ApprovalSelfProblem[]> {
   const problems: ApprovalSelfProblem[] = [];
-  const changeHash = mandateHash(mandateFromJson(approval.change.mandate));
+  const change = approvalChange(approval);
+  if (change.kind === "setInboxKey" && BigInt(change.x25519Pub) === 0n) problems.push("INBOX_KEY_ZERO");
+  const changeHash = changeHashOf(change);
   if (changeHash.toLowerCase() !== approval.changeHash.toLowerCase()) problems.push("CHANGE_HASH_MISMATCH");
   const challenge = passkeyChallenge({
     chainId: approval.chainId,
@@ -381,6 +406,17 @@ const MAX_DATE_SECONDS = 8_640_000_000_000n;
 function formatUnixTime(seconds: bigint): string {
   if (seconds > MAX_DATE_SECONDS) return `unix time ${seconds} (beyond any calendar date)`;
   return new Date(Number(seconds) * 1000).toISOString().replace("T", " ").replace(".000Z", " UTC");
+}
+
+/** A `setInboxKey` change in plain words: the key it sets and the one it replaces (zero: none). */
+export function describeInboxKeyChange(next: Hex, current: Hex): string[] {
+  return [
+    `Sets the agent's inbox key to ${next}.`,
+    BigInt(current) === 0n
+      ? "It replaces: no inbox key (validators post no reports until one is set)."
+      : `It replaces: ${current} (reports encrypted to it stay readable only by the passkey that derived it).`,
+    "Validators will encrypt operator reports to this key; only the passkey that derived it can read them.",
+  ];
 }
 
 /** Whether passkey ceremonies may run on this host: only the production rpId, never localhost or a preview URL. */

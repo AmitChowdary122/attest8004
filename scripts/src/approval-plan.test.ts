@@ -3,6 +3,7 @@ import { approvalSchema, type Approval, type Mandate } from "@attest8004/sdk";
 import type { Address, Hex } from "viem";
 import { describe, expect, it } from "vitest";
 import {
+  SET_INBOX_KEY_GAS_CAP,
   SET_PASSKEY_GAS_CAP,
   approvalProblems,
   confirmationCode,
@@ -18,8 +19,13 @@ import {
 const approval: Approval = approvalSchema.parse(
   JSON.parse(readFileSync(new URL("../../packages/sdk/test/webauthn-vector.json", import.meta.url), "utf8")),
 );
+// The SDK's committed setInboxKey approval: the same test key, at nonce 1, after the mandate vector.
+const inboxApproval: Approval = approvalSchema.parse(
+  JSON.parse(readFileSync(new URL("../../packages/sdk/test/webauthn-inbox-vector.json", import.meta.url), "utf8")),
+);
 const OWNER: Address = "0x3EFEB3Cf2FB54A7D99abE90AaB786cE5A831a8CF";
 const OTHER_HASH: Hex = `0x${"11".repeat(32)}`;
+const ZERO: Hex = `0x${"00".repeat(32)}`;
 
 /** Chain state that agrees with the approval in every respect. */
 function matching(): ApprovalChainState {
@@ -31,8 +37,19 @@ function matching(): ApprovalChainState {
     qy: approval.passkey.qy,
     owner: OWNER,
     sender: OWNER,
-    contractMandateHash: approval.changeHash,
+    contractChangeHash: approval.changeHash,
     contractChallenge: approval.challenge,
+    currentInboxKey: ZERO,
+  };
+}
+
+/** Chain state that agrees with the inbox approval: the registry has no view for its change hash. */
+function matchingInbox(): ApprovalChainState {
+  return {
+    ...matching(),
+    nonce: BigInt(inboxApproval.nonce),
+    contractChangeHash: null,
+    contractChallenge: inboxApproval.challenge,
   };
 }
 
@@ -67,7 +84,7 @@ describe("approvalProblems", () => {
       [{ registry: "0x0000000000000000000000000000000000000001" }, "WRONG_REGISTRY"],
       [{ qx: OTHER_HASH }, "PASSKEY_MISMATCH"],
       [{ sender: "0x0000000000000000000000000000000000000002" }, "NOT_OWNER"],
-      [{ contractMandateHash: OTHER_HASH }, "CHANGE_HASH_MISMATCH"],
+      [{ contractChangeHash: OTHER_HASH }, "CHANGE_HASH_MISMATCH"],
       [{ contractChallenge: OTHER_HASH }, "CHALLENGE_MISMATCH"],
     ];
     for (const [change, code] of cases) {
@@ -85,9 +102,41 @@ describe("approvalProblems", () => {
   it("a tampered signature is SIGNATURE, and a tampered mandate is caught before any send", async () => {
     const r = `0x${(BigInt(approval.auth.r) ^ 1n).toString(16).padStart(64, "0")}` as Hex;
     expect(codes(await approvalProblems({ ...approval, auth: { ...approval.auth, r } }, matching()))).toEqual(["SIGNATURE"]);
+    if (approval.change.kind !== "setMandate") throw new Error("the SDK vector is a mandate approval");
     const mandate = { ...approval.change.mandate, maxValuePerDay: "6000000000000000" };
     const tampered = { ...approval, change: { kind: "setMandate" as const, mandate } };
     expect(codes(await approvalProblems(tampered, matching()))).toContain("CHANGE_HASH_MISMATCH");
+  });
+});
+
+describe("approvalProblems for setInboxKey", () => {
+  it("inbox approval: no problems on a matching chain state", async () => {
+    await expect(approvalProblems(inboxApproval, matchingInbox())).resolves.toEqual([]);
+  });
+
+  it("INBOX_KEY_UNCHANGED when the same key is set", async () => {
+    if (inboxApproval.change.kind !== "setInboxKey") throw new Error("the SDK inbox vector sets an inbox key");
+    const problems = await approvalProblems(inboxApproval, { ...matchingInbox(), currentInboxKey: inboxApproval.change.x25519Pub });
+    expect(codes(problems)).toEqual(["INBOX_KEY_UNCHANGED"]);
+  });
+
+  it("STALE_NONCE, PASSKEY_MISMATCH, NOT_OWNER as for mandates", async () => {
+    const cases: [Partial<ApprovalChainState>, string][] = [
+      [{ nonce: 2n }, "STALE_NONCE"],
+      [{ qx: OTHER_HASH }, "PASSKEY_MISMATCH"],
+      [{ sender: "0x0000000000000000000000000000000000000002" }, "NOT_OWNER"],
+      [{ contractChallenge: OTHER_HASH }, "CHALLENGE_MISMATCH"],
+    ];
+    for (const [change, code] of cases) {
+      expect(codes(await approvalProblems(inboxApproval, { ...matchingInbox(), ...change })), code).toEqual([code]);
+    }
+  });
+
+  it("contractChangeHash null skips the registry-hash check, the self-check still recomputes", async () => {
+    const tampered = { ...inboxApproval, change: { kind: "setInboxKey" as const, x25519Pub: OTHER_HASH } };
+    expect(codes(await approvalProblems(tampered, matchingInbox()))).toContain("CHANGE_HASH_MISMATCH");
+    const zeroed = { ...inboxApproval, change: { kind: "setInboxKey" as const, x25519Pub: ZERO } };
+    expect(codes(await approvalProblems(zeroed, matchingInbox()))).toContain("INBOX_KEY_ZERO");
   });
 });
 
@@ -103,6 +152,11 @@ describe("gas caps", () => {
   it("setPasskey's cap clears the fork-measured live cost (≈130,239) by 1.3×", () => {
     expect(SET_PASSKEY_GAS_CAP).toBe(170_000n);
     expect(SET_PASSKEY_GAS_CAP * 10n >= 130_239n * 13n).toBe(true);
+  });
+
+  it("setInboxKey's cap clears the fork-measured live cost (≈172,264) by 1.3×", () => {
+    expect(SET_INBOX_KEY_GAS_CAP).toBe(224_000n);
+    expect(SET_INBOX_KEY_GAS_CAP * 10n >= 172_264n * 13n).toBe(true);
   });
 
   it("setMandate's cap is 470,000 up to the e2e mandate's 3 entries, then grows 40,000 per entry", () => {
