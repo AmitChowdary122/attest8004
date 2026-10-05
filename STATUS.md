@@ -4,6 +4,113 @@ Running log, updated at the end of every session (CLAUDE.md, rule 10). Newest se
 
 ---
 
+## Mon 5 Oct 2026 · P9 `pnpm demo`: SPEC §5 scene by scene, with a reset (this replaces GAMEPLAN's P9; CRE moves to P10)
+
+### Done
+- **`pnpm demo`** plays SPEC §5 live on Monad testnet, scene by scene, for a screen recording. Both validators run in its process.
+  - **1, the mandate:** the passkey approval on `/approve` is picked up from `~/Downloads`, checked, submitted, read back from chain in plain words, with the `0x0100` P256VERIFY call from its trace.
+  - **2, a benign action:** both validators pass it, the vault executes it, and the vault balance is shown before and after.
+  - **3, the Grok/Bankr pattern:** a rogue forwarder key, then a transfer to an unknown address. mandate-v1 gives 0 with the computed reasons, risk-v1 explains, the `ScoreTooLow` revert is simulated, and `verify` matches.
+  - **3b, recovery, which is also the reset:** the hot key comes back, the mandate is re-approved with the passkey, and a mandate-v1 dry run proves it.
+  - **4 and 5:** the dashboard once the indexer has the take, and the reports for the phone.
+  - **Flags:** `--scene N`, `--fast`, `--preflight`, `--fund`, `--approvals <dir>`.
+  - **Output:** plain text, never JSON; an explorer link for every transaction; every untrusted string sanitized.
+- **The preflight:**
+  - every key's balance with the takes it pays for;
+  - the vault, the daily cap's room, and the Groq tokens used in the last 24 h (from validator B's own recorded evidence: Groq has no daily-token header);
+  - Nansen, the model endpoint (`GET /models`, no tokens), running validator services, the agent's key, passkey and mandate state, and the indexer's lag;
+  - each short key's full address for the faucet;
+  - blockers per scene, each naming its fix, and `Takes left today`, naming the limit that binds.
+- **Honest cuts:** every wait is marked on screen (`┄ waiting: … (cut from here)` / `┄ waited m:ss (cut to here)`), and every take ends with a timing table: per scene, the total, the waits by kind, and what's left after cuts.
+- **Shared code:**
+  - the e2e's in-process validator harness moved to `scripts/src/live-validators.ts`;
+  - submit-approval's chain half moved to `approval-submit.ts`;
+  - `permission-window.ts` reads all eight permission events in one `eth_getLogs` per 100 blocks, 8 windows at once: a full window went from 57 s to about 8 s;
+  - `hot-keys` also makes the demo's rogue account (its public address is in docs/deployments.md, "P9 demo run").
+- **R1, three checks, all 100 with no findings** (a benign action right after a reset):
+  - a recorded fixture, `safe-after-reset`, with the reset's four permission events (8,028 tokens);
+  - two live runs.
+
+  The model never opened `recent_permission_events` in any of the three, so how it weighs `afterMandate: false` events is still untested (ARCHITECTURE §5.3, docs/demo.md). Decision 22(a), the rubric clarification, wasn't needed; the prompt stays `risk-v1/4`.
+- **The live run** (docs/deployments.md, "P9 demo run"): a full take, exit 0, then `--scene 2` alone right after the reset, exit 0.
+  - **Tokens:** 18,889 for the take, 10,474 for the reset proof.
+  - **Time:** 10:10 raw, 6:42 after cuts, 4:42 of it in the browser (one passkey prompt failed with NotAllowedError and was retried).
+  - **The browser check:** `/dashboard` and `/inbox` showed the take, with a clean console. There are no screenshots: the browser pane was hidden.
+- **Docs:**
+  - `docs/demo.md`: the 3-minute script with browser steps, the real durations, where to cut (with the "waiting time cut" note), the reset, the costs and troubleshooting;
+  - the README's Demo section;
+  - SPEC §5 "As built in P9";
+  - ARCHITECTURE §5.3 rewritten as built, with recovery; §8 adds the demo rogue key; §13 the repo map;
+  - `docs/README.md` and `.env.example`.
+- **The whole-branch review** (Opus): "with fixes", no Critical. Six findings fixed, test first where testable (the rulings below).
+- **Checks on the final tree:** all clean.
+  - **forge:** 239 tests, and `fmt --check`;
+  - **vectors:** `vectors.sh --check` (8 match cast) and `make-inbox-vectors.ts --check`;
+  - **TypeScript:** `pnpm typecheck`; `pnpm test`, 1,521 tests (scripts 177, risk 524, mandate 303, sdk 345, cli 76, web 36, indexer 60);
+  - **web build** and **gitleaks** over the full history.
+
+### Next
+- **Record the video** with docs/demo.md: `pnpm --loglevel silent demo` from your own terminal, with Chrome downloads going to `~/Downloads` without asking.
+  - **The daily cap allows 2 more takes today:** agent 1984's counted spend is 0.003 of 0.005 MON. Each take adds 0.0005, and the window is 25 h.
+  - **Groq** has room for about 5.
+  - **Optional:** set `NANSEN_API_KEY` first if you want Nansen data in the video. Otherwise the narration leaves Nansen out.
+- **The e2e:** after any demo take, it still waits 6,000 blocks (about 31 minutes) after the new mandate before it starts. It wasn't re-run live after the harness move (Decision 17). The typecheck and the move's unit tests cover it, and its next run is the live check.
+- **CRE is P10** (your brief); the auditor self-review follows.
+- **Deferred minors** (final review; triaged, none blocking):
+  - the Groq estimate counts 2 checks even for a single-scene run, so its warning is conservative (Decision 15's "1 check" isn't implemented);
+  - `Takes left` leaves out the vault limit (Decision 16): the deployer tops the vault up, so it matters only if the deployer runs low;
+  - **the e2e mandate's `validUntil` is 31 Oct 2026.** After that, the expired-mandate blocker's remedy (scene 1) can't help, and a full run's preflight lets the run through. docs/demo.md should name the date before then;
+  - an own response that landed after a send error would be reported as "another validator process answered first";
+  - a pre-existing literal U+202E sits in `packages/sdk/test/trust-api.test.ts:219` (P8). An escape is safer in source.
+
+### Blockers or decisions needed
+- **None blocking.** Your side: when to record. Today allows 2 takes under the daily cap. After about 25 h, the cap allows 8.
+- **Rulings I made during P9** (every `Ruling:` from the build ledger, in order, each with what it costs if wrong):
+
+1. Work on `main` without a worktree (Decision 19). Cost if wrong: commits would need moving to a branch.
+2. The executor's workspace `.superpowers/` is excluded locally (`.git/info/exclude`), and the ledger is kept at `../plans/p9-ledger.md`. Cost if wrong: none.
+3. `readApprovalChainState` takes `chainId`, which the plan's signature left out. Cost if wrong: none.
+4. `approval-submit.ts` has its own `check` (`makeCheck`), because `common.ts` needs the RPC URL at import. The review found it dropped submit-approval's six `ok` lines, and they're restored. Cost if wrong: none.
+5. `sendMandateApproval` takes `onSent`, so the link still prints before the read-back checks. Cost if wrong: none.
+6. `approval-submit.test.ts` was added beyond the plan, to prove the move. Cost if wrong: none.
+7. The e2e's model clients are built at import, inside `liveValidators`. Construction does no I/O, and its only error carries no URL. Cost if wrong: none.
+8. `parseDemoArgs` also refuses a repeated flag and a valueless `--approvals`. Cost if wrong: none.
+9. `perTakeGas` derives from the source caps, so a drifted cap fails the tests. Cost if wrong: none.
+10. Scene 1 has 3b's blockers (no passkey, a short deployer). Cost if wrong: none.
+11. In a full run's preflight, scene 1's approval clears every stored-mandate problem and a permission change before it, but never the rogue key. Cost if wrong: after 31 Oct, a full run fails at scene 1 instead of in the preflight (deferred minor above).
+12. Scene 2 also blocks a none, stale or other forwarder key, naming 3b. Cost if wrong: none.
+13. A declined request is `DECLINED` with its code in `detail`. Cost if wrong: none.
+14. `findP256Calls` takes a local `TraceFrame`; validator-risk's `CallFrame` has no `gasUsed`. Cost if wrong: none.
+15. `verdictLines` leaves out the report's summary, which repeats the score line. Cost if wrong: one less line on screen.
+16. `narrateLog` narrates mandate-v1's finalized-head wait and a skipped report; responses print from their outcomes. Cost if wrong: none.
+17. **The permission scan is one combined `eth_getLogs` per window, 8 windows at once:** same events and same filter, now about 8 s instead of 57 s, so each scene doesn't open on a minute of dead air. Cost if wrong: a permission event missed by the combined filter. The tests pin each event, emitter and agent, and the reviewer checked it's equivalent.
+18. `readDemoState({ spend: false })` for scenes 1, 3 and 3b; only scene 2 and the preflight need the 12 s spend read. Cost if wrong: none.
+19. Task 4's commit had literal bidi characters where escapes were meant; they were replaced in Task 5. Cost if wrong: none.
+20. `monShort` shows 4-decimal MON on screen, and `<0.0001 MON` for dust. Cost if wrong: none.
+21. `--fund` refuses until the rogue key exists. Cost if wrong: none.
+22. `--preflight` exits 1 on any blocker. Scenes 2 and 3 also block on a running validator service and on a model endpoint that doesn't answer. Cost if wrong: none.
+23. Scene 3 tops the vault up below the rogue value: mandate-v1 would otherwise add `SIMULATION_FAILED`. Cost if wrong: one more top-up tx on a scene-3-only run.
+24. risk-v1 scoring the rogue transfer 80 or more only warns; mandate-v1's reasons and the revert are hard checks. Cost if wrong: none.
+25. A `skip` at 3b's approval stops with "not reset", and the reset hint prints only once a scene has started. Cost if wrong: none.
+26. Verdicts are read from their response's own block. Cost if wrong: none.
+27. The reset fixture keeps scenario-safe's action (0.001 MON), so only the permission window differs. Cost if wrong: none.
+28. **Before the live run:** a print that failed could have ended the process as an unhandled rejection (fatal in Node 22). Fixed with `serialQueue`, test first. Cost if wrong: none.
+29. **After the live take:** each report link printed before its verdict. Fixed with `reportLogOf`, test first. Cost if wrong: none.
+30. I verified the pages by their text, with a clean console, and took no screenshots: the pane was hidden, as in P8. Cost if wrong: no screenshots in the record.
+31. docs/demo.md suggests cutting 3b's repeated approval with the note "same passkey approval as scene 1". The narration says the Grok/Bankr *pattern* (SPEC's wording) and makes no loss claims. Cost if wrong: a script you retime.
+32. **Review fixes, re-graded by their effect on you.** Five of these the reviewer graded Minor.
+    - **Untrusted text on screen:** model-chosen tool names, an approval file's bytes echoed back in an error, and validator error text now pass through `printableError` and `toolsLine` (Important).
+    - **submit-approval's `ok` lines** are restored (ruling 4).
+    - **A verdict inside a cut region:** following the marks would have cut mandate-v1's verdict out of the video. `verdictFlow` prints each verdict between the waits.
+    - **One state read before each approval,** not two: about 8 s less dead air.
+    - **The approval must be for this agent and this nonce,** including a path you type in (`demoApprovalProblems`).
+    - **ARCHITECTURE §5.3** no longer claims R1's model path was tested.
+
+    Cost if wrong: none.
+33. The reviewer's "declined to judge" lines stand as it described them: pre-existing behaviour, out of scope, or failing safe. None of them can send a wrong transaction. Cost if wrong: none.
+
+---
+
 ## Mon 5 Oct 2026 · P8 the Envio trust API, `/dashboard`, and `/inbox` through the indexer
 
 ### Done
