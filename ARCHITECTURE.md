@@ -493,7 +493,9 @@ sequenceDiagram
    parses the log's data: URI with the repo SDK and recomputes its `requestHash`. The request must name C, its agent
    and chain 10143 through a (gate, agent) pair it serves.
 2. **The pin and finality.** `P` is the log's block, identical on every node. The header at `P` must be the log's block.
-   Nothing is read at `P` until the finalized head is `PIN_LAG_BLOCKS` (5) past it; validator A waits the same way. The
+   The evaluation reads nothing at `P` until the finalized head is `PIN_LAG_BLOCKS` (5) past it, as validator A waits.
+   The workflow reads the header and the request at `P` first (those reads throw or are right), then requires that
+   finality before calling `/evaluate`; otherwise the run fails, writing nothing (simulation re-runs it by hand). The
    action's deadline must not have passed and be at most 3,600 s after `P`'s time; the request must be unanswered.
 3. **The evaluation.** `POST /evaluate` runs `evaluateAtPin`: verify's own `requestAt`, then `runMandateV1` at `P` as
    validator C, then `buildEvidence` and canonical JSON. A run takes ~13 s and CRE cuts HTTP at 10 s, so one memoized
@@ -788,7 +790,7 @@ The recommended gate policy is *require `mandate-v1` = 100 **and** `risk-v1` ≥
 | Agent hot key | secp256k1 | Agent runtime (demo: `.env`, made by `scripts/src/hot-keys.ts`, funded for a few requests) | Agent | Registered with `AgentRequestForwarder.setAgentKey`. Calls `forwarder.request` for its own agent only. It is not an ERC-721 operator, so it can't transfer the agent NFT. `execute` is permissionless, so it may also submit validated actions. |
 | Demo rogue key (P9) | secp256k1 | `.env` (`DEMO_ROGUE_*`, made by `hot-keys`), funded for a few requests | Builder (demo only) | `0x81F4a86250d74D5d8898f962bB8B555208631bda`. Registered as agent 1984's forwarder key only between `pnpm demo` scenes 3 and 3b (§5.3), so it can request validations for agent 1984 then, never move the agent. A real random key, never one derived from a public label: anyone could use such a key while it is registered |
 | Validator A / B keys | secp256k1 | Validator service env (`.env`, never committed) | Validator operator | `validatorAddress` in requests and responses |
-| CRE broadcast key (`CRE_ETH_PRIVATE_KEY`, P11) | secp256k1 | `.env`; `pnpm cre:demo` hands it to the CRE CLI in the CLI's environment with only `PATH` and `HOME` | Builder (hackathon-only) | Sends CRE's mock forwarder `report()` transactions; it is **not** validator C (C is the `CreValidator` contract) and holds no rights over it. `/evaluate` holds no key |
+| CRE broadcast key (`CRE_ETH_PRIVATE_KEY`, P11) | secp256k1 | `.env`; `pnpm cre:demo` hands it to the CRE CLI in the CLI's environment with only `PATH` and `HOME` | Builder (hackathon-only) | Sends CRE's mock forwarder `report()` transactions; it is **not** validator C (C is the `CreValidator` contract) and has no more power over C than anyone (on the mock, anyone can deliver). `/evaluate` reads no key and has no signer, though its process loads `.env` |
 | Deployer | secp256k1 | `.env` | Builder | Deploys only. No admin rights afterwards. |
 | LLM API key (`LLM_API_KEY`: an OpenAI-compatible endpoint, Groq today; also used for Prompt Guard) | Bearer token | Validator B's service env (`.env`, never committed), read by `validators/risk/src/config.ts`; also by `record-fixtures` | Validator B operator | None. Never logged or recorded: logs and evidence carry the endpoint's host only, and fixtures hold request and response bodies, never headers |
 | Nansen API key (`NANSEN_API_KEY`, optional) | API key header | Validator B's service env | Builder | None. Without it both Nansen tools answer "unavailable" |
@@ -846,8 +848,15 @@ The LLM never sees or holds any private key. Validators sign; the model only pro
   nobody can overwrite C's verdict later.
   - **The flip side:** anyone can fill C's slot first with a forged verdict through the mock's public `route()`, and
     the real workflow then can't write. This griefing affects only C (no gate requires it).
-  - **It is visible:** `verify` shows the forged verdict as a MISMATCH, and `pnpm cre:demo` prints `verify`'s result
-    for an already-answered request instead of simulating.
+  - **It is visible, not always as a MISMATCH.**
+    - Fabricated evidence or a wrong score is a MISMATCH.
+    - A response URI `verify` can't decode is "could not verify".
+    - An honest `mandate-v1` verdict pinned at a later block re-verifies as a match at that block, because `verify`
+      accepts any pin between the request and the response. C's own workflow always delivers a verdict
+      pinned at the request's block (C's pin rule); `pnpm cre:demo` checks this for an already-answered request.
+- **On-chain `getSummary` counts C's verdicts (P11).** `getSummary(agentId, [], "mandate-v1")` mixes C's forgeable
+  verdicts with validator A's; a consumer passes the validators it trusts (for example `[A]`), as AttestGate names
+  each required validator.
 - **A successful CRE write isn't a landed verdict (P11).** Both Keystone forwarders swallow a receiver's revert:
   - the transaction succeeds, and only `ReportProcessed.result` says whether `onReport` did;
   - CRE's simulator reports success from the receipt alone, and even without `--broadcast`.

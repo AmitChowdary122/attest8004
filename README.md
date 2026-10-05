@@ -288,7 +288,7 @@ Validator C is `mandate-v1` with a [Chainlink CRE](https://docs.chain.link/cre) 
 the workflow ([`cre/validator-c/`](./cre/validator-c/)):
 1. **reads Monad itself:** the request's block and hash, that the request names C, finality, the deadline, that it's
    unanswered;
-2. **asks the unchanged `mandate-v1` logic** over HTTP (`POST /evaluate` on 127.0.0.1, read-only, no keys) through
+2. **asks the unchanged `mandate-v1` logic** over HTTP (`POST /evaluate` on 127.0.0.1, read-only, reads no key) through
    identical-aggregation consensus;
 3. **cross-checks the evidence** against its own reads, and computes the response hash itself;
 4. **writes the verdict** through CRE's forwarder into `CreValidator`
@@ -395,7 +395,10 @@ Known gaps, stated plainly. The full threat model is P12's.
   trust with the whole balance ([ARCHITECTURE §9](./ARCHITECTURE.md#9-security-design-decisions)).
 - **Validator C (Chainlink CRE) runs in simulation only.** It trusts CRE's mock forwarder, through which anyone can
   deliver a report. So no gate requires it, and anyone can fill its write-once slot first with a forged verdict:
-  griefing that affects only C, which `verify` shows as a MISMATCH.
+  griefing that affects only C. `verify` shows such a verdict as a MISMATCH, as "could not verify" (an undecodable
+  URI), or as a match at a later pin, which isn't C's: C always pins the request's block
+  ([docs/cre.md §7](./docs/cre.md#7-trust-model)).
+  - **On-chain `getSummary`** counts C's `mandate-v1` verdicts together with A's; pass the validators you trust.
   - **Its daily-spend view** is as of each request's block.
   - **The production path** is on the roadmap: a new receiver with CRE's KeystoneForwarder, a DON deployment, and
     `/evaluate` at a public URL ([docs/cre.md §11](./docs/cre.md#11-the-production-path)).

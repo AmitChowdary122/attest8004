@@ -17,7 +17,7 @@ checkable because `pnpm attest8004 verify` re-executes them.
 | Workflow | [`cre/validator-c/`](../cre/validator-c/) (TypeScript, `@chainlink/cre-sdk` 1.23.0, CRE CLI v1.37.0, Bun 1.3.14) |
 | Receiver (validator C) | `CreValidator` [`0x6D12F00870cB6edA2d8e389696f6B5d050423B95`](https://monad-testnet.socialscan.io/address/0x6d12f00870cb6eda2d8e389696f6b5d050423b95) ([source](../contracts/src/CreValidator.sol)) |
 | Forwarder it trusts | CRE's MockKeystoneForwarder `0xB9F79d863261869B234c481D1f9A7af84AeAd192` (Forwarder Directory, monad-testnet) |
-| Evaluation API | `POST /evaluate` on 127.0.0.1:8787 ([`validators/mandate/src/evaluate*.ts`](../validators/mandate/src/evaluate.ts)): read-only, no keys |
+| Evaluation API | `POST /evaluate` on 127.0.0.1:8787 ([`validators/mandate/src/evaluate*.ts`](../validators/mandate/src/evaluate.ts)): read-only; it reads no key and has no signer |
 | Run it | `pnpm cre:demo` ([§9](#9-how-to-run-it)) |
 | Live runs | [§10](#10-the-live-runs) and [deployments](./deployments.md#p11-cre-run-validator-c-orchestrated-by-chainlink-cre-testnet-2026-10-06) |
 
@@ -37,7 +37,7 @@ Validators A (`mandate-v1`) and B (`risk-v1`) are plain services, each holding i
   `getValidationStatus` at chosen blocks, an `eth_estimateGas`). An EVM write of a signed report through the Keystone
   forwarder.
 - **An external API.** `mandate-v1`'s evaluation, served by `POST /evaluate`. It runs the exact code validator A and
-  `verify` run: the collector, the rules and the canonical evidence. It holds no key and sends nothing.
+  `verify` run: the collector, the rules and the canonical evidence. It reads no key and sends nothing.
 
 Everything between them is the workflow's own work, in [`src/workflow.ts`](../cre/validator-c/src/workflow.ts):
 1. Authenticate the trigger's request JSON (the repo SDK's `requestHash`).
@@ -62,7 +62,7 @@ sequenceDiagram
   participant FW as AgentRequestForwarder
   participant VR as ValidationRegistry
   participant WF as CRE workflow (validator C)
-  participant EV as mandate-v1 /evaluate (127.0.0.1, no keys)
+  participant EV as mandate-v1 /evaluate (127.0.0.1, reads no key)
   participant MF as MockKeystoneForwarder
   participant C as CreValidator
   HK->>FW: request(C, 1984, data:URI, requestHash)
@@ -114,10 +114,14 @@ of a model don't produce the same bytes.
 - the action's deadline is at most 3,600 s after `P`'s time. The workflow and the service both decline a request that
   fails this.
 
-**Finality is waited for the way validator A waits.** Nothing is read at `P` until the finalized head is at least
-`P + 5`, `mandate-v1`'s `PIN_LAG_BLOCKS`: a load-balanced RPC can serve logs from a node a few blocks behind.
-- The workflow checks it before calling `/evaluate`; if it doesn't hold, that run fails and is re-run.
-- The service also waits for it, bounded, before reading.
+**Finality is waited for the way validator A waits.** `mandate-v1`'s evaluation reads nothing at `P` until the
+finalized head is at least `P + 5` (`PIN_LAG_BLOCKS`): a load-balanced RPC can serve logs from a node a few blocks
+behind.
+- **The service** waits for it, bounded at 60 s, before evaluating.
+- **The workflow** first reads the header and the request's status at `P`; those reads either throw or are right. It
+  then requires the finalized head to be at least `P + 5` before calling `/evaluate`. If that doesn't hold, the run
+  fails and writes nothing. In simulation, someone runs it again (`pnpm cre:demo` waits first). A DON doesn't re-run a
+  failed execution, so production would let the service's wait cover it ([§11](#11-the-production-path)).
 - The log trigger asks for `CONFIDENCE_LEVEL_FINALIZED`. The simulator ignores this, so `pnpm cre:demo` waits for
   finality itself before it simulates.
 
@@ -149,7 +153,9 @@ Before anything is signed, the workflow checks `/evaluate`'s answer against what
 | The response | computed by the workflow | `responseURI` = a base64 data: URI of those exact bytes; `responseHash` = their keccak256 |
 
 So a faulty or hostile `/evaluate` can't attach a verdict to another request, another block or another action, or
-publish evidence other than what it hashed. It can only lie about the score, and `verify` catches that.
+publish evidence other than what it hashed. It can still lie about what it computed: the score, the reasons, the
+spend, the mandate or the simulation it reports. `verify` catches any of those, because it rebuilds the whole document
+and compares its hash.
 
 ## 6. The receiver contract: CreValidator
 
@@ -199,8 +205,8 @@ no upgrade path; `test_abiIsMinimal` pins its ABI.
   - `pnpm cre:demo` refuses to run if that ever changes.
   - Every surface labels C the same way: these docs, `verify`'s output, `/dashboard` and the demo.
 - **What makes a C verdict checkable.** It is `verify`'s re-execution: `pnpm attest8004 verify <requestHash>`
-  re-reads the chain at C's pin, re-runs `mandate-v1` as validator C, rebuilds the evidence and compares the score and
-  `responseHash`.
+  re-reads the chain at the pin the evidence names, re-runs `mandate-v1` as validator C, rebuilds the evidence and
+  compares the score and `responseHash`. C's own workflow always pins the request's block, so check that too.
   - A match proves the posted verdict is what `mandate-v1` gives at that block.
   - A MISMATCH is public proof that whoever delivered it lied.
 - **Consensus doesn't compute the score.** Identical aggregation makes the DON agree on what `/evaluate` answered; it
@@ -209,8 +215,13 @@ no upgrade path; `test_abiIsMinimal` pins its ABI.
 - **Write-once griefing on the mock.** Anyone can fill C's slot first with a forged verdict through the public
   `route()`; the real workflow then can't write, because C refuses a second response.
   - **This affects only C:** no gate requires it.
-  - **It is visible:** `verify` shows the forged verdict as a MISMATCH
-    (`verifyRequest_flagsForgedCreVerdictAsMismatch`).
+  - **It is visible, though not always as a MISMATCH.** A delivered verdict is never a match at C's pin unless it
+    is `mandate-v1`'s true answer there:
+    - fabricated evidence or a wrong score is a MISMATCH (`verifyRequest_flagsForgedCreVerdictAsMismatch`);
+    - a response URI `verify` can't decode (not a `data:` URI, or over 128 KiB) is "could not verify";
+    - an honest `mandate-v1` verdict pinned at a later block re-verifies as a match *at that block*, because `verify`
+      accepts any pin between the request and the response. So also check that the verdict is pinned at the request's
+      block (C's pin rule); a later pin means someone other than C's workflow delivered it.
   - **The demo says so:** for an already-answered request, `pnpm cre:demo` prints `verify`'s result for the existing
     verdict instead of simulating.
 - **A successful write isn't a landed verdict.** Both forwarders swallow a receiver's revert: the transaction succeeds,
@@ -222,7 +233,9 @@ no upgrade path; `test_abiIsMinimal` pins its ABI.
 - **Keys.**
   - **The broadcast key:** `CRE_ETH_PRIVATE_KEY` is the only key that broadcasts reports. `pnpm cre:demo` passes it to
     the CRE CLI in the CLI's environment alongside only `PATH` and `HOME`; nothing else from `.env` reaches the CLI.
-  - **The service:** `/evaluate` reads no key, and a source scan pins that its modules sign nothing.
+  - **The service:** `/evaluate` reads no key and has no signer, and a source scan pins that its modules sign
+    nothing. Its process does load the repo's `.env` (its `evaluate` script, and `pnpm cre:demo` runs it in-process
+    next to the hot and CRE keys), so "no key" means no code path reads or uses one, not an empty environment.
   - **The deployer:** it only deployed C.
 
 ## 8. Limits
@@ -244,6 +257,9 @@ no upgrade path; `test_abiIsMinimal` pins its ABI.
   happens only with dozens of approvals in C's 25 h window.
 - **C's spend is judged at the request's block** ([§4](#4-the-pin-finality-and-the-long-poll)).
 - **C posts no operator reports,** so `/inbox` shows none for its verdicts: it has no key to post with.
+- **On-chain `getSummary` mixes C's verdicts in, too.** `getSummary(agentId, [], "mandate-v1")` counts C's verdicts,
+  which anyone can forge on the mock, together with validator A's. A consumer must pass the validators it trusts,
+  for example `getSummary(agentId, [A], "mandate-v1")`, as AttestGate does by naming each required validator.
 - **`/dashboard`'s per-tag summary mixes C's verdicts in.** The agent lookup counts C's verdicts under `mandate-v1`
   together with A's. Each verdict row and the validator table name C with its label. The indexer is a convenience that
   no verdict reads.
@@ -322,7 +338,10 @@ What a real C would need; this is on the roadmap, not built ([ARCHITECTURE §12]
    endpoint is the one source of the score unless each node operator runs its own `/evaluate`, against its own RPC.
    With independent evaluations, identical aggregation becomes a real cross-check rather than an agreement on one
    server's answer.
-4. **Still no gate requires C** until those hold. Even then, C's verdict is `mandate-v1`'s, checkable by `verify` like
+4. **Waiting for finality in the service.** A DON doesn't re-run a failed log-trigger execution, so a production
+   workflow should go straight on to poll `/evaluate`, whose bounded finality wait answers `pending` until `P + 5`
+   is final, rather than fail on `NOT_FINAL`.
+5. **Still no gate requires C** until those hold. Even then, C's verdict is `mandate-v1`'s, checkable by `verify` like
    validator A's.
 
 ## 12. A 2-minute video script
