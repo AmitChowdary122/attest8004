@@ -5,6 +5,10 @@ packages:
   - web
   - scripts
 
+# esbuild (the indexer's envio -> tsx) ships its binary as a platform package; its install script is not run.
+allowBuilds:
+  esbuild: false
+
 # Shared dependency versions; packages reference them as "catalog:".
 catalog:
   "@types/node": ^22.20.0

@@ -1,0 +1,227 @@
+# Attest8004 trust API entities (SPEC §4.8, ARCHITECTURE §6). Every id and hex value is lowercase. uint256 values
+# (agent ids, wei amounts, caps) are decimal strings, so no reader loses precision above 2^53; block numbers and
+# timestamps are BigInt; counts are Int. Each row carries its onchain anchors (transaction, log index, block), so a
+# reader can re-check it: the indexer is a convenience, never a trust root.
+
+enum DecodeStatus {
+  VERIFIED
+  HASH_MISMATCH
+  NOT_INLINE
+  UNREADABLE
+}
+
+enum PermissionKind {
+  TRANSFER
+  APPROVAL
+  APPROVAL_FOR_ALL
+  AGENT_KEY_SET
+  MANDATE_SET
+  MANDATE_REVOKED
+  PASSKEY_SET
+  PASSKEY_ROTATED
+}
+
+enum TrustProblem {
+  NO_REQUEST
+  WRONG_VALIDATOR
+  WRONG_AGENT
+}
+
+# One per requestHash (id), with its latest response, as getValidationStatus reports it.
+type ValidationRequest {
+  id: ID!
+  agentId: String! @index
+  validator: String! @index
+  requestBlock: BigInt! @index
+  requestTime: BigInt!
+  requestTx: String!
+  requestStatus: DecodeStatus!
+  gate: String
+  target: String
+  value: String
+  deadline: BigInt
+  actionHash: String @index
+  responses: Int!
+  score: Int
+  tag: String @index
+  responseHash: String
+  reasons: [String!]
+  evidenceStatus: DecodeStatus
+  responseBlock: BigInt @index
+  responseTime: BigInt
+  responseTx: String
+  firstResponseBlock: BigInt
+  executedTx: String
+  executedBlock: BigInt
+}
+
+# Every ValidationResponse event (id: <tx>-<logIndex>); progressive updates are kept.
+type ValidationResponse {
+  id: ID!
+  requestHash: String! @index
+  agentId: String! @index
+  validator: String! @index
+  score: Int!
+  tag: String!
+  responseHash: String!
+  reasons: [String!]
+  evidenceStatus: DecodeStatus!
+  block: BigInt!
+  time: BigInt!
+  tx: String!
+  logIndex: Int!
+}
+
+# Per validator address (id). Buckets, scoreSum and avgScore count each answered request's latest response;
+# latency counts first responses only, in blocks.
+type Validator {
+  id: ID!
+  requests: Int!
+  answered: Int!
+  responseEvents: Int!
+  scoreSum: BigInt!
+  avgScore: Float
+  score0: Int!
+  score1to39: Int!
+  score40to79: Int!
+  score80to99: Int!
+  score100: Int!
+  latencyBlocksSum: BigInt!
+  latencyCount: Int!
+  avgLatencyBlocks: Float
+  tags: [String!]!
+  firstSeenBlock: BigInt!
+  lastActivityBlock: BigInt!
+}
+
+# An agent (id: agentId) from its first appearance in our contracts.
+type Agent {
+  id: ID!
+  owner: String @index
+  firstSeenBlock: BigInt!
+  hotKey: String
+  hotKeyOwner: String
+}
+
+# The mandate on one MandateRegistry (id: <registry>-<agentId>).
+type Mandate {
+  id: ID!
+  agentId: String! @index
+  registry: String!
+  mandateHash: String!
+  owner: String!
+  allowedTargets: [String!]!
+  allowedSelectors: [String!]!
+  maxValuePerTx: String!
+  maxValuePerDay: String!
+  validUntil: BigInt!
+  setAtBlock: BigInt!
+  active: Boolean!
+  changedBlock: BigInt!
+  changedTx: String!
+}
+
+# The passkey on one MandateRegistry (id: <registry>-<agentId>).
+type Passkey {
+  id: ID!
+  agentId: String! @index
+  registry: String!
+  qx: String!
+  qy: String!
+  owner: String!
+  block: BigInt!
+  tx: String!
+}
+
+# The X25519 inbox key on one MandateRegistry (id: <registry>-<agentId>); not a permission change (SPEC §4.7).
+type InboxKey {
+  id: ID!
+  agentId: String! @index
+  registry: String!
+  x25519Pub: String!
+  owner: String!
+  changes: Int!
+  block: BigInt!
+  tx: String!
+}
+
+# mandate-v1's permission events for a known agent (id: <tx>-<logIndex>, plus -<agentId> for ApprovalForAll).
+# inEpoch is false for a retired MandateRegistry's event after its successor took over: stored, never counted.
+type PermissionEvent {
+  id: ID!
+  agentId: String! @index
+  kind: PermissionKind!
+  source: String!
+  inEpoch: Boolean!
+  from: String
+  to: String
+  approved: Boolean
+  mandateHash: String
+  block: BigInt! @index
+  time: BigInt!
+  tx: String!
+  logIndex: Int!
+}
+
+# Every FindingsPosted (id: <tx>-<logIndex>), trusted or not: never dropped. trusted applies SPEC §4.7's rule to the
+# indexed request: it names this validator and this agent.
+type FindingsPost {
+  id: ID!
+  requestHash: String! @index
+  agentId: String! @index
+  validator: String! @index
+  envelope: String!
+  envelopeBytes: Int!
+  trusted: Boolean!
+  trustProblem: TrustProblem
+  block: BigInt!
+  time: BigInt!
+  tx: String!
+  logIndex: Int!
+}
+
+# An action an AttestGate consumed (id: actionHash).
+type ActionExecution {
+  id: ID!
+  gate: String!
+  agentId: String! @index
+  block: BigInt!
+  time: BigInt!
+  tx: String!
+  logIndex: Int!
+}
+
+# Per agent (id: agentId).
+type AgentTrustSummary {
+  id: ID!
+  requests: Int!
+  answered: Int!
+  executed: Int!
+  trustedReports: Int!
+  untrustedReports: Int!
+  permissionChanges: Int!
+  lastPermissionChangeBlock: BigInt
+  lastActivityBlock: BigInt!
+}
+
+# Per agent and tag (id: <agentId>-<tag>), over each answered request's latest response.
+type AgentTagSummary {
+  id: ID!
+  agentId: String! @index
+  tag: String!
+  verdicts: Int!
+  scoreSum: BigInt!
+  avgScore: Float
+  zeroScores: Int!
+  fullScores: Int!
+  lastScore: Int
+  lastRequestHash: String
+  lastResponseBlock: BigInt
+}
+
+# Every token's current owner (id: tokenId), so an agent's owner is known when it first appears. Hidden from GraphQL.
+type TokenOwner @internal {
+  id: ID!
+  owner: String! @index
+  block: BigInt!
+}

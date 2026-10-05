@@ -1,0 +1,23 @@
+{
+  // Self-contained (Envio Cloud uploads only this folder), per Envio V3's recommended ESM settings.
+  "compilerOptions": {
+    "esModuleInterop": true,
+    "skipLibCheck": true,
+    "target": "es2022",
+    "resolveJsonModule": true,
+    "moduleDetection": "force",
+    "isolatedModules": true,
+    "verbatimModuleSyntax": true,
+    "strict": true,
+    "noUncheckedIndexedAccess": true,
+    "noImplicitOverride": true,
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "noEmit": true,
+    // Imports carry .ts extensions, like the rest of the repo; the tests import the SDK's source for parity checks.
+    "allowImportingTsExtensions": true,
+    "lib": ["es2022"],
+    "types": ["node"]
+  },
+  "include": ["src", "test", "scripts", "envio-env.d.ts", "vitest.config.ts"]
+}

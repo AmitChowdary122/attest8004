@@ -1,0 +1,70 @@
+# yaml-language-server: $schema=./node_modules/envio/evm.schema.json
+# Attest8004's trust API (SPEC §4.8): every contract we deployed on Monad testnet, each from its own deploy block
+# (docs/deployments.md), and the canonical Identity Registry's ownership events for the agents that use them.
+# A convenience, never a trust root: verdicts and `verify` read the chain (ARCHITECTURE §7).
+name: attest8004
+description: Attest8004 trust API - ERC-8004 validations, mandates and operator reports on Monad testnet
+address_format: lowercase
+
+contracts:
+  - name: ValidationRegistry
+    events:
+      - event: "ValidationRequest(address indexed validatorAddress, uint256 indexed agentId, string requestURI, bytes32 indexed requestHash)"
+      - event: "ValidationResponse(address indexed validatorAddress, uint256 indexed agentId, bytes32 indexed requestHash, uint8 response, string responseURI, bytes32 responseHash, string tag)"
+  # P4's owner-set registry and P6's v2 share one event list (same signatures and topics); each is read only in its
+  # own epoch (src/lib/epochs.ts), exactly as mandate-v1 reads the registry valid at its pin.
+  - name: MandateRegistryV1
+    events: &mandateRegistryEvents
+      - event: "MandateSet(uint256 indexed agentId, bytes32 indexed mandateHash, address indexed owner, address[] allowedTargets, bytes4[] allowedSelectors, uint256 maxValuePerTx, uint256 maxValuePerDay, uint64 validUntil, uint64 setAtBlock)"
+      - event: "MandateRevoked(uint256 indexed agentId, bytes32 indexed mandateHash, address indexed owner)"
+      - event: "PasskeySet(uint256 indexed agentId, address indexed owner, bytes32 qx, bytes32 qy)"
+      - event: "PasskeyRotated(uint256 indexed agentId, address indexed owner, bytes32 oldQx, bytes32 oldQy, bytes32 qx, bytes32 qy)"
+      - event: "InboxKeySet(uint256 indexed agentId, address indexed owner, bytes32 x25519Pub)"
+  - name: MandateRegistryV2
+    events: *mandateRegistryEvents
+  - name: AgentRequestForwarder
+    events:
+      - event: "AgentKeySet(uint256 indexed agentId, address indexed owner, address indexed key)"
+  - name: FindingsBoard
+    events:
+      - event: "FindingsPosted(bytes32 indexed requestHash, uint256 indexed agentId, address indexed validator, bytes envelope)"
+  - name: DemoAgentVault
+    events:
+      - event: "ActionConsumed(bytes32 indexed actionHash, uint256 indexed agentId)"
+  - name: IdentityRegistry
+    events:
+      - event: "Transfer(address indexed from, address indexed to, uint256 indexed tokenId)"
+      - event: "Approval(address indexed owner, address indexed approved, uint256 indexed tokenId)"
+      - event: "ApprovalForAll(address indexed owner, address indexed operator, bool approved)"
+
+chains:
+  - id: 10143 # Monad testnet
+    # The lowest contract start below: the Identity Registry's first event.
+    start_block: 10675492
+    contracts:
+      - name: ValidationRegistry
+        address: "0xc4A4D0cEB3971cbE7a2536494aC106f2Cd9F9a8f"
+        start_block: 67604893
+      - name: AgentRequestForwarder
+        address: "0x1451F3C36545b191d3642f759D59f21DcFD657B2"
+        start_block: 67779694
+      - name: MandateRegistryV1
+        address: "0x2523197373ef813E19b5b14Ef2984130868cD17c"
+        start_block: 67842487
+      - name: MandateRegistryV2
+        address: "0x2Ee5f78149762DE630c6bFF8CD81166010D0454B"
+        start_block: 68196462
+      - name: FindingsBoard
+        address: "0xa7d52B3B08FAB0cd0527c6242ca678f9Feee6a1c"
+        start_block: 68296810
+      # The P2 (agent 1982), P3 and two-validator (agent 1984) vaults; the earliest deploy block covers all three.
+      - name: DemoAgentVault
+        address:
+          - "0x7A5EC388CCbfD3B255CFa94fc2062c0807F2C4CD"
+          - "0x23BfBD12545CCd1501ddA1B65a54518FD6212a96"
+          - "0x12fAb3E3cA810Cc44bD9f537613a230a2be8D614"
+        start_block: 67757166
+      # The canonical ERC-8004 Identity Registry (a proxy). Only our agents' events are exposed (src/handlers).
+      - name: IdentityRegistry
+        address: "0x8004A818BFB912233c491871b3d84c89A494BD9e"
+        start_block: 10675492
