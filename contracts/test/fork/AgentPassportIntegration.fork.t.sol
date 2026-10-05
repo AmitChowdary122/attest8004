@@ -245,6 +245,24 @@ contract AgentPassportIntegrationForkTest is Test {
         ESCROW.release(jobId);
     }
 
+    /// The verifier isn't exclusive (docs/integrations.md, caveat 1): once the review window has
+    /// passed, anyone may release a delivered job, with no verdicts at all.
+    function testFork_AnyoneCanReleaseAfterReviewWindow() public {
+        uint256 jobId = _openAndDeliver();
+        IJobEscrowLike.Job memory job = ESCROW.getJob(jobId);
+        vm.warp(uint256(job.deliveredAt) + job.reviewWindow + 1);
+        address payee = _payee();
+        uint256 payeeBefore = USDC.balanceOf(payee);
+
+        vm.expectEmit(true, true, true, true, address(ESCROW));
+        emit IJobEscrowLike.JobReleased(jobId, workerAgent, stranger, AMOUNT);
+        vm.prank(stranger);
+        ESCROW.release(jobId);
+
+        assertEq(USDC.balanceOf(payee), payeeBefore + AMOUNT, "paid without any verdict");
+        assertEq(ESCROW.getJob(jobId).status, STATUS_RELEASED);
+    }
+
     /// The action's own call (what mandate-v1 simulates from the vault) fits its gas cap, on an
     /// agent's first settlement (its passport record and first feedback are new storage, the
     /// costliest case). Logs that gas and a whole execute's on another first settlement, for

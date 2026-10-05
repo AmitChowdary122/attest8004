@@ -2,8 +2,12 @@
 
 Many escrows let whoever funds a job name a **verifier**: an address that may release the payment. Make that address an
 [`AttestGate`](../contracts/src/AttestGate.sol) consumer, such as [`DemoAgentVault`](../contracts/src/DemoAgentVault.sol).
-The payment is then released only when every validator the vault requires has passed that exact release action. No
+The vault then releases a payment only when every validator it requires has passed that exact release action. No
 adapter contract is needed: the vault's `execute(Action)` makes the call itself, so the escrow sees the vault as the caller.
+
+**This gates the verifier's path, not the escrow.** Whatever other release paths the escrow has still work without any
+verdict. In AgentPassport's JobEscrow, the hirer can release at any time, and anyone can once the review window has
+passed ([caveat 1](#caveats), pinned by `testFork_AnyoneCanReleaseAfterReviewWindow`).
 
 **What this page proves, and what it doesn't.** A Foundry fork test proves this composition against
 [AgentPassport](#credits)'s **live bytecode** on Monad testnet ([the proof](#the-proof-fork-tests)). It is **not
@@ -22,6 +26,8 @@ would have put self-dealt reputation into the canonical ERC-8004 Reputation Regi
 2. Ideally, a **release call that takes no recipient and no amount**: the escrow pays whoever the funder chose, the amount
    the funder locked. The verifier then decides only *when* to pay. Otherwise your mandate and validators must bound the
    recipient and the amount, and [`risk-v1` can't see token transfers](#caveats).
+3. **Known other release paths.** Who else can release, and when (the funder, a timeout, an owner or admin)? The validators
+   gate only the vault's own call, so a payment is gated end to end only if the other paths are closed for that job.
 
 **The steps:**
 1. **The vault.** The agent that acts as verifier has an AttestGate consumer that requires the validators you trust
@@ -57,7 +63,8 @@ const action = buildAction({
   target: JOB_ESCROW,
   value: 0n,
   data: encodeFunctionData({ abi: escrowAbi, functionName: "release", args: [jobId] }),
-  deadline: nowSeconds + 3600n, // mandate-v1 accepts at most 1 h ahead
+  // The chain's clock, not the wall clock: validators skip a deadline more than 1 h past their head.
+  deadline: (await publicClient.getBlock()).timestamp + 1800n,
 });
 
 // The verifier agent's hot key, through the forwarder: one request per validator.
@@ -155,6 +162,7 @@ cd contracts && MONAD_TESTNET_RPC_URL=https://testnet-rpc.monad.xyz forge test -
 | `testFork_ReplayRevertsActionAlreadyConsumed` | The same action again: `ActionAlreadyConsumed(actionHash)`. |
 | `testFork_SecondReleaseFailsAtEscrow` | Fresh verdicts for a new action on a released job: the escrow refuses (`CallFailed(InvalidStatus(jobId, Released))`). |
 | `testFork_StrangerCannotRelease` | Before the review window ends, a third party's `release` reverts `NotAuthorizedToRelease`. |
+| `testFork_AnyoneCanReleaseAfterReviewWindow` | After the review window, that same stranger releases with no verdict at all, and the worker is paid: the verifier isn't exclusive ([caveat 1](#caveats)). |
 | `testFork_ReleaseFitsMandateV1SimulationCap` | The release itself, called from the vault, fits `mandate-v1`'s 1,000,000-gas simulation cap. |
 
 **Gas.** In forge's Monad gas model, on an agent's first settlement (its passport record and first feedback entry are new
@@ -172,8 +180,11 @@ used 374,088 gas in total. Monad charges the gas limit, so size live limits from
    - the hirer can release, or release with a passkey;
    - anyone can release once the review window ends.
 
-   Validated release is guaranteed only while the hirer holds back and the window is open. A hirer who wants
-   validator-gated release *only* would have to be a gated contract itself, which isn't built.
+   Validated release is guaranteed only while the hirer holds back and the window is open:
+   `testFork_AnyoneCanReleaseAfterReviewWindow` shows a stranger releasing with no verdict at all after it closes. So a
+   refusal by the validators only delays payment, unless the hirer disputes in time. A hirer that is itself a gated
+   contract still wouldn't get validator-only release: it would also have to dispute before the window closes, every time.
+   Nothing like that is built.
 2. **AgentPassport has an owner** (an EOA at the time of writing) who can remove JobEscrow as an attester. Every release,
    dispute and accepted refund would then revert, and escrowed funds would be stuck. `testFork_LiveWiring` re-checks the
    attester on every CI run.
@@ -195,6 +206,12 @@ used 374,088 gas in total. Monad charges the gas limit, so size live limits from
    Their contracts are immutable, so nothing here depends on them; the fork test fails loudly if the wiring above changes.
 
 ## Doing the same for another escrow
+
+**Our validators answer only allowlisted (gate, agent) pairs.** `MANDATE_V1_GATES` and `RISK_V1_GATES` default to our demo
+vault with agent 1984 (SPEC §4.5, §4.6). Any other pair is declined before any RPC (`GATE_NOT_SERVED` or
+`GATE_NOT_FOR_AGENT`), and they answer only while their operator runs them. For your own vault, either run your own
+validators from [`validators/`](../validators) with your gate configured, or ask us to add your pair. Otherwise your
+requests get no answer, and `awaitVerdict` times out.
 
 1. **Read the escrow's release rules.** Who may release, and when? Does the caller choose the payee or the amount? Can its
    owner pause it?

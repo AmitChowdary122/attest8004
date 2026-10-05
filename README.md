@@ -282,12 +282,16 @@ pnpm --filter @attest8004/indexer test      # handler tests (Envio's test framew
 
 ## Integrations
 
-**Any escrow with a verifier hook can require Attest8004 verdicts before it pays.** Name an AttestGate vault as a job's
-verifier, and the payment is released only by `vault.execute(release(jobId))` once every required validator has passed
-that exact action. No adapter contract is needed.
+**Any escrow with a verifier hook can require Attest8004 verdicts on its verifier's releases.** Name an AttestGate vault
+as a job's verifier, and the vault releases the payment, through `vault.execute(release(jobId))`, only once every
+required validator has passed that exact action. No adapter contract is needed.
+
+**The verifier isn't exclusive.** The escrow's other release paths still apply: the hirer can release at any time, and
+anyone can once the review window has passed. So a refusal by the validators stops the vault, not the payment
+([caveat 1](./docs/integrations.md#caveats)).
 
 [docs/integrations.md](./docs/integrations.md) works this through with AgentPassport's JobEscrow v2 (by agentfromzero,
-MIT). [Nine fork tests](./contracts/test/fork/AgentPassportIntegration.fork.t.sol) drive our live `DemoAgentVault`
+MIT). [Ten fork tests](./contracts/test/fork/AgentPassportIntegration.fork.t.sol) drive our live `DemoAgentVault`
 against their live bytecode on Monad testnet:
 - a delivered job is paid out through the vault;
 - a release without verdicts, or with a low `risk-v1` score, reverts;

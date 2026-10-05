@@ -100,7 +100,7 @@ for its operator, with recommendations. Its purpose is the channel:
   report that only the agent's operator can decrypt. No recorded run has had a `NANSEN_API_KEY` set: `risk-v1`'s Nansen tools
   answered "unavailable", so no Nansen data is in any public evidence. If Nansen data is ever served, `risk-v1`'s
   public evidence (which records every tool output) would carry it. Whether that needs a `risk-v2` that keeps Nansen
-  outputs out of public evidence and only in the inbox is a decision recorded for P10 (STATUS.md).
+  outputs out of public evidence and only in the inbox is a decision recorded for P12, the threat model (STATUS.md).
 
 ## 5. The cross-device test
 
