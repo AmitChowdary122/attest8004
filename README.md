@@ -247,7 +247,8 @@ At runtime, `risk-v1` calls a **Groq-hosted** model through an OpenAI-compatible
 | [React](https://react.dev) | MIT | Web app |
 | [Vite](https://vite.dev) | MIT | Web build |
 | [Mera](https://mera.category.xyz) (`@category-labs/mera` 0.2.0, Category Labs) | MIT / Apache-2.0 | The `/approve` page's PRF check (`getPasskeyPrfOutput`); P7's passkey inbox |
-| [@noble/curves](https://github.com/paulmillr/noble-curves), [@noble/hashes](https://github.com/paulmillr/noble-hashes), [@scure/base](https://github.com/paulmillr/scure-base) | MIT | Mera's dependencies (bundled into the web app) |
+| [@noble/curves](https://github.com/paulmillr/noble-curves), [@noble/hashes](https://github.com/paulmillr/noble-hashes), [@noble/ciphers](https://github.com/paulmillr/noble-ciphers) 2.2.0 (Paul Miller) | MIT | The SDK's findings inbox (`packages/sdk/src/inbox-crypto.ts`): X25519, HKDF-SHA256 and AES-256-GCM. Curves and hashes are also Mera's dependencies, at the same versions, so the web app bundles one copy |
+| [@scure/base](https://github.com/paulmillr/scure-base) | MIT | Mera's dependency (bundled into the web app) |
 
 **Standards and reference code:**
 

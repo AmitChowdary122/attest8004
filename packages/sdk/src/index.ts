@@ -12,3 +12,4 @@ export * from "./validator-chain.ts";
 export * from "./validator.ts";
 export * from "./webauthn.ts";
 export * from "./passkey.ts";
+export * from "./inbox-crypto.ts";

@@ -1,0 +1,34 @@
+{
+  "schema": "attest8004.inbox-vectors.v1",
+  "description": "One sealed findings envelope (ARCHITECTURE §6), computed with node:crypto by packages/sdk/test/make-inbox-vectors.ts, independent of the SDK's noble implementation. The secret inputs are derived from public labels at run time (the ephemeral key is sha256(ephemeralSeedLabel)), and the secret intermediates (the inbox private key, the shared secret, the AEAD key) aren't stored: the envelope, byte for byte, depends on each of them. Checked by packages/sdk/test/inbox-crypto.test.ts (noble) and contracts/test/InboxVectors.t.sol (the AAD against abi.encode, the topic against FindingsPosted.selector). Integers are decimal strings.",
+  "formulas": {
+    "inputs": "prfOutput = sha256(\"attest8004.test.inbox-prf\"); the ephemeral private key = sha256(ephemeralSeedLabel), derived at run time; nonce = the first 12 bytes of sha256(\"attest8004.test.nonce\"); requestHash = sha256(\"attest8004.test.request\"); plaintext is UTF-8",
+    "inboxPrfSalt": "sha256(\"attest8004.inbox.v1\")",
+    "inboxPublicKey": "X25519(k, 9), where k = HKDF-SHA256(ikm = prfOutput, salt = empty, info = inboxKeyInfo, L = 32), clamped: k[0] &= 248; k[31] &= 127; k[31] |= 64 (not stored)",
+    "ephemeralPublicKey": "X25519(sha256(ephemeralSeedLabel), 9)",
+    "aad": "abi.encode(uint256 chainId, address findingsBoard, address validationRegistry, bytes32 requestHash, uint256 agentId, address validator, bytes32 recipient)",
+    "envelope": "0x01 ‖ ephemeralPublicKey (32) ‖ nonce (12) ‖ AES-256-GCM(key, nonce, aad, plaintext) ‖ tag (16), where key = HKDF-SHA256(ikm = X25519(ephemeral, recipient), salt = ephemeralPublicKey ‖ recipient, info = findingsAeadInfo, L = 32) (not stored)",
+    "findingsPostedTopic": "keccak256(\"FindingsPosted(bytes32,uint256,address,bytes)\")"
+  },
+  "inboxPrfSalt": "0xdcf0bef0cf5731b87e77a1af98c1f1b5f97bbee5bff7cf0eaa7cbfcb00830853",
+  "inboxKeyInfo": "attest8004.inbox.x25519.v1",
+  "findingsAeadInfo": "attest8004.findings.aes256gcm.v1",
+  "prfOutput": "0x81a39e3600b3eda423e44351676b5536ade1a44c7a807707be057a080270432c",
+  "ephemeralSeedLabel": "attest8004.test.ephemeral",
+  "nonce": "0x27d84d2c909a82dc993b22fa",
+  "plaintext": "attest8004 inbox test vector: agent 1984's action scored 0 — target outside its mandate.",
+  "context": {
+    "chainId": "10143",
+    "findingsBoard": "0xa7d52B3B08FAB0cd0527c6242ca678f9Feee6a1c",
+    "validationRegistry": "0xc4A4D0cEB3971cbE7a2536494aC106f2Cd9F9a8f",
+    "requestHash": "0x85f30f6fc7ac2df0a977bbfd5dd72e53d766fcd5f432913b0dfee16e6afec792",
+    "agentId": "1984",
+    "validator": "0xa62DaB21E0C0F57e94B3ed6e675F214199989e92",
+    "recipient": "0x46dde49b9a71b7e6f6c3a290a110d714b1c4969aabecdbc97b448c075b1ba07a"
+  },
+  "inboxPublicKey": "0x46dde49b9a71b7e6f6c3a290a110d714b1c4969aabecdbc97b448c075b1ba07a",
+  "ephemeralPublicKey": "0x96a0b63dc8fc37a85c567909fa2e2191359990fa4fb668a85d1b0e1982f4c745",
+  "aad": "0x000000000000000000000000000000000000000000000000000000000000279f000000000000000000000000a7d52b3b08fab0cd0527c6242ca678f9feee6a1c000000000000000000000000c4a4d0ceb3971cbe7a2536494ac106f2cd9f9a8f85f30f6fc7ac2df0a977bbfd5dd72e53d766fcd5f432913b0dfee16e6afec79200000000000000000000000000000000000000000000000000000000000007c0000000000000000000000000a62dab21e0c0f57e94b3ed6e675f214199989e9246dde49b9a71b7e6f6c3a290a110d714b1c4969aabecdbc97b448c075b1ba07a",
+  "envelope": "0x0196a0b63dc8fc37a85c567909fa2e2191359990fa4fb668a85d1b0e1982f4c74527d84d2c909a82dc993b22fa79c5de3e6fddcb90543183c10538d113d9de30301ad8fda7e8f805de3992ae5a786d518eef28e85729dc8d7a617e3189d18d00709c74ecef54f4066fcf2481813b5a31e606f38528525ad933b380dedb0d2f58cb832f4124239d463fd4af220365682ffd8fa823118175",
+  "findingsPostedTopic": "0x43f0036df3f5c5c99131bb7757edbf2073af79a058fb386ed81730cf0a33cfff"
+}
