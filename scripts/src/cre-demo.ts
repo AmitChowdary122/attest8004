@@ -287,16 +287,6 @@ async function reportProcessed(txHash: Hash): Promise<{ result: boolean } | null
   return null;
 }
 
-/** The report transaction's real gas use (Monad's receipts show the limit), from its call trace; null if unavailable. */
-async function tracedGasUsed(txHash: Hash): Promise<bigint | null> {
-  try {
-    const trace = (await publicClient.request({ method: "debug_traceTransaction" as never, params: [txHash, { tracer: "callTracer" }] as never })) as { gasUsed?: Hex };
-    return trace.gasUsed === undefined ? null : BigInt(trace.gasUsed);
-  } catch {
-    return null;
-  }
-}
-
 async function scene(o: {
   index: number;
   name: string;
@@ -358,11 +348,8 @@ async function scene(o: {
     creValidator: C,
   });
   say(txLine("C's report through the forwarder", reportTx));
-  const used = await tracedGasUsed(reportTx);
-  if (used !== null && result.gasLimit !== undefined) {
-    const limit = BigInt(result.gasLimit);
-    say(color.dim(`  gas      ${used} used of a ${limit} limit (${(Number((used * 1000n) / limit) / 10).toFixed(1)} %)`));
-  }
+  // Monad charges, and its receipts and traces report, the whole limit: the workflow sized it from its own estimate.
+  if (result.gasLimit !== undefined) say(color.dim(`  gas      limit ${result.gasLimit} (max(onReport estimate + routing, the calldata floor) × 1.2)`));
   if (!landed.landed) {
     say(color.bad(`  ✗ not landed: ${landed.why}`));
     return { name: o.name, ok: false, ms: Date.now() - started };
