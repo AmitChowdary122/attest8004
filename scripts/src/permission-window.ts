@@ -3,7 +3,8 @@
 // scores PERMISSION_CHANGED_AFTER_MANDATE until it leaves the window. The log helpers came from the retired
 // set-mandate script; P6 adds the MandateRegistry's PasskeySet and PasskeyRotated.
 import { agentKeySetEvent, blockWindows, identityRegistryAbi, mandateRegistryAbi } from "@attest8004/sdk";
-import { getAbiItem, type AbiEvent, type Address, type PublicClient } from "viem";
+import { mapWithConcurrency } from "@attest8004/validator-mandate";
+import { getAbiItem, getAddress, type AbiEvent, type Address, type PublicClient } from "viem";
 
 /** Where the permission events live: the Identity Registry, the forwarder and the MandateRegistry valid now. */
 export interface PermissionSources {
@@ -26,6 +27,19 @@ const mandateSetEvent = getAbiItem({ abi: mandateRegistryAbi, name: "MandateSet"
 const mandateRevokedEvent = getAbiItem({ abi: mandateRegistryAbi, name: "MandateRevoked" }) as AbiEvent;
 const passkeySetEvent = getAbiItem({ abi: mandateRegistryAbi, name: "PasskeySet" }) as AbiEvent;
 const passkeyRotatedEvent = getAbiItem({ abi: mandateRegistryAbi, name: "PasskeyRotated" }) as AbiEvent;
+/** Every permission event, read in one eth_getLogs per window (P9: 8 calls per window took about a minute for 6,000 blocks). */
+const PERMISSION_EVENTS = [
+  transferEvent,
+  approvalEvent,
+  approvalForAllEvent,
+  agentKeySetEvent as AbiEvent,
+  mandateSetEvent,
+  mandateRevokedEvent,
+  passkeySetEvent,
+  passkeyRotatedEvent,
+];
+/** Windows read at once: the scripts' shared limiter keeps the RPC under its 15 requests a second. */
+const WINDOW_CONCURRENCY = 8;
 
 /** `(block, logIndex)` ordering, as mandate-v1's own permission check compares them. */
 export function isAfter(log: FoundLog, baseline: FoundLog): boolean {
@@ -50,30 +64,39 @@ export async function mandateSetLogAt(sources: PermissionSources, agentId: bigin
 /**
  * Every permission-relevant log for `agentId` in `[from, to]`, from the same sources mandate-v1 reads: the Identity
  * Registry's Transfer/Approval (this agent) and ApprovalForAll (this owner), the forwarder's AgentKeySet, and the
- * MandateRegistry's MandateSet, MandateRevoked, PasskeySet and PasskeyRotated (this agent). Scanned in `blockWindows`
- * (Monad's 100-block `eth_getLogs` limit).
+ * MandateRegistry's MandateSet, MandateRevoked, PasskeySet and PasskeyRotated (this agent). One eth_getLogs per
+ * `blockWindows` window (Monad's 100-block limit) covers all three contracts and all eight events, at most 8 windows at
+ * once; each log is kept only if it came from its event's own contract and names this agent (or this owner). Oldest first.
  */
 export async function permissionLogsIn(sources: PermissionSources, agentId: bigint, owner: Address, from: bigint, to: bigint): Promise<FoundLog[]> {
   if (from > to) return [];
-  const { publicClient, identityRegistry, forwarder, mandateRegistry } = sources;
+  const { publicClient } = sources;
+  const identityRegistry = getAddress(sources.identityRegistry);
+  const forwarder = getAddress(sources.forwarder);
+  const mandateRegistry = getAddress(sources.mandateRegistry);
+  const perWindow = await mapWithConcurrency(blockWindows(from, to), WINDOW_CONCURRENCY, (window) =>
+    publicClient.getLogs({ address: [identityRegistry, forwarder, mandateRegistry], events: PERMISSION_EVENTS, ...window }),
+  );
+  const ownerAddress = getAddress(owner);
   const found: FoundLog[] = [];
-  for (const window of blockWindows(from, to)) {
-    const perEvent = await Promise.all([
-      publicClient.getLogs({ address: identityRegistry, event: transferEvent, args: { tokenId: agentId }, ...window }),
-      publicClient.getLogs({ address: identityRegistry, event: approvalEvent, args: { tokenId: agentId }, ...window }),
-      publicClient.getLogs({ address: identityRegistry, event: approvalForAllEvent, args: { owner }, ...window }),
-      publicClient.getLogs({ address: forwarder, event: agentKeySetEvent, args: { agentId }, ...window }),
-      publicClient.getLogs({ address: mandateRegistry, event: mandateSetEvent, args: { agentId }, ...window }),
-      publicClient.getLogs({ address: mandateRegistry, event: mandateRevokedEvent, args: { agentId }, ...window }),
-      publicClient.getLogs({ address: mandateRegistry, event: passkeySetEvent, args: { agentId }, ...window }),
-      publicClient.getLogs({ address: mandateRegistry, event: passkeyRotatedEvent, args: { agentId }, ...window }),
-    ]);
-    const labels = ["Transfer", "Approval", "ApprovalForAll", "AgentKeySet", "MandateSet", "MandateRevoked", "PasskeySet", "PasskeyRotated"];
-    for (const [i, logs] of perEvent.entries()) {
-      for (const log of logs) found.push({ label: labels[i] ?? "Unknown", blockNumber: log.blockNumber, logIndex: log.logIndex });
+  for (const log of perWindow.flat()) {
+    const { eventName, args } = log as unknown as { eventName: string; args: Record<string, unknown> };
+    const emitter = getAddress(log.address);
+    const isAgent = (key: string) => args[key] === agentId;
+    const keep =
+      emitter === identityRegistry
+        ? ((eventName === "Transfer" || eventName === "Approval") && isAgent("tokenId")) ||
+          (eventName === "ApprovalForAll" && typeof args.owner === "string" && getAddress(args.owner) === ownerAddress)
+        : emitter === forwarder
+          ? eventName === "AgentKeySet" && isAgent("agentId")
+          : emitter === mandateRegistry &&
+            ["MandateSet", "MandateRevoked", "PasskeySet", "PasskeyRotated"].includes(eventName) &&
+            isAgent("agentId");
+    if (keep && log.blockNumber !== null && log.logIndex !== null) {
+      found.push({ label: eventName, blockNumber: log.blockNumber, logIndex: log.logIndex });
     }
   }
-  return found;
+  return found.sort((a, b) => (a.blockNumber === b.blockNumber ? a.logIndex - b.logIndex : a.blockNumber < b.blockNumber ? -1 : 1));
 }
 
 /**
