@@ -4,6 +4,96 @@ Running log, updated at the end of every session (CLAUDE.md, rule 10). Newest se
 
 ---
 
+## Mon 5 Oct 2026 · P10 AgentPassport: our vault as an escrow's verifier, proven on a fork (no live run; CRE moves to P11, the auditor self-review to P12)
+
+### Done
+- **Research** (read-only, `../plans/2026-10-06-p10-agentpassport.md` §1–§3):
+  - **Their GitHub is gone:** `github.com/agent-from-zero/agentpassport` and the account return 404.
+  - **Their source of record:** JobEscrow v2 (`0x41Cb…4355`) and AgentPassport (`0xd01E…9d0A`) are Sourcify `exact_match`. I checked it myself: the live runtime equals the recompiled code, with only the immutables masked; no proxy. MIT throughout. Copies are in `../external/agentpassport-sourcify/`.
+  - **The token** is Circle's real testnet USDC.
+  - **`agentId`** is the canonical ERC-8004 id.
+- **Your decision: no live run.** A self-run settlement would have written self-dealt reputation for our agent 1985 into the canonical Reputation Registry, there is no team left to gain traction with, and risk-v1 can't see the token payout. No transaction, mandate change, USDC or signing-page edit.
+- **The proof** (`contracts/test/fork/AgentPassportIntegration.fork.t.sol`, run by CI's `contracts-fork` job): ten fork tests drive our **live** `DemoAgentVault` as the `verifier` of jobs on their **live** JobEscrow v2, with AgentPassport, Circle's USDC (via `deal`) and the canonical registries. Hirer and worker are made in the fork; the verdicts are posted by pranking validators A and B on the real ValidationRegistry.
+  - **The payout:** with both verdicts, `vault.execute(release(jobId))` pays the worker (`JobReleased(…, vault, …)`), and the passport counts a settlement.
+  - **The refusals:**
+    - no verdicts: `ValidationNotFound(A)`;
+    - only A's: `ValidationNotFound(B)`;
+    - B at 40: `ScoreTooLow`;
+    - a replay: `ActionAlreadyConsumed`;
+    - fresh verdicts on a released job: the escrow refuses through `CallFailed(InvalidStatus)`;
+    - a stranger's direct release: `NotAuthorizedToRelease`.
+  - **The verifier isn't exclusive, and a test pins it:** after the review window, a stranger releases with no verdict at all and the worker is paid (`testFork_AnyoneCanReleaseAfterReviewWindow`).
+  - **Gas:** the release fits mandate-v1's 1,000,000-gas simulation cap. In forge's Monad gas model on a first settlement, the release frame is 559,476 and the whole execute 623,360.
+  - **Their wiring:** `testFork_LiveWiring` pins it (v2, the token, the passport, the attester, and our copied selectors) on every CI run.
+- **Docs:**
+  - `docs/integrations.md`, "Plug Attest8004 into any escrow with a verifier hook": AgentPassport as the worked example, the tests as proof, stated plainly as *composability against their live bytecode, not adoption by their team*, five caveats, how the validators treat a release, how another team does it, and the MIT credit (Sourcify, npm, their site; their GitHub gone);
+  - README: Integrations, a new **Limitations** section, and the credit;
+  - ARCHITECTURE: §9, risk-v1's ERC-20 blind spot (on the P12 threat-model list); §12, `risk-v2` on the roadmap; §13;
+  - the threat-model and security-review phase labels move to P12 (SPEC, spec-notes, docs/README).
+- **risk-v1's blind spot, as stated:** tokens moved *inside* an action show the model no recipient or amount, so a drain made that way is invisible to it. A direct `transfer` reaches it only as raw calldata hex. No rule reads token value.
+  - **The fix (roadmap):** a `risk-v2` that decodes `Transfer` logs from the call trace, under a new tag. Monad's RPC serves `callTracer` with `withLog: true` (checked 5 Oct on job 1's release).
+- **The whole-branch review** (Opus): "with fixes". I re-graded its findings by their effect, and four went into one fix pass, each with a check that failed first:
+  - **The docs implied the verifier is exclusive** (Critical). The README and the top of `docs/integrations.md` now say the vault's own release is gated, while the hirer, and anyone after the review window, can still release. Caveat 1 says a gated hirer would also have to dispute in time. The new fork test first failed when written as the old claim.
+  - **The guide left out that our validators answer only allowlisted (gate, agent) pairs.** It now says so: another team runs its own validators, or asks to be added.
+  - **The snippet's deadline** was `now + 3600`, which validators skip when the wall clock runs ahead of the chain. It is now the latest block's time + 1,800.
+  - **Two stale "P10" threat-model labels** (ARCHITECTURE's 5-block lag limit, mera.md's Nansen decision) are now P12.
+- **Checks on the final tree:** all clean.
+  - **forge:** `fmt --check`, 222 unit tests and 27 fork tests (10 new);
+  - **vectors:** `vectors.sh`, `passkey-vectors.sh` and `make-inbox-vectors.ts --check`;
+  - **TypeScript:** `pnpm typecheck`; `pnpm test`, 1,521 tests;
+  - **web build**, and **gitleaks** over the full history.
+
+### Next
+- **P11, CRE.**
+- **P12, the auditor self-review and `docs/threat-model.md`:** collect ARCHITECTURE §9's open items, including risk-v1's ERC-20 blind spot and mandate-v1's MON-only caps.
+- **Unchanged from P9:** recording the video, the e2e's 6,000-block wait, and the 31 Oct mandate expiry. Agent 1984's live mandate is still the e2e one.
+- **Deferred minors** (from the review; none changes a claim's substance):
+  - **The gas logs** are measured in one test transaction, so part of the state is warm. The test comment's "costliest case" isn't exact; the docs already say to size limits from a live estimate.
+  - **"The fork test fails loudly"** overstates it: `contracts-fork` is `continue-on-error`.
+  - **ARCHITECTURE §9** quotes a paraphrase of `FUNDS_FORWARDED`, and says "fork tests are safe" where it means "the integration is safe".
+  - **README Limitations** calls risk-v2 "feasible" without §12's note that `debug_traceCall` with `withLog` is assumed (only `debug_traceTransaction` was checked).
+  - **The fork test's header** credits AgentPassport for four interfaces; only two are theirs.
+  - **`docs/integrations.md`:**
+    - "isn't deliverable yet" should be "delivered";
+    - its trace description skips the passport and reputation calls;
+    - "Theirs, as deployed" lists the ERC-8004 registries, which aren't theirs.
+  - **"A token drain … is invisible":** the transfer's selector is visible; its recipient and amount are not.
+  - **An optional `isBlacklisted(hirer) == false` assertion.**
+- **Optional:** tell agentfromzero (agentfromzero.dev@proton.me) about the fork tests, framed as composability, not an integration they joined.
+
+### Blockers or decisions needed
+- **None blocking.**
+- **Rulings I made during P10:**
+1. Work on `main` without a worktree, as in P9.
+
+   **Cost if wrong:** commits would need moving to a branch.
+2. The fork test makes its own hirer and worker agent (registered in the fork), not our agent 1985: three distinct parties, the payee starts at zero, and nothing depends on our agents' state.
+
+   **Cost if wrong:** none.
+3. The gas test measures the release and the gated execute each on a first settlement (a second fresh worker), after the RED run showed a warm execute reading lower than a cold release.
+
+   **Cost if wrong:** none (the review notes the state is still partly warm; deferred minor).
+4. risk-v1's blind spot is stated as "tokens moved inside the call are invisible; a direct `transfer` reaches it only as raw calldata hex", not "all ERC-20 transfers are invisible": `calldataHeadBytes` is 132, so the stronger wording would be false.
+
+   **Cost if wrong:** none.
+5. `docs/threat-model.md` doesn't exist yet, so P12's item lives in ARCHITECTURE §9, next to the MON-only caps, and docs/README's threat-model row points there.
+
+   **Cost if wrong:** P12 must collect it from §9.
+6. docs/deployments.md is unchanged: nothing was deployed or broadcast. Their addresses live in docs/integrations.md.
+
+   **Cost if wrong:** none.
+7. Only the threat-model and security-review rows in docs/README move to P12. The other "planned (P11)" docs are left as they are.
+
+   **Cost if wrong:** stale phase labels on four planned docs.
+8. Re-graded the review's findings by effect:
+    - caveat 1's gated-hirer remedy is folded into the exclusivity fix;
+    - the snippet's deadline goes to Important, since a copied snippet can be skipped silently;
+    - the stale P10 labels go to Important, since P12 finds its items by label.
+
+   **Cost if wrong:** none; all were short doc fixes.
+
+---
+
 ## Mon 5 Oct 2026 · P9 `pnpm demo`: SPEC §5 scene by scene, with a reset (this replaces GAMEPLAN's P9; CRE moves to P10)
 
 ### Done
