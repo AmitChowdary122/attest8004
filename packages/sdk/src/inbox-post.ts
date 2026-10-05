@@ -10,11 +10,11 @@ import { ReportTooLargeError, encodeReport, fitReport, type OperatorReport } fro
 
 /**
  * The most gas one report post may be sent with. The limit sent is Monad's estimate × 1.2, never above this; a post
- * whose estimate is above it is refused, so nothing is sent. Provisional (P7, Decision 16): 21,000 plus EIP-7623's
- * floor of 10 gas per calldata token for a full 8,192-byte envelope (about 350,000), × 1.2. Replaced by Monad's
- * live eth_estimateGas for a full envelope once the board is deployed.
+ * whose estimate is above it is refused, so nothing is sent. Monad testnet eth_estimateGas for `post` with a full
+ * 8,192-byte envelope on 5 Oct 2026 was 351,418 (a 2,048-byte one: 105,288; calldata dominates, at EIP-7623's floor
+ * of 10 gas per token), × 1.2, rounded up to 10k.
  */
-export const OPERATOR_REPORT_GAS_CAP = 420_000n;
+export const OPERATOR_REPORT_GAS_CAP = 430_000n;
 /** How long `sendOperatorReport` waits for the whole post (read, seal, send, receipt) before it reports `failed`. */
 export const REPORT_POST_TIMEOUT_MS = 60_000;
 

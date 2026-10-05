@@ -213,9 +213,9 @@ describe("parseRiskServiceConfig", () => {
   });
 
   it("daily budget below response cap + report cap refused", () => {
-    expect(errorOf({ ...base, RISK_V1_DAILY_GAS_BUDGET: "1419999" })).toContain(
-      "RISK_V1_DAILY_GAS_BUDGET (1419999) must be at least RISK_V1_MAX_RESPONSE_GAS (1000000) plus the operator report cap (420000)",
+    expect(errorOf({ ...base, RISK_V1_DAILY_GAS_BUDGET: "1429999" })).toContain(
+      "RISK_V1_DAILY_GAS_BUDGET (1429999) must be at least RISK_V1_MAX_RESPONSE_GAS (1000000) plus the operator report cap (430000)",
     );
-    expect(parseRiskServiceConfig({ ...base, RISK_V1_DAILY_GAS_BUDGET: "1420000" }, ROOT).dailyGasBudget).toBe(1_420_000n);
+    expect(parseRiskServiceConfig({ ...base, RISK_V1_DAILY_GAS_BUDGET: "1430000" }, ROOT).dailyGasBudget).toBe(1_430_000n);
   });
 });

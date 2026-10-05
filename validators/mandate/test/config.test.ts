@@ -142,9 +142,9 @@ describe("parseServiceConfig", () => {
   });
 
   it("daily budget below response cap + report cap refused", () => {
-    expect(errorOf({ ...base, MANDATE_V1_DAILY_GAS_BUDGET: "819999" })).toContain(
-      "MANDATE_V1_DAILY_GAS_BUDGET (819999) must be at least MANDATE_V1_MAX_RESPONSE_GAS (400000) plus the operator report cap (420000)",
+    expect(errorOf({ ...base, MANDATE_V1_DAILY_GAS_BUDGET: "829999" })).toContain(
+      "MANDATE_V1_DAILY_GAS_BUDGET (829999) must be at least MANDATE_V1_MAX_RESPONSE_GAS (400000) plus the operator report cap (430000)",
     );
-    expect(parseServiceConfig({ ...base, MANDATE_V1_DAILY_GAS_BUDGET: "820000" }, ROOT).dailyGasBudget).toBe(820_000n);
+    expect(parseServiceConfig({ ...base, MANDATE_V1_DAILY_GAS_BUDGET: "830000" }, ROOT).dailyGasBudget).toBe(830_000n);
   });
 });

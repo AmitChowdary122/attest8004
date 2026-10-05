@@ -8,7 +8,7 @@ Foundry project for the Attest8004 contracts (SPEC §4.1–4.4 and §4.7; `DemoP
 | `AttestGate` + `DemoAgentVault` | **live on Monad testnet**: `DemoAgentVault` at `0x12fAb3E3cA810Cc44bD9f537613a230a2be8D614`, for demo agent 1984, requiring both `mandate-v1` and `risk-v1` (the P2 vault for agent 1982 and the single-validator P3 vault for agent 1984 are superseded; see [docs/deployments.md](../docs/deployments.md)) |
 | `AgentRequestForwarder` | **live on Monad testnet** at `0x1451F3C36545b191d3642f759D59f21DcFD657B2` (P3; see [docs/deployments.md](../docs/deployments.md)) |
 | `MandateRegistry` | **v2 (P6, owner + passkey), deployed on testnet** at `0x2Ee5f78149762DE630c6bFF8CD81166010D0454B` (block 68,196,462). P4's owner-set registry, `0x2523197373ef813E19b5b14Ef2984130868cD17c` (source at commit `6e08223`), stays readable for verdicts pinned before that block (see [docs/deployments.md](../docs/deployments.md)) |
-| `FindingsBoard` | **P7, not deployed yet**: carries validators' encrypted operator reports (`FindingsPosted`) for the Mera inbox; stores nothing, judges nothing |
+| `FindingsBoard` | **live on Monad testnet** at `0xa7d52B3B08FAB0cd0527c6242ca678f9Feee6a1c` (P7, block 68,296,810): carries validators' encrypted operator reports (`FindingsPosted`) for the Mera inbox; stores nothing, judges nothing (see [docs/deployments.md](../docs/deployments.md)) |
 | `DemoPassThrough` | demo-only, **live on Monad testnet** at `0xEEEBBa55620afC42E9c88b5d962476367b8da338`: the P5 risky-but-mandated target (SPEC §4.6) that forwards every payment to a fixed sink nobody controls; now allowlisted in demo agent 1984's mandate, next to the deployer (see [docs/deployments.md](../docs/deployments.md)) |
 
 ```bash

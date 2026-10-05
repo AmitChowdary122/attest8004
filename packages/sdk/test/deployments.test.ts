@@ -81,7 +81,7 @@ describe("currentMandateRegistry", () => {
 });
 
 describe("findingsBoard", () => {
-  it("findingsBoard is null until deployed (10143)", () => {
-    expect(DEPLOYMENTS[10143].findingsBoard).toBeNull();
+  it("findingsBoard is the deployed board and its deploy block (10143)", () => {
+    expect(DEPLOYMENTS[10143].findingsBoard).toEqual({ address: "0xa7d52B3B08FAB0cd0527c6242ca678f9Feee6a1c", fromBlock: 68_296_810n });
   });
 });

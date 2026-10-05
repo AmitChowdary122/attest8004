@@ -6,6 +6,7 @@ Every Attest8004 deployment is recorded here: chain, contract, address, the comm
 |---|---|---|---|---|---|
 | Monad testnet (10143) | `ValidationRegistry` | [`0xc4A4D0cEB3971cbE7a2536494aC106f2Cd9F9a8f`](https://monad-testnet.socialscan.io/address/0xc4a4d0ceb3971cbe7a2536494ac106f2cd9f9a8f) | `8dc8859` | 2026-10-02 | [`0x724f31e0…cf64d03`](https://monad-testnet.socialscan.io/tx/0x724f31e0efd09993f2d73581cb742e71d4bef52c0f4f2a30cccd43d79cf64d03) (block 67,604,893) |
 | Monad testnet (10143) | `AgentRequestForwarder` | [`0x1451F3C36545b191d3642f759D59f21DcFD657B2`](https://monad-testnet.socialscan.io/address/0x1451f3c36545b191d3642f759d59f21dcfd657b2) | `5f2f4a4` | 2026-10-03 | [`0x82883206…72a3cd7`](https://monad-testnet.socialscan.io/tx/0x828832065b96235728c1782e9be9b4b712e3f408f8755e20f554a210472a3cd7) (block 67,779,694) |
+| Monad testnet (10143) | `FindingsBoard` (P7: encrypted operator reports for the Mera inbox) | [`0xa7d52B3B08FAB0cd0527c6242ca678f9Feee6a1c`](https://monad-testnet.socialscan.io/address/0xa7d52b3b08fab0cd0527c6242ca678f9feee6a1c) | `8fc7016` | 2026-10-05 | [`0x1d43bad3…6136b`](https://monad-testnet.socialscan.io/tx/0x1d43bad3e1e8463bfa7e9384eba32bc7c2933d55306661f981f4fcc7a306136b) (block 68,296,810) |
 | Monad testnet (10143) | `MandateRegistry` v2 (owner + passkey, rpId `attest8004.vercel.app`) | [`0x2Ee5f78149762DE630c6bFF8CD81166010D0454B`](https://monad-testnet.socialscan.io/address/0x2ee5f78149762de630c6bff8cd81166010d0454b) | `dda8e5e` | 2026-10-05 | [`0xfa483be3…751c0d`](https://monad-testnet.socialscan.io/tx/0xfa483be3f43b1e9c53fb00571adda242818b0abe92e0605519a09e3ce2751c0d) (block 68,196,462) |
 | Monad testnet (10143) | `MandateRegistry` (P4, owner-set) — **superseded for new mandates**; read for verdicts pinned before block 68,196,462 | [`0x2523197373ef813E19b5b14Ef2984130868cD17c`](https://monad-testnet.socialscan.io/address/0x2523197373ef813e19b5b14ef2984130868cd17c) | `6e08223` | 2026-10-03 | [`0x1222b700…3ca0b84`](https://monad-testnet.socialscan.io/tx/0x1222b700027bc1e03676ed0f986a31ee2d5ac06ea5c5b1847672ca05b3ca0b84) (block 67,842,487) |
 | Monad testnet (10143) | `DemoAgentVault` (AttestGate), agent 1984, mandate-v1 + risk-v1 | [`0x12fAb3E3cA810Cc44bD9f537613a230a2be8D614`](https://monad-testnet.socialscan.io/address/0x12fab3e3ca810cc44bd9f537613a230a2be8d614) | `7380fdc` | 2026-10-04 | [`0x65125575…61b990e`](https://monad-testnet.socialscan.io/tx/0x651255753f1d100da6b8e99bdfdbe3da60748c2297d9cffeb6554ca6161b990e) (block 67,943,657) |
@@ -45,6 +46,23 @@ Every Attest8004 deployment is recorded here: chain, contract, address, the comm
   `contracts/broadcast/DeployAgentRequestForwarder.s.sol/10143/run-latest.json`.
 - **Gas:** explicit limit 490,000 (Monad `eth_estimateGas` was 407,868; limit = ×1.2, rounded up to 10k).
 - **Not upgradeable, no owner, holds no funds.**
+
+### FindingsBoard (testnet) details
+
+- **What it does:** `post(requestHash, agentId, envelope)` emits `FindingsPosted(requestHash indexed, agentId indexed,
+  validator indexed = msg.sender, envelope)`; an envelope over 8,192 bytes reverts `EnvelopeTooLarge`. It stores
+  nothing and judges nothing: readers keep a post only when `ValidationRegistry.getValidationStatus(requestHash)` names
+  its validator and agent (SPEC §4.7, ARCHITECTURE §4.1, §6). The envelopes are ciphertext for the agent's X25519 inbox
+  key; every validator's public plaintext evidence stays at its `responseURI`.
+- **No constructor arguments**, so the CREATE2 address is the same wherever the factory exists.
+- **How it was deployed:** `contracts/script/DeployFindingsBoard.s.sol` via `script/deploy-testnet.sh FindingsBoard`
+  (the dry run first), through the CREATE2 factory with salt `keccak256("attest8004.FindingsBoard.v1")`. The broadcast
+  record is `contracts/broadcast/DeployFindingsBoard.s.sol/10143/run-latest.json`.
+- **Gas:** explicit limit 190,000 (Monad `eth_estimateGas` was 154,319; limit = ×1.2, rounded up to 10k); read back:
+  code present, `MAX_ENVELOPE_BYTES()` = 8192.
+- **A report's gas:** Monad's estimate for `post` with a full 8,192-byte envelope was 351,418 (a 2,048-byte one:
+  105,288), so the SDK's `OPERATOR_REPORT_GAS_CAP` is 430,000 (×1.2, rounded up to 10k).
+- **Not upgradeable, no owner, no storage, holds no funds.**
 
 ### MandateRegistry v2 (testnet) details
 

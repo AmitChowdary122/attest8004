@@ -91,8 +91,8 @@ export const DEPLOYMENTS = {
       { address: "0x2523197373ef813E19b5b14Ef2984130868cD17c", fromBlock: 67_842_487n },
       { address: "0x2Ee5f78149762DE630c6bFF8CD81166010D0454B", fromBlock: 68_196_462n },
     ],
-    /** Not deployed yet (P7). */
-    findingsBoard: null,
+    /** P7's encrypted operator reports: deploy tx 0x1d43bad3…6136b (docs/deployments.md). */
+    findingsBoard: { address: "0xa7d52B3B08FAB0cd0527c6242ca678f9Feee6a1c", fromBlock: 68_296_810n },
     validators: {
       /** `mandate-v1`, deterministic. */
       mandateV1: "0xa62DaB21E0C0F57e94B3ed6e675F214199989e92",
