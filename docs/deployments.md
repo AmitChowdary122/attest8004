@@ -186,6 +186,20 @@ This is the **WebAuthn rpId for P6**: passkeys are bound to the domain they were
 created on this production domain, never on a preview deployment or localhost. **Never use a Vercel preview URL for
 passkeys** — a preview gets its own subdomain, which would mint passkeys bound to a different rpId than production.
 
+## Envio indexer (testnet, P8)
+
+| What | Value |
+|---|---|
+| GraphQL endpoint | **pending**: recorded here, in `DEPLOYMENTS[10143].trustApi` and in `web/vercel.json`'s CSP once Envio Cloud serves it |
+| Host | Envio Cloud, free (Development) plan; deployed from the `envio` branch, root directory `indexer`, config `config.yaml` |
+| Indexed | Monad testnet (10143) through HyperSync, each contract from its deploy block above; the canonical Identity Registry from its first event (block 10,675,492) |
+
+- **A convenience, never a trust root.** No verdict and no `verify` reads it; every record carries its transaction, and
+  the SDK's `confirmIndexedVerdict` / `confirmIndexedReport` re-check one from the chain (ARCHITECTURE §5.7, §7).
+- **Checked against the chain:** `pnpm --filter @attest8004/scripts indexer-check -- --url <endpoint>`. Against a
+  local `envio dev` on 5 Oct 2026 (indexed to block 68,349,874): OK for agents 1982, 1984 and 1985 (31 + 2 requests, 6
+  trusted reports) and both validators (A: 21 requests, 20 answered; B: 12, 9).
+
 ## Demo agents (testnet)
 
 Two ERC-8004 agents in the canonical testnet Identity Registry, owned by the deployer

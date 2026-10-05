@@ -9,7 +9,7 @@
 >
 > The refusals were checked by simulation. Anyone can re-check all six verdicts with `pnpm attest8004 verify <requestHash>` (see [Deployments](#deployments)). `mandate-v1` is re-run in full. For `risk-v1`, the onchain facts and the scoring are re-checked, but the model output is recorded, not re-run.
 >
-> **Passkey-approved mandates are live (5 Oct 2026).** MandateRegistry v2 accepts a mandate change only with the owner's transaction **and** an assertion from the agent's passkey, verified onchain by Monad's P256 precompile (`0x0100`; the 6,900-gas call shows in the transaction's trace). One Google Password Manager passkey, created on [`/approve`](https://attest8004.vercel.app/approve), approved agent 1984's mandate from laptop Chrome and again, synced, from Chrome on Android; both real assertions are test vectors. The same three-action e2e then passed against v2 (`e2e OK`, all six verdicts `match`), and the P4/P5 verdicts still verify. **The Mera findings inbox is live (P7, 5 Oct 2026):** validators post an encrypted operator report after each verdict to `FindingsBoard`, sealed to an X25519 key derived from the agent's passkey through Mera's PRF, and [`/inbox`](https://attest8004.vercel.app/inbox) decrypts them on any device with that passkey. Agent 1984's passkey published its inbox key from laptop Chrome. The e2e then posted six trusted reports, and the same passkey decrypted them on laptop Chrome and, synced, on Android Chrome ([docs/mera.md](./docs/mera.md), [the Android screenshot](./docs/img/p7-android-inbox-decrypt.jpg)). The indexer is next. Progress is in [STATUS.md](./STATUS.md).
+> **Passkey-approved mandates are live (5 Oct 2026).** MandateRegistry v2 accepts a mandate change only with the owner's transaction **and** an assertion from the agent's passkey, verified onchain by Monad's P256 precompile (`0x0100`; the 6,900-gas call shows in the transaction's trace). One Google Password Manager passkey, created on [`/approve`](https://attest8004.vercel.app/approve), approved agent 1984's mandate from laptop Chrome and again, synced, from Chrome on Android; both real assertions are test vectors. The same three-action e2e then passed against v2 (`e2e OK`, all six verdicts `match`), and the P4/P5 verdicts still verify. **The Mera findings inbox is live (P7, 5 Oct 2026):** validators post an encrypted operator report after each verdict to `FindingsBoard`, sealed to an X25519 key derived from the agent's passkey through Mera's PRF, and [`/inbox`](https://attest8004.vercel.app/inbox) decrypts them on any device with that passkey. Agent 1984's passkey published its inbox key from laptop Chrome. The e2e then posted six trusted reports, and the same passkey decrypted them on laptop Chrome and, synced, on Android Chrome ([docs/mera.md](./docs/mera.md), [the Android screenshot](./docs/img/p7-android-inbox-decrypt.jpg)). **The Envio trust API is built (P8):** an Envio HyperIndex indexer of every Attest8004 contract feeds the SDK's `getAgentTrust()`, the new [`/dashboard`](https://attest8004.vercel.app/dashboard) and `/inbox` (which now finds reports through it, with no time window, and re-checks each one on chain). It is a convenience, never a trust root: no verdict and no `verify` reads it. Progress is in [STATUS.md](./STATUS.md).
 
 ## What
 
@@ -25,7 +25,7 @@ Attest8004 provides that answer onchain. It has five parts:
     live verdicts on testnet, and its tests replay recorded Groq runs offline
     ([`validators/risk/test/fixtures/llm/`](./validators/risk/test/fixtures/llm/))
 - **Private findings inbox (Mera)**: after each verdict, each validator posts an operator report (its reasons, the agent's spend, each finding with a recommended action) to `FindingsBoard`, encrypted to an X25519 key derived from the operator's passkey through Mera's PRF. The key is derived on demand, never stored, and zeroed after use; any device with the same synced passkey derives the same key (in P7's live run, laptop Chrome and Android Chrome derived the same key and decrypted the same reports, [docs/mera.md](./docs/mera.md)). The public evidence stays public, for `verify`.
-- **Trust API**: an Envio HyperIndex indexer behind the SDK and the dashboard.
+- **Trust API (Envio)**: an Envio HyperIndex indexer of every Attest8004 contract (and the Identity Registry's ownership events for our agents) behind the SDK's `getAgentTrust()`, `/dashboard` and `/inbox`. Every record links back to its transaction, and the SDK re-checks what matters on chain: the indexer is a convenience, never a trust root ([below](#trust-api-envio)).
 
 Monad's ERC-8004 docs list the Validation Registry as "coming soon", and the canonical [`erc-8004-contracts`](https://github.com/erc-8004/erc-8004-contracts) repo has no Validation Registry deployed on any chain. Attest8004 fills that gap.
 
@@ -66,9 +66,9 @@ The diagrams, flows, data formats, trust model and key custody are in **[ARCHITE
 | [`packages/cli/`](./packages/cli) | `@attest8004/cli`: `pnpm attest8004 verify`, which re-checks `mandate-v1` and `risk-v1` verdicts |
 | [`validators/mandate/`](./validators/mandate) | `mandate-v1` deterministic validator: the service and its re-run (`verifyRequest`) |
 | [`validators/risk/`](./validators/risk) | `risk-v1` agentic validator (P5) and its re-check (`verifyRiskRequest`) |
-| [`indexer/`](./indexer) | Envio HyperIndex project |
+| [`indexer/`](./indexer) | Envio HyperIndex V3 project: `config.yaml`, `schema.graphql`, handlers ([its README](./indexer/README.md)) |
 | [`web/`](./web) | `/approve`, `/inbox`, `/dashboard` |
-| [`scripts/`](./scripts) | `@attest8004/scripts`: operational scripts (testnet round trip, demo agents, end to end) |
+| [`scripts/`](./scripts) | `@attest8004/scripts`: operational scripts (testnet round trip, demo agents, end to end, `indexer-check`, the indexer keep-alive) |
 | [`docs/`](./docs) | Quickstart, API reference, threat model, deployments |
 
 ## Quickstart
@@ -188,6 +188,62 @@ validator A it serves only its allowlisted (gate, agent) pairs (`RISK_V1_GATES`,
 1984), with the same per-agent rate limit and daily gas budget. It paces its LLM calls to Groq's free tier (30 requests
 and 8,000 tokens a minute for the main model; Prompt Guard has its own budget), so one check takes a few minutes.
 
+## Trust API (Envio)
+
+The Envio HyperIndex indexer in [`indexer/`](./indexer) (`config.yaml`, `schema.graphql`, one handler file per
+contract) indexes **live Monad testnet data** through HyperSync: every request and verdict on the ValidationRegistry
+(with the request JSON and the evidence decoded and checked against their hashes), both MandateRegistries each in its
+own epoch, passkeys and inbox keys, the forwarder's hot keys, the vaults' executed actions, every FindingsBoard post
+with the trust rule as a stored flag (untrusted posts are kept, never dropped), and the canonical Identity Registry's
+ownership events for our agents. Three things consume it:
+
+- **The SDK** ([`packages/sdk/src/trust-api.ts`](./packages/sdk/src/trust-api.ts), browser-safe):
+  `getAgentTrust(agentId)`, `getTrustOverview()`, `getIndexedVerdicts()` and `findIndexedReports()` (findings
+  discovery), each one GraphQL query whose answer is validated as untrusted data. Every result carries its
+  `requestHash`, transaction and log index, and `confirmIndexedVerdict` / `confirmIndexedReport` re-check one from the
+  chain.
+- **[`/dashboard`](https://attest8004.vercel.app/dashboard):** recent `mandate-v1` and `risk-v1` verdicts (score,
+  reasons, validator, agent, time, whether the action executed), each with its explorer link and its
+  `pnpm attest8004 verify` line; validator stats (requests, answers, score buckets, average time to answer); and an
+  agent trust lookup. Only real, indexed numbers; our own validators and demo agents are labelled as ours.
+- **[`/inbox`](https://attest8004.vercel.app/inbox):** finds an agent's reports through the indexer, with no time
+  window, keeps each one only if the chain's status trusts its poster and its own transaction receipt carries it, and
+  falls back to the chain search when the indexer is down.
+
+**Never a trust root:** `mandate-v1`, `risk-v1` and `pnpm attest8004 verify` read the chain at the pinned block and
+never the indexer. A lagging, broken or lying indexer can hide or stale data, but can't change a verdict or slip a
+report past `/inbox` ([ARCHITECTURE §5.7, §7](./ARCHITECTURE.md)).
+
+```ts
+import { createPublicClient, http } from "viem";
+import { monadTestnet } from "viem/chains";
+import { DEPLOYMENTS, confirmIndexedVerdict, getAgentTrust } from "@attest8004/sdk";
+
+const publicClient = createPublicClient({ chain: monadTestnet, transport: http() });
+const trust = await getAgentTrust(1984n); // the hosted endpoint recorded in DEPLOYMENTS, or pass { url }
+for (const v of trust?.recentVerdicts ?? []) {
+  console.log(v.tag, v.score, v.reasons, v.requestHash, v.responseTx);
+  // { ok: true } when getValidationStatus agrees; `pnpm attest8004 verify <requestHash>` re-runs the verdict itself
+  console.log(await confirmIndexedVerdict({ publicClient, deployment: DEPLOYMENTS[10143], verdict: v }));
+}
+```
+
+### Run the indexer locally
+
+You need Docker (Envio's local mode runs Postgres and Hasura in containers) and a free HyperSync API token from
+[envio.dev/app/api-tokens](https://envio.dev/app/api-tokens), saved as `ENVIO_API_TOKEN` in `.env`
+(`indexer/scripts/envio.mjs` reads only that one line and never prints it):
+
+```bash
+pnpm --filter @attest8004/indexer dev       # envio dev: Docker, then syncs Monad testnet from HyperSync (a few minutes)
+# GraphQL at http://localhost:8080/v1/graphql (Hasura console: http://localhost:8080, admin secret "testing")
+pnpm --filter @attest8004/scripts indexer-check -- --url http://localhost:8080/v1/graphql   # the indexer against the chain
+VITE_TRUST_API_URL=http://localhost:8080/v1/graphql pnpm --filter @attest8004/web dev     # /dashboard on the local indexer
+pnpm --filter @attest8004/indexer test      # handler tests (Envio's test framework; no Docker, no token)
+```
+
+`pnpm --filter @attest8004/indexer exec envio stop` stops the containers and deletes the local database.
+
 ## Deployments
 
 | Chain | Contract | Address |
@@ -202,6 +258,7 @@ and 8,000 tokens a minute for the main model; Prompt Guard has its own budget), 
 | Monad testnet (10143) | `DemoAgentVault`, agent 1984, validator A only (**superseded**) | [`0x23BfBD12545CCd1501ddA1B65a54518FD6212a96`](https://monad-testnet.socialscan.io/address/0x23bfbd12545ccd1501dda1b65a54518fd6212a96) |
 | Monad testnet (10143) | `DemoAgentVault`, P2, agent 1982 (**superseded**) | [`0x7A5EC388CCbfD3B255CFa94fc2062c0807F2C4CD`](https://monad-testnet.socialscan.io/address/0x7a5ec388ccbfd3b255cfa94fc2062c0807f2c4cd) |
 | Vercel | Web app, production (the WebAuthn rpId for P6; never a preview URL) | [`attest8004.vercel.app`](https://attest8004.vercel.app) |
+| Envio Cloud | The hosted indexer's GraphQL endpoint (free plan; the URL changes with each deployment) | recorded in [docs/deployments.md](./docs/deployments.md) once deployed |
 
 Registry deploy tx [`0x724f31e0…cf64d03`](https://monad-testnet.socialscan.io/tx/0x724f31e0efd09993f2d73581cb742e71d4bef52c0f4f2a30cccd43d79cf64d03). A scripted register → request → response round trip on this registry (agentId 1982), a validated execute through the P2 vault ([`0x59d5987e…71e3f85`](https://monad-testnet.socialscan.io/tx/0x59d5987e1d2583def79af6af40efd60daf0fa88cc7553d6f3b31a0eab71e3f85)), the demo agents 1984 and 1985 with their hot keys, the switch to per-agent forwarder approvals with agent 1984's mandate, the P3 end-to-end run (hot key → forwarder → validator → execute, [`0x6f694020…bb1336a8`](https://monad-testnet.socialscan.io/tx/0x6f6940203907d8d759e1887953d1170015be7f0c6d27b39c4e22090bbb1336a8)), the P4 run with `mandate-v1` (one action inside agent 1984's mandate executed, [`0xb666247e…60c84f9`](https://monad-testnet.socialscan.io/tx/0xb666247e2ac448a233c1bac336c19d65373aa908a2656b2f6e999408f60c84f9); one outside it scored 0 and refused; both re-checked with `verify`), and the P5 run with both validators (the safe action executed, [`0x2aee06f1…87dd2b0`](https://monad-testnet.socialscan.io/tx/0x2aee06f120850aef87201566d032750666c8ed42b6ec55f2026e7143e87dd2b0); the payment to `DemoPassThrough` got `risk-v1` 0, [`0xbef321d7…679d68f`](https://monad-testnet.socialscan.io/tx/0xbef321d79bd3e86e83c64bdb30c4394b7254f09b2f57640a11c6f9e83679d68f), and is refused; all six verdicts re-checked with `verify`), the P6 passkey-approved mandate ([`0x5d4cc955…d15444d`](https://monad-testnet.socialscan.io/tx/0x5d4cc955b9bcabf5b8268cb10b7622c6e5a8019897bb5e3036df86927d15444d), whose trace shows the `0x0100` call) and the P7 inbox run (the passkey-approved inbox key, [`0x6b328dde…b70c160`](https://monad-testnet.socialscan.io/tx/0x6b328dde8791b4d7fc6099e925330d44ffa9d1c933e81c4297509630db70c160), then six encrypted operator reports, decrypted on laptop Chrome and Android Chrome) are recorded with their transaction hashes in [docs/deployments.md](./docs/deployments.md). That file records every deployment with its chain, address, commit and date. Differences from the EIP-8004 Draft are in [docs/spec-notes.md](./docs/spec-notes.md).
 
@@ -255,6 +312,8 @@ At runtime, `risk-v1` calls a **Groq-hosted** model through an OpenAI-compatible
 | [Mera](https://mera.category.xyz) (`@category-labs/mera` 0.2.0, Category Labs) | MIT / Apache-2.0 | The `/approve` page's PRF check (`getPasskeyPrfOutput`); P7's passkey inbox |
 | [@noble/curves](https://github.com/paulmillr/noble-curves), [@noble/hashes](https://github.com/paulmillr/noble-hashes), [@noble/ciphers](https://github.com/paulmillr/noble-ciphers) 2.2.0 (Paul Miller) | MIT | The SDK's findings inbox (`packages/sdk/src/inbox-crypto.ts`): X25519, HKDF-SHA256 and AES-256-GCM. Curves and hashes are also Mera's dependencies, at the same versions, so the web app bundles one copy |
 | [@scure/base](https://github.com/paulmillr/scure-base) | MIT | Mera's dependency (bundled into the web app) |
+| [Envio HyperIndex](https://docs.envio.dev) (`envio` 3.12.1) | Envio's own licences, **not OSI**: per the package's `licenses/README.md`, the generated indexer code is under Envio's EULA (self-hosting allowed) and the code generator under a non-commercial licence | The indexer (`indexer/`): codegen, the runtime and its test framework. Our handlers, schema and config are MIT |
+| [yaml](https://eemeli.org/yaml) 2.9.1 | ISC | The indexer's config test |
 
 **Standards and reference code:**
 
@@ -263,7 +322,7 @@ At runtime, `risk-v1` calls a **Groq-hosted** model through an OpenAI-compatible
 - The expected values in the shared hash vectors (`packages/sdk/test/vectors.json`) are generated with Foundry's `cast`.
 - Deployment goes through the widely used deterministic deployment proxy at `0x4e59b44847b379578588920cA78FbF26c0B4956C` (Arachnid); it is called onchain, and none of its code is included here.
 
-The demo agents are registered by calling the Identity Registry's `register(string)` directly; the [agent0 SDK](https://sdk.ag0.xyz) was not used, because its latest release (1.7.1) has no defaults for Monad. This list grows as libraries are added (Envio and others).
+The demo agents are registered by calling the Identity Registry's `register(string)` directly; the [agent0 SDK](https://sdk.ag0.xyz) was not used, because its latest release (1.7.1) has no defaults for Monad. This list grows as libraries are added.
 
 ## License
 

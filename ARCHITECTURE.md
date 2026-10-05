@@ -1,6 +1,6 @@
 # Attest8004 — Architecture
 
-> **Status:** design reference v0.1 (2 Oct 2026), kept in sync with the code as it is built (P4, 3 Oct 2026: the owner-set MandateRegistry, the `mandate-v1` validator and `verify`, and per-agent forwarder approvals in the demo; P5, 4 Oct 2026: `risk-v1` is built (§5.6, its evidence in §6) and tested against fakes and recorded Groq runs; the gate's tag requirement (§4.1, §4.4), the two-validator vault and the demo "risky but mandated" target `DemoPassThrough` are **deployed**; the `verify` CLI now lives in `packages/cli` and re-checks both validators' tags (§5.5); agent 1984's mandate now allowlists `DemoPassThrough` next to the deployer. **The live end-to-end run with both validators passed** on 4 Oct 2026: `risk-v1`'s first testnet verdicts, and all six verdicts `match` under `verify` (docs/deployments.md)). P6, in progress: MandateRegistry v2 (every mandate, passkey and inbox-key change needs the owner's transaction **and** a passkey assertion verified through `0x0100`, §4.1, §7, §9) is **deployed** on testnet at `0x2Ee5f78149762DE630c6bFF8CD81166010D0454B` (block 68,196,462), with P4's registry kept in the history for older verdicts (§6); the `/approve` page is live (§5.1). On 5 Oct 2026 a real Google Password Manager passkey approved agent 1984's mandate from laptop Chrome and, synced, from Chrome on Android, and the e2e passed against v2 (docs/deployments.md). P7: the Mera findings inbox is built: `FindingsBoard` is **deployed** on testnet at `0xa7d52B3B08FAB0cd0527c6242ca678f9Feee6a1c` (block 68,296,810), the validators post encrypted operator reports (§5.4, §6), and `/approve` (section 4) and `/inbox` are live. On 5 Oct 2026 agent 1984's passkey published its inbox key from laptop Chrome, the e2e posted six trusted reports, and laptop Chrome and, synced, Android Chrome both decrypted them (docs/deployments.md, docs/mera.md). The indexer is still design.
+> **Status:** design reference v0.1 (2 Oct 2026), kept in sync with the code as it is built (P4, 3 Oct 2026: the owner-set MandateRegistry, the `mandate-v1` validator and `verify`, and per-agent forwarder approvals in the demo; P5, 4 Oct 2026: `risk-v1` is built (§5.6, its evidence in §6) and tested against fakes and recorded Groq runs; the gate's tag requirement (§4.1, §4.4), the two-validator vault and the demo "risky but mandated" target `DemoPassThrough` are **deployed**; the `verify` CLI now lives in `packages/cli` and re-checks both validators' tags (§5.5); agent 1984's mandate now allowlists `DemoPassThrough` next to the deployer. **The live end-to-end run with both validators passed** on 4 Oct 2026: `risk-v1`'s first testnet verdicts, and all six verdicts `match` under `verify` (docs/deployments.md)). P6, in progress: MandateRegistry v2 (every mandate, passkey and inbox-key change needs the owner's transaction **and** a passkey assertion verified through `0x0100`, §4.1, §7, §9) is **deployed** on testnet at `0x2Ee5f78149762DE630c6bFF8CD81166010D0454B` (block 68,196,462), with P4's registry kept in the history for older verdicts (§6); the `/approve` page is live (§5.1). On 5 Oct 2026 a real Google Password Manager passkey approved agent 1984's mandate from laptop Chrome and, synced, from Chrome on Android, and the e2e passed against v2 (docs/deployments.md). P7: the Mera findings inbox is built: `FindingsBoard` is **deployed** on testnet at `0xa7d52B3B08FAB0cd0527c6242ca678f9Feee6a1c` (block 68,296,810), the validators post encrypted operator reports (§5.4, §6), and `/approve` (section 4) and `/inbox` are live. On 5 Oct 2026 agent 1984's passkey published its inbox key from laptop Chrome, the e2e posted six trusted reports, and laptop Chrome and, synced, Android Chrome both decrypted them (docs/deployments.md, docs/mera.md). P8: the Envio trust API is built: an indexer of every Attest8004 contract and the canonical Identity Registry's ownership events for our agents (§6), the SDK's trust API with its chain re-checks (§5.7), `/inbox` finding reports through it (§5.4) and `/dashboard` (§9). It is a convenience, never a trust root (§7).
 > **Rule:** any change to an interface, flow, data format or trust assumption updates this file **in the same commit**.
 > Build scope and acceptance criteria live in [`SPEC.md`](./SPEC.md). This file explains *how the system works and why*.
 
@@ -19,7 +19,7 @@ Attest8004 provides that layer:
    - `risk-v1`: agentic; an OpenAI-compatible LLM (Groq today) plans tool calls over simulation, Nansen data and ERC-8004 reputation.
 4. **AttestGate**: a modifier that lets any contract refuse an action unless every validator it requires has given a sufficient verdict for *exactly that action*, which then runs once.
 5. **Private findings inbox**: detailed findings are encrypted to a key derived from the operator's passkey (Mera PRF). It's never stored, and can be re-derived on any device.
-6. **Trust API**: Envio indexes everything into per-agent and per-validator summaries for the SDK and dashboard.
+6. **Trust API**: Envio indexes everything into per-request, per-agent and per-validator records for the SDK, the dashboard and the inbox. It is a convenience: every record links back to the chain, and no verdict ever reads it (§7).
 
 ---
 
@@ -65,7 +65,12 @@ flowchart LR
   IDX -.->|indexes events| VR
   IDX -.-> MR
   IDX -.-> ID
-  UI --> IDX
+  IDX -.-> FB
+  IDX -.-> FW
+  IDX -.-> GATE
+  UI -->|"GraphQL (one query per view)"| IDX
+  UI -.->|"re-check: getValidationStatus, receipts"| VR
+  INBOX -.->|"find posts (then re-checked on chain)"| IDX
 ```
 
 ---
@@ -755,7 +760,8 @@ The LLM never sees or holds any private key. Validators sign; the model only pro
 |---|---|---|
 | Local | Anvil (fork of Monad testnet) | Unit and fork tests |
 | Testnet | Monad testnet `10143` | Main deployment, demo, external integrations |
-| Mainnet | Monad `143` | Only if Envio requires it for indexing |
+| Mainnet | Monad `143` | Not used: Envio indexes testnet (HyperSync supports 10143) |
+| Envio Cloud (free plan) | Monad testnet `10143` | The hosted indexer's public GraphQL endpoint, deployed from the `envio` branch; recorded in `DEPLOYMENTS[10143].trustApi` (§5.7). A local `envio dev` (Docker) indexes the same way |
 
 The web app is deployed early to a **fixed domain**, because passkeys are bound to the rpId. Demo passkeys are created on that domain, not on localhost.
 

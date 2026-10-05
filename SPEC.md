@@ -120,7 +120,7 @@ attest8004/
   - `buildAction()` and `computeRequestHash()`.
   - `requestValidation({validators[], action})`. Puts the request JSON in `requestURI` as a `data:` URI (no hosting; the reference validators accept nothing else), then calls the registry.
   - `awaitVerdict()` and `isValidated()`.
-  - `getAgentTrust(agentId)`, which reads from the Envio GraphQL API (P8).
+  - `getAgentTrust(agentId)`, which reads from the Envio GraphQL API (P8, `packages/sdk/src/trust-api.ts`): the agent's verdicts by tag, mandate, keys, reports and permission changes, each with its onchain anchors, plus `getTrustOverview`, `getIndexedVerdicts`, `findIndexedReports` (findings discovery) and the chain re-checks `confirmIndexedVerdict` and `confirmIndexedReport`. Every answer is validated as untrusted data (§4.8).
   - As built in P3 (`packages/sdk/src/client.ts`): `requestValidation` goes through the `AgentRequestForwarder` when one is configured (the wallet is then the agent's hot key), else straight to the registry. `awaitVerdict` scans `ValidationResponse` logs in windows of at most 100 blocks (Monad testnet's `eth_getLogs` limit). `isValidated` mirrors `AttestGate`: the deadline, consumption, and each requirement's stored validator, agentId, score and tag. Every transaction goes through `writeWithGasGuard`: simulate, estimate, refuse if the estimate is above the explicit limit, then send with that limit and with fees and nonce set, so the node never fills the gas.
 - **Validator base class** (`ValidatorBase`, `packages/sdk/src/validator.ts`):
   - Find `ValidationRequest` events where `validatorAddress == self` by **polling `eth_getLogs` from a saved block cursor**, at most 100 blocks per query (Monad testnet's limit), up to the finalized head, rather than relying only on subscriptions.
@@ -204,21 +204,21 @@ attest8004/
 - **Done when (P7):** the agent's passkey publishes an inbox key, both validators post encrypted reports in the live e2e, and the same passkey decrypts them on laptop Chrome and on Android Chrome. **Done 5 Oct 2026:** agent 1984's inbox key was derived and approved from laptop Chrome (`setInboxKey` tx `0x6b328dde…b70c160`, nonce 2 → 3; the approval is the vector `contracts/test/vectors/passkey-03-laptop-chrome-inbox.json`). The e2e posted six trusted reports to `FindingsBoard` `0xa7d52B3B08FAB0cd0527c6242ca678f9Feee6a1c` (51,468–88,940 gas each, all `verify` matches). Laptop Chrome and, synced, Android Chrome both showed "This passkey derives `0x01a9c300…8d76a03f`: agent 1984's inbox key" and decrypted the reports, each headed "Matches the verdict onchain" (docs/deployments.md, docs/mera.md).
 - **rpId gotcha:** passkeys are bound to the domain. Deploy the web app to its final domain early (e.g. Vercel) and create the demo passkeys there, not on localhost.
 
-### 4.8 Envio indexer (`indexer/`)
-- **Entities:**
-  - `Agent`
-  - `ValidationRequest` and `ValidationResponse`
-  - `Validator`, with derived stats: count, average score and latency
-  - `Mandate` and `InboxKey`
-  - `PermissionEvent`: Identity Registry `Approval`, `ApprovalForAll` and agent-wallet/URI changes
-  - `AgentTrustSummary` (derived)
-- The repo contains `config.yaml`, `schema.graphql` and the handlers. The GraphQL API is used by `getAgentTrust()` and `/dashboard`. (`mandate-v1`'s daily-spend check reads chain state and posted evidence instead, as built in P4, so a verdict can be re-run without the indexer.)
-- **Day 1 check:** is Monad testnet 10143 supported? If not, also deploy the contracts to mainnet and index mainnet.
+### 4.8 Envio indexer (`indexer/`), as built in P8
+**A convenience, never a trust root.** `mandate-v1`, `risk-v1` and `verify` read chain state at the pin and never the indexer (a test pins that no validator or CLI source mentions it); their evidence formats and tags are unchanged. GAMEPLAN's "use `getAgentTrust` in `mandate-v1`'s daily-spend check" was dropped for this reason.
+
+- **The project:** Envio HyperIndex **V3** (`envio` 3.12.1), a self-contained package (exact versions, no workspace dependencies, nothing imported from outside `indexer/`) so Envio Cloud can build the folder alone with pnpm 10.32 and Node 24. `config.yaml` declares each event by its signature (held to the SDK's ABIs by a test), `schema.graphql` the entities, `src/handlers/` one file per contract, `src/lib/` the pure decoders (held to the SDK's hash vectors).
+- **What it indexes, each contract from its deploy block (Monad testnet 10143, HyperSync):** the ValidationRegistry's `ValidationRequest` and `ValidationResponse`; both MandateRegistries' `MandateSet`, `MandateRevoked`, `PasskeySet`, `PasskeyRotated` and `InboxKeySet`, each only in its own epoch (P4's until block 68,196,462, then v2; a retired registry's later events are stored with `inEpoch: false` and change nothing); FindingsBoard's `FindingsPosted`; the forwarder's `AgentKeySet`; the three vaults' `ActionConsumed`; and the canonical Identity Registry's `Transfer`, `Approval` and `ApprovalForAll` from its first event (block 10,675,492). Every token's owner is tracked internally (hidden from GraphQL); permission events are exposed only for agents that appear in our contracts, from their first appearance. (SPEC's earlier "agent-wallet/URI changes" are not indexed: `mandate-v1`'s permission set doesn't include them.)
+- **Entities** (ARCHITECTURE §6): `ValidationRequest` (with its latest verdict, the request JSON and evidence decoded the validators' way, and whether its action executed), `ValidationResponse`, `Validator` (requests, answered, score buckets and average over each request's latest score, average latency in blocks over first responses, tags), `Agent`, `Mandate`, `Passkey` and `InboxKey` (per registry), `PermissionEvent`, `FindingsPost` (every post, with `trusted` = the trust rule applied to the indexed request; untrusted posts are kept and counted, never dropped), `ActionExecution`, `AgentTrustSummary` and `AgentTagSummary`.
+- **Consumers:** the SDK's `getAgentTrust`, `getTrustOverview`, `getIndexedVerdicts` and `findIndexedReports` (§4.4), `/dashboard` (§4.9) and `/inbox` (§4.7). Every result carries its `requestHash`, transaction and log index; `confirmIndexedVerdict` and `confirmIndexedReport` re-check one from the chain.
+- **Checks:** handler tests with Envio's test framework (`createTestIndexer`, simulated events); `pnpm --filter @attest8004/scripts indexer-check` compares the indexer with chain reads at its progress block (every agent's requests and verdicts, the trusted reports, both validators' counts and buckets); a daily GitHub Actions keep-alive queries the hosted endpoint and fails when it is gone or more than a day behind.
+- **Hosting:** Envio Cloud's free plan, deployed from the `envio` branch (root `indexer`). Its GraphQL URL changes with every deployment, so it is recorded in `DEPLOYMENTS[10143].trustApi`, `web/vercel.json`'s CSP and `docs/deployments.md`. A free deployment lives 30 days, and is deleted after 7 days without a query.
+- **Done when (P8):** the hosted indexer serves live testnet data, `indexer-check` matches it against the chain, `/dashboard` shows it, and `/inbox` finds reports through it.
 
 ### 4.9 Web app (`web/`)
 - `/approve`: register the passkey and approve a mandate.
 - `/inbox`: the Mera findings inbox.
-- `/dashboard`: requests, verdicts, validator stats and an agent trust lookup.
+- `/dashboard` (P8): recent requests and verdicts for both tags (score, reasons, validator, agent, time, whether the action executed), validator stats and an agent trust lookup, from the indexer; each verdict links its response transaction and shows its `pnpm attest8004 verify` line. Plain text only, the P6 CSP with only the GraphQL URL added to `connect-src`, no URL input, no storage, only real indexed numbers (our validators and demo agents labelled as ours). When the indexer is unreachable it shows the contracts, the `verify` line and that `/inbox` still works from the chain.
 - Minimal, dark and clean. **For Track 04, developer experience beats visuals.** Link to the docs prominently.
 
 ### 4.10 Docs (`docs/`)
