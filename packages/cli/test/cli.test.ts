@@ -3,7 +3,7 @@ import { mandateContractsFor, SpendLogNotFoundError, verifyContextFor, type Veri
 import { riskContractsFor, type RiskReader, type RiskVerifyReport } from "@attest8004/validator-risk";
 import { encodeErrorResult, getAddress, HttpRequestError, InvalidParamsRpcError, keccak256, RpcRequestError, toHex, type Hex } from "viem";
 import { describe, expect, it } from "vitest";
-import { chainVerifiers, DEFAULT_RPC_URL, main, USAGE, type CliDeps, type Verifiers } from "../src/cli.ts";
+import { chainVerifiers, DEFAULT_RPC_URL, main, nodeCliDeps, USAGE, type CliDeps, type Verifiers } from "../src/cli.ts";
 import { printable } from "../src/text.ts";
 
 const HASH = `0x${"ab".repeat(32)}` as Hex;
@@ -820,5 +820,20 @@ describe("verify: validator C (P11) is labelled, never passed off as a trust roo
     const h = harness();
     await expect(h.run(["verify", HASH])).resolves.toBe(0);
     expect(h.out.join("\n")).not.toContain("CRE workflow");
+  });
+});
+
+describe("nodeCliDeps: the CLI's RPC client stays under the public RPC's 15 requests a second", () => {
+  it("retries a request the RPC refused for its rate limit (-32011), as every Attest8004 client does", async () => {
+    let calls = 0;
+    const fetchImpl = (async (_input: unknown, init?: { body?: unknown }) => {
+      calls++;
+      const { id } = JSON.parse(String(init?.body)) as { id: number };
+      const body = calls === 1 ? { jsonrpc: "2.0", id, error: { code: -32011, message: "requests limited to 15/sec" } } : { jsonrpc: "2.0", id, result: "0x279f" };
+      return new Response(JSON.stringify(body), { status: 200, headers: { "content-type": "application/json" } });
+    }) as typeof fetch;
+    const deps = nodeCliDeps({ fetchImpl, sleep: async () => {} });
+    await expect(deps.connect("http://rpc.invalid")).resolves.toBeDefined();
+    expect(calls).toBe(2);
   });
 });

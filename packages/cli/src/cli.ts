@@ -12,7 +12,7 @@
 // MONAD_TESTNET_RPC_URL (or `pnpm --loglevel silent` with --rpc-url; pnpm 12 has no `-s` for `pnpm run`).
 import { realpathSync } from "node:fs";
 import { fileURLToPath } from "node:url";
-import { deploymentsFor } from "@attest8004/sdk";
+import { deploymentsFor, rateLimitedFetch } from "@attest8004/sdk";
 import { MANDATE_V1, statusOrUnknown, verifyContextFor, verifyRequest, type VerifyReport, type VerifyVerdict } from "@attest8004/validator-mandate";
 import { RISK_V1, riskContractsFor, verifyRiskRequest, viemRiskReader, type RiskReader, type RiskVerifyReport } from "@attest8004/validator-risk";
 import { BaseError, createPublicClient, http, type Hex } from "viem";
@@ -161,11 +161,18 @@ export function chainVerifiers(o: {
   };
 }
 
-/** The real dependencies: a viem client over HTTP, and the process's stdout and stderr. */
-export function nodeCliDeps(): CliDeps {
+/** The CLI's RPC requests a second: under the public RPC's 15 per IP, which refuses more with -32011. */
+const CLI_REQUESTS_PER_SECOND = 10;
+
+/**
+ * The real dependencies: a viem client over HTTP, rate-limited (re-running a recent verdict reads the agent's whole
+ * approval history at once), and the process's stdout and stderr. `fetchImpl` and `sleep` are for tests.
+ */
+export function nodeCliDeps(o: { fetchImpl?: typeof fetch; sleep?: (ms: number) => Promise<void> } = {}): CliDeps {
   return {
     async connect(rpcUrl) {
-      const publicClient = createPublicClient({ transport: http(rpcUrl) });
+      const fetchFn = rateLimitedFetch({ requestsPerSecond: CLI_REQUESTS_PER_SECOND, retries: 6, retryDelayMs: 1_000, fetchImpl: o.fetchImpl, sleep: o.sleep });
+      const publicClient = createPublicClient({ transport: http(rpcUrl, { fetchFn }) });
       const chainId = await publicClient.getChainId();
       return chainVerifiers({ reader: viemRiskReader({ publicClient, contracts: riskContractsFor(chainId) }), chainId });
     },
