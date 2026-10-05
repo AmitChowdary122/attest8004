@@ -47,6 +47,8 @@ contract CreValidatorForkTest is Test {
     CreValidator internal c;
     address internal owner = makeAddr("agentOwner");
     address internal stranger = makeAddr("stranger");
+    /// Whether C was already deployed on the live chain at the forked block (before setUp's deploy()).
+    bool internal liveBeforeSetUp;
 
     function setUp() public {
         string memory rpc = vm.envOr("MONAD_TESTNET_RPC_URL", string(""));
@@ -56,6 +58,7 @@ contract CreValidatorForkTest is Test {
         }
         vm.createSelectFork(rpc);
         script = new DeployCreValidator();
+        liveBeforeSetUp = script.predictedAddress().code.length > 0;
         c = script.deploy();
     }
 
@@ -161,5 +164,15 @@ contract CreValidatorForkTest is Test {
         for (uint256 i; i < reqs.length; ++i) {
             assertTrue(reqs[i].validator != script.predictedAddress(), "the vault must not require C");
         }
+    }
+
+    /// The live deployment (P11, Task 3) carries exactly the script's arguments.
+    function testFork_liveCreValidatorWiring() public view {
+        assertTrue(liveBeforeSetUp, "CreValidator is deployed on Monad testnet at the predicted address");
+        CreValidator live = CreValidator(script.predictedAddress());
+        assertEq(live.forwarder(), script.MOCK_FORWARDER());
+        assertEq(address(live.registry()), script.REGISTRY());
+        assertEq(live.workflowOwner(), script.SIM_WORKFLOW_OWNER());
+        assertEq(live.workflowName(), script.WORKFLOW_NAME());
     }
 }

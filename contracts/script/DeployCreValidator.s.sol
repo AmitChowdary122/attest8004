@@ -24,8 +24,9 @@ contract DeployCreValidator is Script {
     /// "68ce083cf5": the first 10 hex characters of sha256("attest8004-validator-c"), the
     /// workflow-name in cre/validator-c/workflow.yaml.
     bytes10 public constant WORKFLOW_NAME = 0x36386365303833636635;
-    /// Literal gas limit for the deploy transaction, set from Monad's eth_estimateGas (Task 3).
-    uint256 public constant DEPLOY_GAS = 600_000;
+    /// Literal gas limit for the deploy transaction. Monad testnet eth_estimateGas for this call on
+    /// 6 Oct 2026 was 584,252; the limit is that x 1.2, rounded up to 10k.
+    uint256 public constant DEPLOY_GAS = 710_000;
 
     error UnsupportedChain(uint256 chainId);
     error DeployFailed(address predicted);

@@ -85,3 +85,18 @@ describe("findingsBoard", () => {
     expect(DEPLOYMENTS[10143].findingsBoard).toEqual({ address: "0xa7d52B3B08FAB0cd0527c6242ca678f9Feee6a1c", fromBlock: 68_296_810n });
   });
 });
+
+describe("validator C (P11)", () => {
+  const testnet = DEPLOYMENTS[10143];
+
+  it("records CreValidator as a checksummed address distinct from validators A and B", () => {
+    const c = testnet.validators.creMandateV1;
+    expect(getAddress(c)).toBe(c);
+    expect(c).not.toBe(getAddress(testnet.validators.mandateV1));
+    expect(c).not.toBe(getAddress(testnet.validators.riskV1));
+  });
+
+  it("records the forwarder C trusts: CRE's MockKeystoneForwarder on Monad testnet (Forwarder Directory)", () => {
+    expect(testnet.creForwarder).toBe("0xB9F79d863261869B234c481D1f9A7af84AeAd192");
+  });
+});

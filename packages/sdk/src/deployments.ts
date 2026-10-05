@@ -57,11 +57,25 @@ export interface Deployment {
    * URL, `/dashboard` shows its offline view and `/inbox` searches the chain.
    */
   trustApi: TrustApiDeployment | null;
-  /** The two reference validators (SPEC §4.5 `mandate-v1`; §4.6 `risk-v1`, built, funded and tested). */
+  /**
+   * The two reference validators (SPEC §4.5 `mandate-v1`; §4.6 `risk-v1`, built, funded and tested), and validator C
+   * (P11): `CreValidator`, the contract a Chainlink CRE workflow delivers `mandate-v1` verdicts to (docs/cre.md).
+   */
   validators: {
     mandateV1: Address;
     riskV1: Address;
+    /**
+     * Validator C: a contract, not a key. Its verdicts arrive only through `creForwarder`, CRE's mock forwarder,
+     * through which anyone can deliver a report, so it is **never a trust root and no gate may require it**
+     * ({@link CRE_VALIDATOR_LABEL}). Its verdicts are checkable because `verify` re-executes them.
+     */
+    creMandateV1: Address;
   };
+  /**
+   * The Keystone forwarder validator C accepts reports from: on testnet, CRE's MockKeystoneForwarder (the Forwarder
+   * Directory), which verifies no DON signature and has a public `route()`.
+   */
+  creForwarder: Address;
   demoAgents: readonly bigint[];
   /**
    * The P5 "risky but mandated" demo target (SPEC §4.6): forwards every payment straight to `SINK`, an
@@ -117,7 +131,10 @@ export const DEPLOYMENTS = {
       mandateV1: "0xa62DaB21E0C0F57e94B3ed6e675F214199989e92",
       /** `risk-v1`, agentic (P5; built, funded and tested). */
       riskV1: "0x780df855b48AeC7A3907433b0b5984A2fe5dca5E",
+      /** `CreValidator` (P11): deploy tx 0x6be1fd19…7fd02a (docs/deployments.md). */
+      creMandateV1: "0x6D12F00870cB6edA2d8e389696f6B5d050423B95",
     },
+    creForwarder: "0xB9F79d863261869B234c481D1f9A7af84AeAd192",
     /** The two demo agents, owned by the deployer; their hot keys request through the forwarder. */
     demoAgents: [1984n, 1985n] as readonly bigint[],
     /** Deploy tx 0x0be882c3…65128bc (docs/deployments.md). */
@@ -129,6 +146,12 @@ export const DEPLOYMENTS = {
     demoAgentVaultP3: "0x23BfBD12545CCd1501ddA1B65a54518FD6212a96",
   },
 } as const satisfies Record<number, Deployment>;
+
+/**
+ * How every surface (docs, `verify`, `/dashboard`, `pnpm cre:demo`) labels validator C, verbatim: its verdicts come
+ * through a simulation forwarder anyone can deliver through, so they are never a trust root.
+ */
+export const CRE_VALIDATOR_LABEL = "CRE workflow (simulation forwarder, not a trust root)";
 
 /** `DEPLOYMENTS[chainId]`, or throws (`verify` and the validators share this check: SPEC §4.5). */
 export function deploymentsFor(chainId: number): Deployment {

@@ -9,6 +9,7 @@ Every Attest8004 deployment is recorded here: chain, contract, address, the comm
 | Monad testnet (10143) | `FindingsBoard` (P7: encrypted operator reports for the Mera inbox) | [`0xa7d52B3B08FAB0cd0527c6242ca678f9Feee6a1c`](https://monad-testnet.socialscan.io/address/0xa7d52b3b08fab0cd0527c6242ca678f9feee6a1c) | `8fc7016` | 2026-10-05 | [`0x1d43bad3…6136b`](https://monad-testnet.socialscan.io/tx/0x1d43bad3e1e8463bfa7e9384eba32bc7c2933d55306661f981f4fcc7a306136b) (block 68,296,810) |
 | Monad testnet (10143) | `MandateRegistry` v2 (owner + passkey, rpId `attest8004.vercel.app`) | [`0x2Ee5f78149762DE630c6bFF8CD81166010D0454B`](https://monad-testnet.socialscan.io/address/0x2ee5f78149762de630c6bff8cd81166010d0454b) | `dda8e5e` | 2026-10-05 | [`0xfa483be3…751c0d`](https://monad-testnet.socialscan.io/tx/0xfa483be3f43b1e9c53fb00571adda242818b0abe92e0605519a09e3ce2751c0d) (block 68,196,462) |
 | Monad testnet (10143) | `MandateRegistry` (P4, owner-set) — **superseded for new mandates**; read for verdicts pinned before block 68,196,462 | [`0x2523197373ef813E19b5b14Ef2984130868cD17c`](https://monad-testnet.socialscan.io/address/0x2523197373ef813e19b5b14ef2984130868cd17c) | `6e08223` | 2026-10-03 | [`0x1222b700…3ca0b84`](https://monad-testnet.socialscan.io/tx/0x1222b700027bc1e03676ed0f986a31ee2d5ac06ea5c5b1847672ca05b3ca0b84) (block 67,842,487) |
+| Monad testnet (10143) | `CreValidator`: validator C (P11), the Chainlink CRE workflow's receiver; mock forwarder, **not a trust root**: CRE workflow (simulation forwarder, not a trust root) | [`0x6D12F00870cB6edA2d8e389696f6B5d050423B95`](https://monad-testnet.socialscan.io/address/0x6d12f00870cb6eda2d8e389696f6b5d050423b95) | `d5398ae` | 2026-10-06 | [`0x6be1fd19…7fd02a`](https://monad-testnet.socialscan.io/tx/0x6be1fd1904b6ae2d027c809d8d876df75c695ba3d66c227677831faf437fd02a) (block 68,502,019) |
 | Monad testnet (10143) | `DemoAgentVault` (AttestGate), agent 1984, mandate-v1 + risk-v1 | [`0x12fAb3E3cA810Cc44bD9f537613a230a2be8D614`](https://monad-testnet.socialscan.io/address/0x12fab3e3ca810cc44bd9f537613a230a2be8d614) | `7380fdc` | 2026-10-04 | [`0x65125575…61b990e`](https://monad-testnet.socialscan.io/tx/0x651255753f1d100da6b8e99bdfdbe3da60748c2297d9cffeb6554ca6161b990e) (block 67,943,657) |
 | Monad testnet (10143) | `DemoPassThrough` (AttestGate demo target, forwards to `SINK`) | [`0xEEEBBa55620afC42E9c88b5d962476367b8da338`](https://monad-testnet.socialscan.io/address/0xeeebba55620afc42e9c88b5d962476367b8da338) | `7380fdc` | 2026-10-04 | [`0x0be882c3…65128bc`](https://monad-testnet.socialscan.io/tx/0x0be882c31c27d98e93934e71a573bf65f4be450759420de02a2101d8a65128bc) (block 67,943,539) |
 | Monad testnet (10143) | `DemoAgentVault` (AttestGate), agent 1984, validator A only — **superseded** | [`0x23BfBD12545CCd1501ddA1B65a54518FD6212a96`](https://monad-testnet.socialscan.io/address/0x23bfbd12545ccd1501dda1b65a54518fd6212a96) | `319006a` | 2026-10-03 | [`0x2fed0cee…a14bf80`](https://monad-testnet.socialscan.io/tx/0x2fed0ceeec43384305a6cf095dc22be83a28c0d5b54e0b9055c467227a14bf80) (block 67,784,294) |
@@ -107,6 +108,32 @@ Every Attest8004 deployment is recorded here: chain, contract, address, the comm
 - **Not upgradeable, no owner, holds no funds.** Every change goes through the internal `_authorize` hook, which in
   this deployment requires the agent's current owner (`msg.sender == ownerOf(agentId)`). P6 puts a WebAuthn assertion
   in that hook, which is a new deployment, so this one never changes in place.
+
+### CreValidator (testnet, validator C) details
+
+- **What it is.** Validator C (P11, [docs/cre.md](./cre.md)): the address a Chainlink CRE workflow delivers
+  `mandate-v1` verdicts to. `onReport` accepts a report only from its forwarder, checks the report's workflow owner and
+  name, refuses a request that already has a response (write-once), and posts `validationResponse` under the fixed tag
+  `mandate-v1`.
+- **Constructor arguments:**
+  - **forwarder:** CRE's **MockKeystoneForwarder** `0xB9F79d863261869B234c481D1f9A7af84AeAd192` ("MockKeystoneForwarder
+    1.0.0", from CRE's Forwarder Directory);
+  - **registry:** the ValidationRegistry above (`0xc4A4…F9a8f`);
+  - **workflowOwner:** `0xaaaa…aaaa`, the CRE simulator's placeholder;
+  - **workflowName:** `0x36386365303833636635`, the ASCII of the first 10 hex characters of
+    `sha256("attest8004-validator-c")`.
+
+  Read them back with `forwarder()`, `registry()`, `workflowOwner()` and `workflowName()`.
+- **Not a trust root: CRE workflow (simulation forwarder, not a trust root).** The mock verifies no DON signature, and
+  its `route()` is public, so anyone can deliver a report with any metadata. No gate requires C: the live
+  DemoAgentVault requires A + B only, and `testFork_liveVaultExcludesC` pins it. A C verdict is checkable because
+  `pnpm attest8004 verify` re-executes it. The production KeystoneForwarder on Monad testnet is
+  `0xF8344CFd5c43616a4366C34E3EEE75af79a74482`; a production C would be a new deployment with it (ARCHITECTURE §12).
+- **How it was deployed:** `contracts/script/DeployCreValidator.s.sol` via `script/deploy-testnet.sh CreValidator`,
+  through the CREATE2 factory with salt `keccak256("attest8004.CreValidator.v1")`, by the deployer. The broadcast
+  record is `contracts/broadcast/DeployCreValidator.s.sol/10143/run-latest.json`.
+- **Gas:** explicit limit 710,000 (Monad `eth_estimateGas` was 584,252; limit = ×1.2, rounded up to 10k).
+- **No owner, no setters, holds no funds, not upgradeable** (`test_abiIsMinimal` pins the ABI).
 
 ### DemoAgentVault (testnet, two validators, agent 1984) details
 
