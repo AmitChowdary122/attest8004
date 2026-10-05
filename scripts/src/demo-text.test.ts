@@ -9,6 +9,7 @@ import {
   narrateLog,
   monShort,
   plainText,
+  reportLogOf,
   shortKeyLine,
   txLine,
   verdictLines,
@@ -177,5 +178,14 @@ describe("monShort", () => {
     expect(monShort(parseEther("0.0005"))).toBe("0.0005 MON");
     expect(monShort(parseEther("0.00004"))).toBe("<0.0001 MON");
     expect(monShort(0n)).toBe("0 MON");
+  });
+});
+
+describe("reportLogOf", () => {
+  it("names the validator of an operator-report log line (posted or skipped), so it can print after that validator's verdict", () => {
+    expect(reportLogOf({ level: "info", msg: "operator report posted", validator: "risk-v1", txHash: T })).toBe("risk-v1");
+    expect(reportLogOf({ level: "info", msg: "operator report skipped", validator: "mandate-v1", reason: "NO_INBOX_KEY" })).toBe("mandate-v1");
+    expect(reportLogOf({ level: "info", msg: "caught up", validator: "risk-v1" })).toBeNull();
+    expect(reportLogOf({ level: "error", msg: "operator report failed; its gas reservation stays", validator: "risk-v1" })).toBeNull();
   });
 });

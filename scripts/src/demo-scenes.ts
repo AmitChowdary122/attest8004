@@ -61,7 +61,7 @@ import {
   type DemoEnv,
 } from "./demo-chain.ts";
 import { demoMandateProblems, sceneBlockers, unexpectedOutcome } from "./demo-state.ts";
-import { elapsed, findP256Calls, mandateLines, monShort, narrateLog, palette, plainText, txLine, verdictLines } from "./demo-text.ts";
+import { elapsed, findP256Calls, mandateLines, monShort, narrateLog, palette, plainText, reportLogOf, txLine, verdictLines } from "./demo-text.ts";
 import { serialQueue, waitCloseLine, waitOpenLine, type Timeline, type WaitKind } from "./demo-timing.ts";
 import { GAS, READER_CONCURRENCY, counted, pollAll, revertOf, type LiveValidators } from "./live-validators.ts";
 import { checkPermissionWindow } from "./permission-window.ts";
@@ -356,9 +356,14 @@ async function answer(ctx: SceneContext, client: Attest8004Client, a: RequestedV
   const main = counted(live.llm);
   const guard = counted(live.guard);
   const seen = new Set<string>();
+  // A validator posts its encrypted report right after its response, before the verdict is printed: hold the line.
+  const heldReports = new Map<string, string[]>();
   const log = (entry: Record<string, unknown>) => {
     const line = narrateLog(entry, seen);
-    if (line !== null) out.dim(`    ${line}`);
+    if (line === null) return;
+    const reportOf = reportLogOf(entry);
+    if (reportOf !== null) heldReports.set(reportOf, [...(heldReports.get(reportOf) ?? []), line]);
+    else out.dim(`    ${line}`);
   };
   const fromBlock = a.blockNumber < b.blockNumber ? a.blockNumber : b.blockNumber;
   const pinWhat = "mandate-v1 pins 5 blocks below finalized, then answers";
@@ -395,8 +400,11 @@ async function answer(ctx: SceneContext, client: Attest8004Client, a: RequestedV
         out.dim(`    model: ${plainText(parsed.doc.llm.servedModels.join(", "), 80)}, ${parsed.doc.llm.usage.total.toLocaleString("en-US")} tokens (recorded in the public evidence)`);
       }
     }
-    out.tx(`${side === "A" ? MANDATE_V1.tag : RISK_V1.tag}'s verdict`, outcome.txHash);
-    ctx.take.txs.push({ label: `${side === "A" ? MANDATE_V1.tag : RISK_V1.tag}'s verdict`, hash: outcome.txHash });
+    const tag = side === "A" ? MANDATE_V1.tag : RISK_V1.tag;
+    out.tx(`${tag}'s verdict`, outcome.txHash);
+    for (const line of heldReports.get(tag) ?? []) out.dim(`    ${line}`);
+    heldReports.delete(tag);
+    ctx.take.txs.push({ label: `${tag}'s verdict`, hash: outcome.txHash });
     if (outcome.blockNumber > ctx.take.lastBlock) ctx.take.lastBlock = outcome.blockNumber;
   };
 
@@ -422,6 +430,7 @@ async function answer(ctx: SceneContext, client: Attest8004Client, a: RequestedV
     ctx.take.tokens += main.stats.usage.total;
   }
   await printing.drain();
+  for (const lines of heldReports.values()) for (const line of lines) out.dim(`    ${line}`);
   if (!found.A || !found.B) throw new Error("a verdict was answered but not read back");
   const docA = JSON.parse(found.A.text) as { reasons?: unknown; spend?: { total?: unknown } };
   const spend = docA.spend?.total;

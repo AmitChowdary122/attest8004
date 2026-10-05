@@ -128,6 +128,17 @@ export function findP256Calls(frame: TraceFrame): P256Call[] {
 const field = (entry: Record<string, unknown>, key: string) => (typeof entry[key] === "string" ? (entry[key] as string) : undefined);
 
 /**
+ * The validator an operator-report log line (posted or skipped) belongs to, or `null` for any other line. The validator
+ * posts its report right after its response, before the runner prints that verdict; the runner holds these lines and
+ * prints them after the verdict.
+ */
+export function reportLogOf(entry: Record<string, unknown>): string | null {
+  const msg = field(entry, "msg");
+  if (msg !== "operator report posted" && msg !== "operator report skipped") return null;
+  return field(entry, "validator") ?? null;
+}
+
+/**
  * A validator's log entry as one narration line, or `null` for the routine ones (responses are printed from their
  * outcomes instead). Waits are said once per request (`seen` remembers them); warnings and errors start with `!`.
  */
