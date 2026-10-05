@@ -72,9 +72,12 @@ holder of the agent's passkey can read it.
 `ValidationRegistry.getValidationStatus(requestHash)` names that post's validator and agent; every other post is
 ignored, so a stranger can't slip a fake "report" into the inbox.
 
-**Finding the reports without an indexer.** `/inbox` reads the agent's verdicts from the ValidationRegistry, then
-looks for each verdict's report in the 600 blocks (about 3 minutes) after its response; validators post right after
-their response lands. A report posted later than that isn't found until the P8 indexer. A post can be found only
+**Finding the reports.** `/inbox` reads the agent's verdicts from the ValidationRegistry, then asks the Envio indexer
+(P8) for every post on those requests, with no time limit. The indexer is never trusted for this: each post is kept
+only if the chain's status names its validator and agent and its own transaction receipt carries it exactly, because
+the envelope's encryption doesn't say who sent it (anyone can encrypt to a public inbox key). When the indexer is
+unavailable, or for a verdict newer than its progress, `/inbox` searches the chain in the 600 blocks (about 3
+minutes) after each response instead; validators post right after their response lands. A post can be found only
 after its verdict exists.
 
 ## 4. What the report contains, and why it is private

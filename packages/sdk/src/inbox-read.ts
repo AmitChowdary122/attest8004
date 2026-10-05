@@ -4,15 +4,22 @@
 // The trust rule: a FindingsPosted post counts only when `ValidationRegistry.getValidationStatus(requestHash)` names
 // that post's validator and agent. Anyone can post to the board; everything else is ignored.
 //
-// Without an indexer (P8), each report is found from its verdict: the registry's `lastUpdate` gives the block the
-// response landed in, and the validator posts right after it, so the search covers the next REPORT_SEARCH_BLOCKS.
-import { getAddress, zeroHash, type Address, type Hash, type Hex, type PublicClient } from "viem";
+// Two ways to find each verdict's reports, after the same chain reads of the agent's verdicts:
+// - through the Envio indexer (P8, `findInboxEntriesViaIndexer`): one query for every post on those requests, each
+//   then re-checked on chain (the trust rule against the chain's status, and the post's own receipt), with no limit
+//   on how long after its verdict a report was posted;
+// - on chain alone (`findInboxEntries`): the registry's `lastUpdate` gives the block the response landed in, and the
+//   validator posts right after it, so the search covers the next REPORT_SEARCH_BLOCKS.
+// `discoverInbox` uses the indexer when one is recorded and falls back to the chain when it fails; verdicts whose
+// report window the indexer hasn't fully processed yet are searched on chain either way.
+import { getAddress, TransactionReceiptNotFoundError, zeroHash, type Address, type Hash, type Hex, type PublicClient } from "viem";
 import { findingsPostedEvent, validationRegistryAbi, validationResponseEvent } from "./abi.ts";
 import { NoBlockAtOrAfterError, blocksWithTimestamp, firstBlockAtOrAfter } from "./blocks.ts";
 import type { Deployment, FindingsBoardDeployment } from "./deployments.ts";
 import { openEnvelope, wipe, type EnvelopeProblem, type SecretTracker } from "./inbox-crypto.ts";
 import { MAX_LOG_BLOCK_RANGE } from "./logs.ts";
 import { decodeReport, type OperatorReport } from "./report.ts";
+import { TrustApiError, findIndexedReports, postMatchesReceipt, type ReceiptLog, type TrustApiOptions } from "./trust-api.ts";
 
 /** How far after its verdict a report is searched for: 600 blocks, about 3 minutes. */
 export const REPORT_SEARCH_BLOCKS = 600n;
@@ -53,6 +60,11 @@ export interface InboxReader {
   responseTx(f: { requestHash: Hex; fromBlock: bigint; toBlock: bigint }): Promise<Hash | null>;
 }
 
+/** An {@link InboxReader} that can also read a transaction's receipt logs (null for an unknown transaction). */
+export interface IndexedInboxReader extends InboxReader {
+  receiptLogs(txHash: Hash): Promise<readonly ReceiptLog[] | null>;
+}
+
 /** The trust rule for one post: the validator, the agent and the request the registry's status names. */
 export function isTrustedPost(post: FindingsPost, status: InboxStatus): boolean {
   return (
@@ -67,73 +79,179 @@ export interface InboxEntry {
   status: InboxStatus;
   responseTx: Hash | null;
   posts: FindingsPost[];
-  /** The last block searched for posts. */
+  /** The last block searched for posts: on chain, the end of the window; through the indexer, its progress block. */
   searchedTo: bigint;
+  /** How this entry's posts were found. */
+  source: "indexer" | "chain";
+}
+
+/** A post the indexer listed that the chain doesn't carry as listed: dropped, and shown as a warning. */
+export interface RejectedPost {
+  post: FindingsPost;
+  problem: "NOT_ON_CHAIN";
 }
 
 const answered = (s: InboxStatus) => s.responseHash !== zeroHash || s.tag !== "";
 
+interface DiscoveryOptions {
+  agentId: bigint;
+  findingsBoard: FindingsBoardDeployment;
+  maxResponses?: number;
+  onProgress?: (done: number, total: number) => void;
+}
+
 /**
- * The agent's answered responses since the board was deployed (at most `maxResponses`, newest first), each with the
- * posts the trust rule keeps. A status naming another agent (a squatted hash) is skipped. The search for a report
- * starts at the first block carrying its response's `lastUpdate` and covers {@link REPORT_SEARCH_BLOCKS}, never past
- * the head, stopping at the first 100-block window that finds one. `onProgress(done, total)` runs before the first
- * response and after each.
+ * The agent's answered responses since the board was deployed (at most `maxResponses`, newest first), from the chain.
+ * A status naming another agent (a squatted hash) is skipped.
  */
-export async function findInboxEntries(
-  reader: InboxReader,
-  o: { agentId: bigint; findingsBoard: FindingsBoardDeployment; maxResponses?: number; onProgress?: (done: number, total: number) => void },
-): Promise<InboxEntry[]> {
+async function answeredCandidates(reader: InboxReader, o: DiscoveryOptions): Promise<{ candidates: InboxStatus[]; head: bigint }> {
   const { agentId, findingsBoard } = o;
   const hashes = await reader.agentValidations(agentId);
-  if (hashes.length === 0) return [];
+  if (hashes.length === 0) return { candidates: [], head: 0n };
   const [statuses, head] = await Promise.all([reader.statuses(hashes), reader.head()]);
   const boardTime = await reader.blockTimestamp(findingsBoard.fromBlock);
   const candidates = statuses
     .filter((s) => answered(s) && s.agentId === agentId && s.lastUpdate >= boardTime)
     .sort((a, b) => (a.lastUpdate === b.lastUpdate ? 0 : a.lastUpdate > b.lastUpdate ? -1 : 1))
     .slice(0, o.maxResponses ?? MAX_INBOX_RESPONSES);
+  return { candidates, head };
+}
 
-  const timestamp = (n: bigint) => reader.blockTimestamp(n);
+/** The response's transaction, from the blocks carrying its `lastUpdate`, or null. */
+async function responseTxOf(reader: InboxReader, status: InboxStatus, head: bigint): Promise<Hash | null> {
+  const responseBlocks = await blocksWithTimestamp((n) => reader.blockTimestamp(n), status.lastUpdate, head);
+  return responseBlocks ? await reader.responseTx({ requestHash: status.requestHash, ...responseBlocks }) : null;
+}
+
+/**
+ * One verdict's reports on chain alone: from the first block carrying its `lastUpdate`, over
+ * {@link REPORT_SEARCH_BLOCKS}, never past the head, stopping at the first 100-block window that finds a trusted post.
+ */
+async function chainEntry(reader: InboxReader, status: InboxStatus, agentId: bigint, head: bigint, findingsBoard: FindingsBoardDeployment): Promise<InboxEntry> {
+  let start: bigint;
+  try {
+    start = await firstBlockAtOrAfter((n) => reader.blockTimestamp(n), status.lastUpdate, head, findingsBoard.fromBlock);
+  } catch (error) {
+    if (!(error instanceof NoBlockAtOrAfterError)) throw error;
+    return { status, responseTx: null, posts: [], searchedTo: head, source: "chain" };
+  }
+  const responseTx = await responseTxOf(reader, status, head);
+  const end = start + REPORT_SEARCH_BLOCKS - 1n < head ? start + REPORT_SEARCH_BLOCKS - 1n : head;
+  for (let from = start; from <= end; from += MAX_LOG_BLOCK_RANGE) {
+    const to = from + MAX_LOG_BLOCK_RANGE - 1n < end ? from + MAX_LOG_BLOCK_RANGE - 1n : end;
+    const found = await reader.findingsLogs({ requestHash: status.requestHash, agentId, validator: status.validator, fromBlock: from, toBlock: to });
+    const trusted = found.filter((post) => isTrustedPost(post, status));
+    if (trusted.length > 0) return { status, responseTx, posts: trusted, searchedTo: to, source: "chain" };
+  }
+  return { status, responseTx, posts: [], searchedTo: end, source: "chain" };
+}
+
+async function chainEntries(reader: InboxReader, o: DiscoveryOptions, candidates: InboxStatus[], head: bigint): Promise<InboxEntry[]> {
   const entries: InboxEntry[] = [];
   o.onProgress?.(0, candidates.length);
   for (const status of candidates) {
-    let start: bigint;
-    try {
-      start = await firstBlockAtOrAfter(timestamp, status.lastUpdate, head, findingsBoard.fromBlock);
-    } catch (error) {
-      if (!(error instanceof NoBlockAtOrAfterError)) throw error;
-      entries.push({ status, responseTx: null, posts: [], searchedTo: head });
-      o.onProgress?.(entries.length, candidates.length);
-      continue;
-    }
-    const responseBlocks = await blocksWithTimestamp(timestamp, status.lastUpdate, head);
-    const responseTx = responseBlocks ? await reader.responseTx({ requestHash: status.requestHash, ...responseBlocks }) : null;
-
-    const end = start + REPORT_SEARCH_BLOCKS - 1n < head ? start + REPORT_SEARCH_BLOCKS - 1n : head;
-    let posts: FindingsPost[] = [];
-    let searchedTo = end;
-    for (let from = start; from <= end; from += MAX_LOG_BLOCK_RANGE) {
-      const to = from + MAX_LOG_BLOCK_RANGE - 1n < end ? from + MAX_LOG_BLOCK_RANGE - 1n : end;
-      const found = await reader.findingsLogs({ requestHash: status.requestHash, agentId, validator: status.validator, fromBlock: from, toBlock: to });
-      const trusted = found.filter((post) => isTrustedPost(post, status));
-      if (trusted.length > 0) {
-        posts = trusted;
-        searchedTo = to;
-        break;
-      }
-    }
-    entries.push({ status, responseTx, posts, searchedTo });
+    entries.push(await chainEntry(reader, status, o.agentId, head, o.findingsBoard));
     o.onProgress?.(entries.length, candidates.length);
   }
   return entries;
 }
 
 /**
+ * The agent's answered responses since the board was deployed (at most `maxResponses`, newest first), each with the
+ * posts the trust rule keeps, found on chain alone. The search for a report starts at the first block carrying its
+ * response's `lastUpdate` and covers {@link REPORT_SEARCH_BLOCKS}, never past the head, stopping at the first
+ * 100-block window that finds one. `onProgress(done, total)` runs before the first response and after each.
+ */
+export async function findInboxEntries(reader: InboxReader, o: DiscoveryOptions): Promise<InboxEntry[]> {
+  const { candidates, head } = await answeredCandidates(reader, o);
+  return candidates.length === 0 ? [] : chainEntries(reader, o, candidates, head);
+}
+
+async function indexedEntries(
+  reader: IndexedInboxReader,
+  o: DiscoveryOptions & { trustApi: TrustApiOptions },
+  candidates: InboxStatus[],
+  head: bigint,
+): Promise<{ entries: InboxEntry[]; rejected: RejectedPost[]; indexedTo: bigint | null }> {
+  if (candidates.length === 0) return { entries: [], rejected: [], indexedTo: null };
+  const { reports, indexedTo } = await findIndexedReports({ ...o.trustApi, agentId: o.agentId, requestHashes: candidates.map((c) => c.requestHash) });
+  // A verdict's report window is fully indexed when it ends at or before the indexer's progress block, i.e. when its
+  // response time is at or before that of block (indexedTo − window + 1). Later ones are searched on chain too.
+  const lastIndexed = indexedTo < head ? indexedTo : head;
+  const cutoffBlock = lastIndexed - REPORT_SEARCH_BLOCKS + 1n;
+  const cutoffTime = cutoffBlock >= 0n ? await reader.blockTimestamp(cutoffBlock) : -1n;
+  const entries: InboxEntry[] = [];
+  const rejected: RejectedPost[] = [];
+  o.onProgress?.(0, candidates.length);
+  for (const status of candidates) {
+    if (status.lastUpdate > cutoffTime) {
+      entries.push(await chainEntry(reader, status, o.agentId, head, o.findingsBoard));
+    } else {
+      const posts: FindingsPost[] = [];
+      for (const indexed of reports.filter((r) => r.requestHash === status.requestHash.toLowerCase())) {
+        const post: FindingsPost = {
+          requestHash: indexed.requestHash,
+          agentId: indexed.agentId,
+          validator: indexed.validator,
+          envelope: indexed.envelope,
+          blockNumber: indexed.blockNumber,
+          txHash: indexed.txHash,
+          logIndex: indexed.logIndex,
+        };
+        // The trust rule against the chain's status, never the indexer's flag; then the post's own receipt.
+        if (!isTrustedPost(post, status)) continue;
+        const logs = await reader.receiptLogs(post.txHash);
+        if (logs !== null && postMatchesReceipt(post, logs, o.findingsBoard.address)) posts.push(post);
+        else rejected.push({ post, problem: "NOT_ON_CHAIN" });
+      }
+      entries.push({ status, responseTx: await responseTxOf(reader, status, head), posts, searchedTo: indexedTo, source: "indexer" });
+    }
+    o.onProgress?.(entries.length, candidates.length);
+  }
+  return { entries, rejected, indexedTo };
+}
+
+/**
+ * {@link findInboxEntries}, with the posts found through the indexer: one query for every post on the agent's
+ * verdicts, each kept only if the chain's status names its validator and agent and its receipt carries it exactly.
+ * Throws {@link TrustApiError} when the indexer fails.
+ */
+export async function findInboxEntriesViaIndexer(
+  reader: IndexedInboxReader,
+  o: DiscoveryOptions & { trustApi: TrustApiOptions },
+): Promise<{ entries: InboxEntry[]; rejected: RejectedPost[]; indexedTo: bigint | null }> {
+  const { candidates, head } = await answeredCandidates(reader, o);
+  return indexedEntries(reader, o, candidates, head);
+}
+
+/**
+ * What `/inbox` runs: through the indexer when `trustApi` is given, else on chain; any indexer failure falls back to
+ * the chain scan over the same verdicts, with the reason. Chain errors propagate either way.
+ */
+export async function discoverInbox(
+  reader: IndexedInboxReader,
+  o: DiscoveryOptions & { trustApi: TrustApiOptions | null },
+): Promise<{ entries: InboxEntry[]; rejected: RejectedPost[]; via: "indexer" | "chain"; fallbackReason: string | null; indexedTo: bigint | null }> {
+  const { candidates, head } = await answeredCandidates(reader, o);
+  if (candidates.length === 0) return { entries: [], rejected: [], via: o.trustApi === null ? "chain" : "indexer", fallbackReason: null, indexedTo: null };
+  if (o.trustApi !== null) {
+    try {
+      const found = await indexedEntries(reader, { ...o, trustApi: o.trustApi }, candidates, head);
+      return { ...found, via: "indexer", fallbackReason: null };
+    } catch (error) {
+      if (!(error instanceof TrustApiError)) throw error;
+      const entries = await chainEntries(reader, o, candidates, head);
+      return { entries, rejected: [], via: "chain", fallbackReason: `${error.kind}: ${error.message}`, indexedTo: null };
+    }
+  }
+  return { entries: await chainEntries(reader, o, candidates, head), rejected: [], via: "chain", fallbackReason: null, indexedTo: null };
+}
+
+/**
  * An `InboxReader` over viem for one load: block timestamps are cached for its lifetime. Statuses come through
  * Multicall3. Throws if the deployment has no FindingsBoard.
  */
-export function viemInboxReader(o: { publicClient: PublicClient; deployment: Deployment }): InboxReader {
+export function viemInboxReader(o: { publicClient: PublicClient; deployment: Deployment }): IndexedInboxReader {
   const { publicClient, deployment } = o;
   if (deployment.findingsBoard === null) throw new Error("no FindingsBoard is recorded for this chain");
   const board = getAddress(deployment.findingsBoard.address);
@@ -190,6 +308,15 @@ export function viemInboxReader(o: { publicClient: PublicClient; deployment: Dep
     async responseTx({ requestHash, fromBlock, toBlock }) {
       const logs = await publicClient.getLogs({ address: registry, event: validationResponseEvent, args: { requestHash }, fromBlock, toBlock });
       return logs.at(-1)?.transactionHash ?? null;
+    },
+    async receiptLogs(txHash) {
+      try {
+        const receipt = await publicClient.getTransactionReceipt({ hash: txHash });
+        return receipt.logs.map((l) => ({ address: l.address, topics: l.topics, data: l.data, logIndex: l.logIndex }));
+      } catch (error) {
+        if (error instanceof TransactionReceiptNotFoundError) return null;
+        throw error;
+      }
     },
   };
 }

@@ -5,7 +5,9 @@
     "moduleResolution": "Bundler",
     "types": ["node"],
     "declaration": false,
-    "noEmit": true
+    "noEmit": true,
+    // Tests import the pages' pure modules (e.g. src/explorer.ts) by their .ts path.
+    "allowImportingTsExtensions": true
   },
   "include": ["vite.config.ts", "test"]
 }

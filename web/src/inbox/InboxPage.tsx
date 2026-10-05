@@ -3,7 +3,7 @@ import {
   INBOX_PRF_SALT,
   REPORT_SEARCH_BLOCKS,
   RP_ID,
-  findInboxEntries,
+  discoverInbox,
   isApproveHost,
   openInbox,
   viemInboxReader,
@@ -12,15 +12,16 @@ import {
   type InboxEntry,
   type InboxStatus,
   type OpenedReport,
+  type RejectedPost,
 } from "@attest8004/sdk/browser";
 import { useState } from "react";
 import { getAddress, hexToBytes, type Hex } from "viem";
 import { chainId, client, deployment, readInboxKey } from "../approve/chain.ts";
 import { errorText } from "../approve/exportJson.ts";
 import { currentHostname, stripLinkParameters } from "../approve/url.ts";
+import { explorerTx } from "../explorer.ts";
+import { trustApiOptions } from "../trust-api-url.ts";
 import { ReportCard } from "./ReportCard.tsx";
-
-const EXPLORER = "https://monad-testnet.socialscan.io";
 
 /** Our validators by address, so a report says whose it is; any other validator is shown by address. */
 const VALIDATOR_LABELS: Record<string, string> = {
@@ -32,6 +33,12 @@ interface Found {
   agentId: bigint;
   inboxKey: Hex;
   entries: InboxEntry[];
+  /** How the reports were found: through the Envio indexer (each re-checked on chain) or on chain alone. */
+  via: "indexer" | "chain";
+  fallbackReason: string | null;
+  indexedTo: bigint | null;
+  /** Posts the indexer listed that the chain doesn't carry as listed. */
+  rejected: RejectedPost[];
 }
 
 type Decrypted =
@@ -39,8 +46,10 @@ type Decrypted =
   | { ok: true; publicKey: Hex; reports: { post: FindingsPost; status: InboxStatus; opened: OpenedReport }[] };
 
 /**
- * /inbox (SPEC §4.7): the agent's encrypted operator reports. "Find reports" makes public chain reads only (no
- * passkey) and keeps the posts the trust rule allows; "Decrypt with passkey" then derives the inbox key from the
+ * /inbox (SPEC §4.7): the agent's encrypted operator reports. "Find reports" (no passkey) reads the agent's verdicts
+ * from the chain, finds their posts through the Envio indexer when one is recorded (else, or when it fails, on chain
+ * within 600 blocks of each verdict), and keeps only posts the chain's status trusts and whose receipt carries them
+ * exactly. Only public chain reads and one indexer query. "Decrypt with passkey" then derives the inbox key from the
  * passkey's PRF, opens every report and zeroes the key, so the private key exists only for the decryption itself.
  * Nothing is stored and nothing is read from the URL.
  */
@@ -75,12 +84,13 @@ export function InboxPage() {
     try {
       const inboxKey = await readInboxKey(agentId);
       const reader = viemInboxReader({ publicClient: client, deployment });
-      const entries = await findInboxEntries(reader, {
+      const result = await discoverInbox(reader, {
         agentId,
         findingsBoard: board,
+        trustApi: trustApiOptions(),
         onProgress: (done, total) => setProgress(`Reading verdicts… ${done}/${total}`),
       });
-      setFound({ agentId, inboxKey, entries });
+      setFound({ agentId, inboxKey, ...result });
     } catch (e) {
       setError(`couldn't read agent ${agentId}'s reports: ${errorText(e)}`);
     } finally {
@@ -141,8 +151,8 @@ export function InboxPage() {
         <section>
           <h2>1 · Find the agent's reports</h2>
           <p className="muted">
-            Public chain reads only: the agent's verdicts, then each verdict's encrypted report, kept only when the ValidationRegistry names its
-            poster as that verdict's validator.
+            The agent's verdicts from the chain, then each verdict's encrypted report (found through the Envio indexer when it's available),
+            kept only when the ValidationRegistry names its poster as that verdict's validator and its transaction carries it exactly.
           </p>
           <label>
             Agent id
@@ -160,7 +170,20 @@ export function InboxPage() {
                 <dd>
                   {current.entries.length}, with {postCount} encrypted report(s)
                 </dd>
+                <dt>Found</dt>
+                <dd>
+                  {current.via === "indexer"
+                    ? `through the Envio indexer (indexed to block ${current.indexedTo?.toString() ?? "?"}); every report re-checked onchain`
+                    : current.fallbackReason !== null
+                      ? `on chain, within ${REPORT_SEARCH_BLOCKS.toString()} blocks of each verdict: the indexer is unavailable (${current.fallbackReason})`
+                      : `on chain, within ${REPORT_SEARCH_BLOCKS.toString()} blocks of each verdict (no indexer recorded)`}
+                </dd>
               </dl>
+              {current.rejected.length > 0 && (
+                <p className="notice">
+                  The indexer listed {current.rejected.length} report(s) that the chain doesn't carry as listed; they were dropped and aren't shown.
+                </p>
+              )}
               <h2>2 · Decrypt with the passkey</h2>
               <button type="button" disabled={!enabled || busy || postCount === 0} onClick={decrypt}>
                 {busy && current ? "Waiting for the passkey…" : "Decrypt with passkey"}
@@ -189,8 +212,8 @@ export function InboxPage() {
                     </p>
                     <p className="muted">
                       Request{" "}
-                      {entry.responseTx ? (
-                        <a href={`${EXPLORER}/tx/${entry.responseTx}`} target="_blank" rel="noopener noreferrer">
+                      {explorerTx(entry.responseTx) ? (
+                        <a href={explorerTx(entry.responseTx) ?? undefined} target="_blank" rel="noopener noreferrer">
                           <code>{entry.status.requestHash}</code>
                         </a>
                       ) : (
@@ -199,7 +222,11 @@ export function InboxPage() {
                       (public evidence; re-check it with <code>pnpm attest8004 verify {entry.status.requestHash}</code>)
                     </p>
                     {entry.posts.length === 0 && (
-                      <p className="muted">No report found within {REPORT_SEARCH_BLOCKS.toString()} blocks of this verdict.</p>
+                      <p className="muted">
+                        {entry.source === "indexer"
+                          ? `No report indexed for this verdict (indexed to block ${entry.searchedTo.toString()}).`
+                          : `No report found on chain up to block ${entry.searchedTo.toString()} (within ${REPORT_SEARCH_BLOCKS.toString()} blocks of this verdict).`}
+                      </p>
                     )}
                     {entry.posts.map((post) => {
                       const report = opened(post);
@@ -221,8 +248,8 @@ export function InboxPage() {
       {error && <p className="error">{error}</p>}
       <footer>
         <p className="muted">
-          This page stores nothing and sends nothing but public chain reads. The inbox key is derived on demand from the passkey and zeroed after
-          use. {board ? <>FindingsBoard <code>{board.address}</code> on Monad testnet. </> : null}Build <code>{__BUILD_SHA__}</code>.
+          This page stores nothing and sends nothing but public chain reads and one query to the public Envio indexer. The inbox key is derived on
+          demand from the passkey and zeroed after use. {board ? <>FindingsBoard <code>{board.address}</code> on Monad testnet. </> : null}Build <code>{__BUILD_SHA__}</code>.
         </p>
         <p className="muted">
           <a href="https://github.com/AmitChowdary122/attest8004#readme">Docs and quickstart</a>

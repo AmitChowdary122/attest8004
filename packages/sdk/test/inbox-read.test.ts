@@ -1,10 +1,13 @@
-import { getAddress, keccak256, toHex, zeroHash, type Address, type Hash, type Hex } from "viem";
+import { encodeAbiParameters, encodeEventTopics, getAddress, keccak256, toHex, zeroHash, type Address, type Hash, type Hex } from "viem";
 import { describe, expect, it } from "vitest";
 import {
   REPORT_SCHEMA_V1,
   deriveInboxPrivateKey,
+  discoverInbox,
   encodeReport,
   findInboxEntries,
+  findInboxEntriesViaIndexer,
+  findingsPostedEvent,
   isTrustedPost,
   openInbox,
   sealEnvelope,
@@ -14,6 +17,8 @@ import {
   type InboxReader,
   type InboxStatus,
   type OperatorReport,
+  type ReceiptLog,
+  type TrustApiOptions,
 } from "../src/index.ts";
 import { expectAllZero, recordingTracker } from "./helpers/secrets.ts";
 
@@ -90,6 +95,20 @@ class FakeReader implements InboxReader {
   async responseTx(f: { requestHash: Hex; fromBlock: bigint; toBlock: bigint }): Promise<Hash | null> {
     return f.toBlock - f.fromBlock < 10n ? hashOf(`response ${f.requestHash}`) : null;
   }
+  /** The receipt logs of a transaction among `posts` (the chain's posts), or null for an unknown transaction. */
+  async receiptLogs(txHash: Hash): Promise<ReceiptLog[] | null> {
+    const logs = this.posts.filter((p) => p.txHash === txHash).map(receiptLog);
+    return logs.length > 0 ? logs : null;
+  }
+}
+
+function receiptLog(p: FindingsPost): ReceiptLog {
+  return {
+    address: BOARD,
+    topics: encodeEventTopics({ abi: [findingsPostedEvent], eventName: "FindingsPosted", args: { requestHash: p.requestHash, agentId: p.agentId, validator: p.validator } }) as Hex[],
+    data: encodeAbiParameters([{ type: "bytes" }], [p.envelope]),
+    logIndex: p.logIndex,
+  };
 }
 
 const board = { address: BOARD, fromBlock: FIRST };
@@ -251,7 +270,7 @@ describe("openInbox", () => {
   }
 
   const common = { privateKey, publicKey, chainId: 10143, findingsBoard: BOARD, validationRegistry: REGISTRY };
-  const entry = (s: InboxStatus, posts: FindingsPost[]): InboxEntry => ({ status: s, responseTx: null, posts, searchedTo: 5_100n });
+  const entry = (s: InboxStatus, posts: FindingsPost[]): InboxEntry => ({ status: s, responseTx: null, posts, searchedTo: 5_100n, source: "chain" });
 
   it("KEY_MISMATCH when publicKey ≠ onchainInboxKey, and no envelope is opened", () => {
     const s = status("r", 5_000n);
@@ -296,5 +315,148 @@ describe("openInbox", () => {
     const s = status("r", 5_000n);
     const result = openInbox({ ...common, entries: [entry(s, [sealedPost(s, reportFor(s, { tag: "risk-v1" }))])], onchainInboxKey: publicKey });
     expect(result.ok && result.reports[0]?.opened).toEqual({ ok: false, problem: "REPORT_MISMATCH" });
+  });
+});
+
+/** A fake trust API serving `rows` as FindingsPost answers (filtered by the requested hashes), indexed to `indexedTo`. */
+function fakeTrustApi(rows: (FindingsPost & { trusted?: boolean })[], indexedTo: bigint, answer?: () => Response | Promise<Response>): TrustApiOptions & { calls: number } {
+  const o = {
+    url: "https://indexer.example/x/v1/graphql",
+    calls: 0,
+    fetchImpl: (async (_url: string, init: RequestInit) => {
+      o.calls += 1;
+      if (answer) return answer();
+      const { variables } = JSON.parse(String(init.body)) as { variables: { where: { requestHash?: { _in: string[] } } } };
+      const wanted = new Set(variables.where.requestHash?._in ?? []);
+      const FindingsPost = rows
+        .filter((r) => wanted.has(r.requestHash.toLowerCase()))
+        .map((r) => ({
+          requestHash: r.requestHash,
+          agentId: r.agentId.toString(),
+          validator: r.validator.toLowerCase(),
+          envelope: r.envelope,
+          block: r.blockNumber.toString(),
+          tx: r.txHash,
+          logIndex: r.logIndex,
+          trusted: r.trusted ?? true,
+          trustProblem: r.trusted === false ? "WRONG_VALIDATOR" : null,
+        }));
+      return new Response(JSON.stringify({ data: { FindingsPost, _meta: [{ chainId: 10143, progressBlock: Number(indexedTo), isReady: true }] } }), { status: 200 });
+    }) as unknown as typeof fetch,
+  };
+  return o;
+}
+
+describe("findInboxEntriesViaIndexer", () => {
+  it("finds a report 5,000 blocks after its verdict, beyond the chain scan's 600", async () => {
+    const reader = new FakeReader();
+    reader.statusList.push(status("r", 10_000n));
+    const p = post("r", 15_000n);
+    reader.posts.push(p);
+    const api = fakeTrustApi([p], 20_000n);
+
+    const { entries, rejected, indexedTo } = await findInboxEntriesViaIndexer(reader, { agentId: AGENT, findingsBoard: board, trustApi: api });
+
+    expect(api.calls).toBe(1);
+    expect(indexedTo).toBe(20_000n);
+    expect(rejected).toEqual([]);
+    expect(entries).toHaveLength(1);
+    expect(entries[0]).toMatchObject({ source: "indexer", searchedTo: 20_000n, responseTx: hashOf(`response ${hashOf("r")}`) });
+    expect(entries[0]?.posts).toEqual([p]);
+    expect(reader.windows).toEqual([]);
+    expect((await findInboxEntries(reader, { agentId: AGENT, findingsBoard: board }))[0]?.posts).toEqual([]);
+  });
+
+  it("keeps only posts the chain's status trusts, whatever the indexer says", async () => {
+    const reader = new FakeReader();
+    reader.statusList.push(status("r", 10_000n));
+    const stranger = post("r", 10_005n, { validator: STRANGER, txHash: hashOf("stranger post") });
+    reader.posts.push(stranger);
+    const { entries, rejected } = await findInboxEntriesViaIndexer(reader, { agentId: AGENT, findingsBoard: board, trustApi: fakeTrustApi([{ ...stranger, trusted: true }], 20_000n) });
+    expect(entries[0]?.posts).toEqual([]);
+    expect(rejected).toEqual([]);
+  });
+
+  it("drops a post its receipt doesn't carry", async () => {
+    const reader = new FakeReader();
+    reader.statusList.push(status("r", 10_000n));
+    const forged = post("r", 10_005n, { envelope: "0x01beef", txHash: hashOf("forged") });
+    const altered = post("r", 10_006n, { envelope: "0x01cafe", txHash: hashOf("altered"), logIndex: 1 });
+    reader.posts.push({ ...altered, envelope: "0x01f00d" });
+    const { entries, rejected } = await findInboxEntriesViaIndexer(reader, { agentId: AGENT, findingsBoard: board, trustApi: fakeTrustApi([forged, altered], 20_000n) });
+    expect(entries[0]?.posts).toEqual([]);
+    expect(rejected.map((r) => [r.post.txHash, r.problem])).toEqual([
+      [hashOf("forged"), "NOT_ON_CHAIN"],
+      [hashOf("altered"), "NOT_ON_CHAIN"],
+    ]);
+  });
+
+  it("chain-scans verdicts newer than the indexer's progress block", async () => {
+    const reader = new FakeReader();
+    // Indexed to 10,200: the verdict at 10,000 still has 400 unindexed blocks of its 600-block window; the one at
+    // 5,000 is fully indexed and has no report.
+    reader.statusList.push(status("old", 5_000n), status("recent", 10_000n));
+    const p = post("recent", firstAt(10_000n) + 400n);
+    reader.posts.push(p);
+    const { entries } = await findInboxEntriesViaIndexer(reader, { agentId: AGENT, findingsBoard: board, trustApi: fakeTrustApi([], 10_200n) });
+    const byLabel = (label: string) => entries.find((e) => e.status.requestHash === hashOf(label));
+    expect(byLabel("recent")).toMatchObject({ source: "chain", posts: [p] });
+    expect(byLabel("old")).toMatchObject({ source: "indexer", posts: [], searchedTo: 10_200n });
+    expect(reader.windows.every((w) => w.requestHash === hashOf("recent"))).toBe(true);
+  });
+});
+
+describe("discoverInbox", () => {
+  const setup = () => {
+    const reader = new FakeReader();
+    reader.statusList.push(status("a", 5_000n), status("b", 6_000n));
+    reader.posts.push(post("a", 5_003n), post("b", 6_004n));
+    return reader;
+  };
+
+  it("uses the indexer when it answers", async () => {
+    const reader = setup();
+    const result = await discoverInbox(reader, { agentId: AGENT, findingsBoard: board, trustApi: fakeTrustApi(reader.posts, 50_000n) });
+    expect(result).toMatchObject({ via: "indexer", fallbackReason: null, indexedTo: 50_000n });
+    expect(result.entries.map((e) => [e.source, e.posts.length])).toEqual([
+      ["indexer", 1],
+      ["indexer", 1],
+    ]);
+  });
+
+  it("falls back to the chain scan when the indexer fails", async () => {
+    const answers: [string, () => Response | Promise<Response>][] = [
+      ["RATE_LIMITED", () => new Response("{}", { status: 429 })],
+      ["NETWORK", () => Promise.reject(new TypeError("fetch failed"))],
+      ["SHAPE", () => new Response(JSON.stringify({ data: { FindingsPost: [{ requestHash: "<script>" }], _meta: [] } }), { status: 200 })],
+      ["HTTP", () => new Response("{}", { status: 502 })],
+    ];
+    const expected = await findInboxEntries(setup(), { agentId: AGENT, findingsBoard: board });
+    for (const [kind, answer] of answers) {
+      const result = await discoverInbox(setup(), { agentId: AGENT, findingsBoard: board, trustApi: fakeTrustApi([], 50_000n, answer) });
+      expect(result.via, kind).toBe("chain");
+      expect(result.fallbackReason, kind).toContain(kind);
+      expect(result.indexedTo).toBeNull();
+      expect(result.entries, kind).toEqual(expected);
+    }
+  });
+
+  it("times out a hanging indexer and falls back", async () => {
+    const hang = fakeTrustApi([], 50_000n);
+    const trustApi = {
+      ...hang,
+      timeoutMs: 20,
+      fetchImpl: ((_u: string, init: RequestInit) =>
+        new Promise((_r, reject) => init.signal?.addEventListener("abort", () => reject(new DOMException("aborted", "AbortError"))))) as unknown as typeof fetch,
+    };
+    const result = await discoverInbox(setup(), { agentId: AGENT, findingsBoard: board, trustApi });
+    expect(result.via).toBe("chain");
+    expect(result.fallbackReason).toContain("TIMEOUT");
+  });
+
+  it("uses the chain scan when no trust API is recorded", async () => {
+    const result = await discoverInbox(setup(), { agentId: AGENT, findingsBoard: board, trustApi: null });
+    expect(result).toMatchObject({ via: "chain", fallbackReason: null, indexedTo: null });
+    expect(result.entries.every((e) => e.source === "chain" && e.posts.length === 1)).toBe(true);
   });
 });
