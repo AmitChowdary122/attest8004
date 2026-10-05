@@ -4,7 +4,7 @@
 #   ./script/deploy-testnet.sh <Contract>               # dry run: no transaction is sent
 #   BROADCAST=1 ./script/deploy-testnet.sh <Contract>   # send the transaction
 #
-# <Contract> is ValidationRegistry, AgentRequestForwarder, MandateRegistry, DemoAgentVault,
+# <Contract> is ValidationRegistry, AgentRequestForwarder, MandateRegistry, DemoAgentVault, CreValidator,
 # DemoPassThrough or FindingsBoard; the script is script/Deploy<Contract>.s.sol, which must provide run() and
 # deployPlan(uint256 chainId).
 #
@@ -16,7 +16,7 @@
 # if the estimate is above the limit: Monad charges the full limit even when a tx runs out of gas.
 set -euo pipefail
 
-name="${1:?usage: deploy-testnet.sh <ValidationRegistry|AgentRequestForwarder|MandateRegistry|DemoAgentVault|DemoPassThrough|FindingsBoard>}"
+name="${1:?usage: deploy-testnet.sh <ValidationRegistry|AgentRequestForwarder|MandateRegistry|DemoAgentVault|DemoPassThrough|FindingsBoard|CreValidator>}"
 cd "$(dirname "$0")/.."
 script="script/Deploy${name}.s.sol"
 [[ -f "$script" ]] || { echo "no deploy script $script" >&2; exit 1; }
