@@ -1,0 +1,49 @@
+{
+  "_comment": "callTracer frames of the P6 setMandate tx 0x5d4cc955b9bcabf5b8268cb10b7622c6e5a8019897bb5e3036df86927d15444d (agent 1984, nonce 0 to 1), read from the public Monad testnet RPC on 5 Oct 2026; trimmed to type, to, gasUsed, output and calls (inputs dropped).",
+  "trace": {
+    "type": "CALL",
+    "to": "0x2ee5f78149762de630c6bff8cd81166010d0454b",
+    "gasUsed": "0x62277",
+    "output": "0x",
+    "calls": [
+      {
+        "type": "STATICCALL",
+        "to": "0x8004a818bfb912233c491871b3d84c89a494bd9e",
+        "gasUsed": "0x69ce",
+        "output": "0x0000000000000000000000003efeb3cf2fb54a7d99abe90aab786ce5a831a8cf",
+        "calls": [
+          {
+            "type": "DELEGATECALL",
+            "to": "0x7274e874ca62410a93bd8bf61c69d8045e399c02",
+            "gasUsed": "0x2250",
+            "output": "0x0000000000000000000000003efeb3cf2fb54a7d99abe90aab786ce5a831a8cf"
+          }
+        ]
+      },
+      {
+        "type": "STATICCALL",
+        "to": "0x0000000000000000000000000000000000000002",
+        "gasUsed": "0x78",
+        "output": "0x1b4724353b085687edac4eace16f3906f0d3bde93d3ecd9df0f75c48efe71204"
+      },
+      {
+        "type": "STATICCALL",
+        "to": "0x0000000000000000000000000000000000000002",
+        "gasUsed": "0x9c",
+        "output": "0x1fb829fa2f25f1f9410e7198eba4ce1ec646fb0878dd1f3056e21d12c3b19df3"
+      },
+      {
+        "type": "STATICCALL",
+        "to": "0x0000000000000000000000000000000000000002",
+        "gasUsed": "0x60",
+        "output": "0xb5c33881a43d5a893553d1e80e072a65639274bdd4011e932b4540c533a415bb"
+      },
+      {
+        "type": "STATICCALL",
+        "to": "0x0000000000000000000000000000000000000100",
+        "gasUsed": "0x1af4",
+        "output": "0x0000000000000000000000000000000000000000000000000000000000000001"
+      }
+    ]
+  }
+}
