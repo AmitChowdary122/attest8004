@@ -4,6 +4,141 @@ Running log, updated at the end of every session (CLAUDE.md, rule 10). Newest se
 
 ---
 
+## Mon 5 Oct 2026 · P8 the Envio trust API, `/dashboard`, and `/inbox` through the indexer
+
+### Done
+- **The indexer** (`indexer/`, Envio HyperIndex **V3**, `envio` 3.12.1), tests first with Envio's test framework (`createTestIndexer`, 60 tests).
+  - **What it indexes:** every contract we deployed on Monad testnet, each from its deploy block:
+    - the ValidationRegistry's requests and responses;
+    - both MandateRegistries, each only in its own epoch (a retired registry's later events are stored with `inEpoch: false` and change nothing);
+    - FindingsBoard, the forwarder and the three vaults.
+
+    It also indexes the canonical Identity Registry from its first event (block 10,675,492). Every token's owner is tracked internally (hidden from GraphQL), and permission events are exposed only for agents that appear in our contracts.
+  - **The entities:**
+    - requests carry their latest verdict, the request JSON and evidence decoded and checked against their hashes, and whether the action executed;
+    - every response;
+    - validators with score buckets and latency in blocks;
+    - agents, mandates, passkeys and inbox keys per registry, permission events and executed actions;
+    - per-agent and per-agent-tag summaries;
+    - every FindingsBoard post with the trust rule as a stored `trusted` flag. Untrusted posts are kept, never dropped, and a post that arrives before its request is re-judged when the request is indexed.
+  - **Self-contained for Envio Cloud:** exact pins, no `packageManager`, `engines` `>=22`, nothing imported from outside `indexer/`.
+  - **Tests hold it to the rest of the repo:**
+    - the decoders to the SDK's hash vectors;
+    - `config.yaml` to `DEPLOYMENTS`, `docs/deployments.md` and the SDK's ABIs;
+    - the schema to every field the SDK queries.
+- **The SDK trust API** (`packages/sdk/src/trust-api.ts`, browser-safe).
+  - **The readers:** `getAgentTrust`, `getTrustOverview`, `getIndexedVerdicts` and `findIndexedReports` (findings discovery).
+  - **How it reads:** one validated GraphQL POST per call, with no credentials, no referrer and a 10 s abort. Every result carries its `requestHash`, transaction and log index.
+  - **The re-checks:** `confirmIndexedVerdict` and `confirmIndexedReport` re-check a result from the chain, including the post's own receipt, because the envelope's encryption doesn't say who sent it.
+  - **The boundary:** `trust-boundary.test.ts` fails if any validator or CLI source names anything the trust API exports.
+- **`/inbox` through the indexer:** `discoverInbox` reads the agent's verdicts from the chain, then each verdict's own validator's posts from the indexer, with no 600-block window.
+  - **Re-checks:** each post is kept only if the chain's status trusts it and its receipt carries it exactly.
+  - **Fallbacks to the chain search:** verdicts newer than the indexer's progress, an answer that hit its row limit (`INCOMPLETE`), and any indexer failure.
+  - **The page** says which path it used, and when the indexer is behind.
+- **`/dashboard`** (live): recent `mandate-v1`/`risk-v1` verdicts, validator stats and an agent trust lookup.
+  - **What each verdict shows:** score, reasons, validator, agent, time and whether the action executed, plus its explorer link and its `pnpm attest8004 verify` line.
+  - **Rendering:** plain text only. A source test forbids HTML everywhere, and every link comes from checked hex.
+  - **Security headers:** the P6 CSP, with exactly the GraphQL URL added to `connect-src` (the test derives it from `DEPLOYMENTS`); no URL input; no storage.
+  - **Honest numbers:** only real indexed numbers, with our validators and demo agents labelled as ours.
+  - **Your addition 2:** the offline state shows the contracts, the `verify` line and that `/inbox` still works from the chain.
+- **`indexer-check`** (`scripts/src/indexer-check.ts`) compares the indexer with the chain at its progress block: requests and verdicts per agent, trusted reports, and both validators' counts and buckets. It passed against the local and the hosted indexer.
+- **Your addition 1, the keep-alive** (`.github/workflows/indexer-keepalive.yml`): daily and on dispatch, `permissions: {}`, no secrets, no install. Dispatched once: "indexer OK … 2 blocks behind the head".
+- **Your addition 3:** a clean copy of `indexer/` installs and codegens with pnpm 10.32 on Node 24 with no lockfile, and a handler test runs there (`../plans/p8-cloud-like-build.log`). Envio's docs: Cloud's floor is 2.21.5, and only 2.29.x is excluded.
+- **Hosted:** Envio Cloud, free plan, at https://indexer.dev.hyperindex.xyz/3d57e4d/v1/graphql.
+  - **The deployment:** `c62592f` on the `envio` branch, region EU, first sync about a minute.
+  - **The check:** `indexer-check OK` at block 68,358,082 (`../plans/p8-indexer-check-hosted.log`).
+  - **The record:** `DEPLOYMENTS[10143].trustApi`, `web/vercel.json` and `docs/deployments.md` (limits, expiry about 4 Nov, how to redeploy).
+- **Verified live** (built-in browser, build `a3a3f7a`):
+  - `/dashboard` shows the demo record: S executed; R passed `mandate-v1` and was refused by `risk-v1`; O was refused.
+  - Agent 1984's lookup shows the mandate in force on v2, the inbox key and 6 trusted reports.
+  - `/inbox` says "through the Envio indexer (indexed to block 68358764); every report re-checked onchain" with all 6 reports.
+  - The console is clean under the CSP, and the served CSP is exactly as recorded.
+- **Docs:**
+  - SPEC §4.8 as built (plus §4.4, §4.7 and §4.9);
+  - ARCHITECTURE: the status, §1, the §2 diagram, a new §5.7 "Trust API: read, then re-check", §6 trust API entities, the §7 row "never a trust root", §8, §9, §11 and §13;
+  - README: the trust API, running the indexer locally, and Envio's licence;
+  - `indexer/README`, `.env.example`, `docs/mera.md` and `docs/deployments.md`.
+- **The whole-branch review (Opus):** no Critical. I fixed its three Important findings, plus four Minors I re-graded as Important, each test first:
+  - **Strangers' tags:** a stranger's tags (65+, or one huge tag) could take `/dashboard` offline. The indexer now keeps 16, and the SDK accepts any number and length.
+  - **Made-up hashes:** re-checks of a made-up hash threw. The registry's `UnknownRequest` revert is now `NOT_FOUND`/`UNTRUSTED`.
+  - **Junk posts:** 200 junk posts could hide a real report from `/inbox`. It now queries by (request, validator) pairs and falls back on a truncated answer.
+  - **A far-future `validUntil`** crashed the lookup page.
+  - **A stranger's copied action** could show as "executed". The request decoder now requires the event's validator and agent, as the validators do.
+  - **`/inbox`** didn't say when the indexer is behind.
+  - **The boundary test** missed `getIndexedVerdicts`.
+- **Two bugs caught by my own local checks:**
+  - HyperSync decodes `bytes4[]` elements as 32-byte words, which broke the agent lookup.
+  - The web tests resolved the SDK to a stale `dist/`.
+- **Tests on the final tree:**
+  - forge 222 (default and fork in CI) and all three vector checks;
+  - TS 1,212: indexer 60, sdk 345, web 36, scripts 70, mandate 303, risk 522, cli 76;
+  - the workspace typecheck and the web build;
+  - gitleaks over the full history.
+
+  CI is green on `a3a3f7a`.
+
+### Next
+- **Keep the indexer alive through judging:**
+  - **The 30-day limit:** the free deployment is deleted about **4 Nov 2026** (30 days); the daily keep-alive covers the 7-idle-days rule only.
+  - **To redeploy:** push to `envio`, then put the new URL in `DEPLOYMENTS`, `vercel.json` and `docs/deployments.md` (`docs/deployments.md`, "How to redeploy").
+- **Optional, in person:** decrypt on `/inbox` from laptop Chrome, now found through the indexer.
+- **P10 threat-model items from P8:**
+  - **The free plan's 100 queries a minute are shared by all visitors.** A busy minute shows the dashboard's offline view.
+  - **Strangers' verdicts can crowd the dashboard:** a stranger's validator answering its own requests with the tag `mandate-v1`/`risk-v1` can push ours out of the 20-newest lists. It's real onchain data, and ours are labelled.
+  - **The indexer can hide or stale data, never change a verdict or a report a reader accepts** (ARCHITECTURE §7).
+- **Deferred minors** (final review; triaged, none blocking):
+  - `postMatchesReceipt` doesn't compare the indexer-supplied block number (display only);
+  - no source test that `packages/sdk/src/deployments.ts` stays `import type`-only for viem (the keep-alive's no-install run would fail loudly, not silently);
+  - `discoverInbox` with `maxResponses` > 50 throws instead of falling back (the page uses 20);
+  - nits:
+    - a re-answered request's old `AgentTagSummary` keeps a stale `lastScore`;
+    - "Verdicts by tag" is empty when every tag has 0 verdicts;
+    - `findInboxEntries` no longer calls `onProgress(0, 0)` when an agent has hashes but no candidates.
+
+### Blockers or decisions needed
+- **Your side:**
+  - **Envio's licence:** the `envio` package is under Envio's own licences, **not OSI** (the generated code under their EULA, the code generator under a non-commercial licence). The README discloses this, and our code stays MIT. Whether that fits the hackathon's open-source rule is your call.
+  - **Keep-alive:** the scheduled keep-alive runs daily at 06:17 UTC; a red run means the indexer is gone or behind.
+- **Rulings I made during P8** (every `Ruling:` from the build ledger, in order, each with what it costs if wrong):
+
+1. Work on `main` without a worktree, as in P1–P7. Cost if wrong: commits would need moving to a branch.
+2. pnpm 12 refused esbuild's install script (envio → tsx). I declined it explicitly (`allowBuilds: esbuild: false`) rather than approving a script; esbuild ships its binary as a platform package. Cost if wrong: tsx couldn't find esbuild, which would show in codegen and tests (it didn't).
+3. Envio's licence is non-OSI, and the README credits it as such. Cost if wrong: none.
+4. The transaction hash is selected once in `config.yaml`, not per handler, because `simulate()`'s types only see config-level selections. Cost if wrong: one extra field fetched per event.
+5. Envio 3.12.1's test indexer refuses a second `process()` once its progress passes a contract's start block (the #1656 family), so each test uses one call. Cost if wrong: none.
+6. An agent's owner comes from the Identity Registry's tracked owner before an event's owner hint (both equal onchain). Cost if wrong: none.
+7. An out-of-epoch `InboxKeySet` is logged and ignored (P4's registry has no `setInboxKey`). Cost if wrong: a stray event not shown.
+8. `FindingsPost` gained `counted`, so a re-judged early post moves its count correctly. Cost if wrong: one extra GraphQL field.
+9. The local indexer kept running between tasks. Cost if wrong: a few idle HyperSync polls.
+10. A missing trust API is its own error kind, `NOT_CONFIGURED` (the plan said `HTTP`). Cost if wrong: none.
+11. A validator's tag is made printable and cut to 64 characters, never rejected (and since the review, any length and any number of tags). Cost if wrong: an odd tag displays altered.
+12. Dropped fetch `cache: "no-store"`, which isn't in the SDK's Node `RequestInit` types; POSTs aren't cached anyway. Cost if wrong: none.
+13. Hasura serialises BigInt and Float as strings and Int as numbers, and the SDK accepts each form. Cost if wrong: none.
+14. `/inbox`'s evidence link (the response transaction) still comes from the chain, not from the indexer plus a receipt check. Cost if wrong: a few more RPC reads per load, as before.
+15. `discoverInbox` reads the verdicts once and reuses them for the fallback. Cost if wrong: none.
+16. An indexed post the chain's status doesn't trust is ignored silently, as on the chain path; only a trusted post its receipt doesn't carry is reported. Cost if wrong: a stranger's post isn't mentioned.
+17. `explorer.ts` and `trust-api-url.ts` landed in Task 6, not Task 8, because `/inbox` needed them first. Cost if wrong: none.
+18. Added `getIndexedVerdicts` (paged), which `indexer-check` needs. Cost if wrong: one more export (drift-tested).
+19. `indexer-check` reads the chain at the indexer's progress block, and confirms from receipts any report the chain search can't reach. Cost if wrong: none.
+20. I implemented the compare module before watching its tests fail, then mutation-checked them instead. Cost if wrong: none.
+21. The plan's verdict table is a list of cards, which reads better on a phone; validators stay a table. Cost if wrong: none.
+22. `verdictRow` takes the deployment, not a clock; `mandateInForce` takes `now`. Cost if wrong: none.
+23. **Bug found by the local check:** HyperSync decodes `bytes4[]` elements as 32-byte words, so the indexer now stores 4-byte selectors (test first, local re-sync). Cost if wrong: none.
+24. **Bug found by the dashboard tests:** web's vitest resolved the SDK to a stale `dist/`. `vite.config.ts` now sets `ssr.resolve.conditions` too, and a test pins it. Cost if wrong: none.
+25. The chunk warning limit is now 760 kB (the bundle is 705 kB). Cost if wrong: none.
+26. No local screenshots: the browser pane was hidden, so I verified with page text, here and live. Cost if wrong: no screenshots in the record.
+27. The whole-branch reviewer ran on Opus, as in P6 and P7. Cost if wrong: a different model's review.
+28. Four review Minors re-graded Important by their effect and fixed: the far-future time, the copied action shown "executed", the missing "indexer is behind", and the boundary test's hole. Cost if wrong: four fixes you might not have asked for.
+29. **`main` was pushed only after the URL was recorded.** The reviewed commit went to `envio` first, so the docs, CSP and keep-alive never claimed an indexer that wasn't live, and CI ran on `main` afterwards. Cost if wrong: CI ran later.
+30. The indexer was connected after `1ecfc36` reached `envio`, so an empty commit (`c62592f`, on `main` too) triggered the first deployment. Cost if wrong: one empty commit in history.
+31. A chain with no deployment recorded is now `NOT_CONFIGURED`, not a plain error. Cost if wrong: none.
+32. **Accepted, not fixed:** a stranger's validator using our tags can crowd the overview; strangers can inflate our validators' request counts (which equal the chain's). Cost if wrong: a noisier dashboard.
+33. **Checked live:** Cloud's Hasura matches the local one (CORS, `_by_pk`, `_meta`, the serialisation). Cloud never type-checks, so `tsconfig.json` including `test/` is harmless. Cost if wrong: a Cloud build error, fixed by excluding `test/`.
+34. Assumed one snapshot per GraphQL request; reorgs use Envio's defaults; `_meta` is filtered to 10143, the only chain. Cost if wrong: a rare spurious `indexer-check` mismatch.
+35. Corrected the expiry I gave in the plan: Envio deletes a free deployment 30 days after creation, so about **4 Nov**, not 6 Nov. Cost if wrong: none.
+
+---
+
 ## Mon 5 Oct 2026 · P7 the Mera findings inbox: FindingsBoard, encrypted operator reports, the cross-device decrypt
 
 ### Done
