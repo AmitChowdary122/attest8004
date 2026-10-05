@@ -10,11 +10,12 @@ The docs are part of the product (SPEC §4.10). Each file is added in the phase 
 | [nansen.md](./nansen.md) | Every Nansen endpoint and data category used | done (P5, Task 9): the two tools are integrated and unused until `NANSEN_API_KEY` is set |
 | `quickstart.md` | A 10-minute integration guide | planned (P11) |
 | `api.md` | SDK and API reference | planned (P11) |
-| `threat-model.md` | Threat model | planned (P11) |
+| `threat-model.md` | Threat model (open items so far: ARCHITECTURE §9, including `risk-v1`'s ERC-20 blind spot) | planned (P12) |
 | `trust-modes.md` | Deterministic vs agentic validation | planned (P11) |
 | `migration.md` | Migrating to the canonical Validation Registry | planned (P11) |
 | `btx.md` | BTX encrypted-mempool design note (**future work, not live**) | planned (P11) |
 | [mera.md](./mera.md) | The Mera findings inbox: why it is non-account use of Mera, the key lifecycle and zeroing, what's on chain, the cross-device test | done (P7); the cross-device results are added after the live run |
-| `security-review.md` | Auditor self-review | planned (P10) |
+| [integrations.md](./integrations.md) | Plug Attest8004 into any escrow with a verifier hook: the pattern, AgentPassport's JobEscrow v2 as the worked example, the fork tests that prove it against their live bytecode (not adoption by their team), the caveats and credits | done (P10) |
+| `security-review.md` | Auditor self-review | planned (P12) |
 
 How the system works is in [../ARCHITECTURE.md](../ARCHITECTURE.md). How to re-check a verdict (`pnpm attest8004 verify <requestHash>`: a `mandate-v1` one is re-run, a `risk-v1` one re-checked without re-running the model) is in its §5.5 and the [README](../README.md#quickstart).

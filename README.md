@@ -69,7 +69,7 @@ The diagrams, flows, data formats, trust model and key custody are in **[ARCHITE
 | [`indexer/`](./indexer) | Envio HyperIndex V3 project: `config.yaml`, `schema.graphql`, handlers ([its README](./indexer/README.md)) |
 | [`web/`](./web) | `/approve`, `/inbox`, `/dashboard` |
 | [`scripts/`](./scripts) | `@attest8004/scripts`: operational scripts (testnet round trip, demo agents, end to end, `indexer-check`, the indexer keep-alive) |
-| [`docs/`](./docs) | Quickstart, API reference, threat model, deployments |
+| [`docs/`](./docs) | Quickstart, API reference, threat model, deployments, integrations |
 
 ## Quickstart
 
@@ -280,6 +280,22 @@ pnpm --filter @attest8004/indexer test      # handler tests (Envio's test framew
 
 `pnpm --filter @attest8004/indexer exec envio stop` stops the containers and deletes the local database.
 
+## Integrations
+
+**Any escrow with a verifier hook can require Attest8004 verdicts before it pays.** Name an AttestGate vault as a job's
+verifier, and the payment is released only by `vault.execute(release(jobId))` once every required validator has passed
+that exact action. No adapter contract is needed.
+
+[docs/integrations.md](./docs/integrations.md) works this through with AgentPassport's JobEscrow v2 (by agentfromzero,
+MIT). [Nine fork tests](./contracts/test/fork/AgentPassportIntegration.fork.t.sol) drive our live `DemoAgentVault`
+against their live bytecode on Monad testnet:
+- a delivered job is paid out through the vault;
+- a release without verdicts, or with a low `risk-v1` score, reverts;
+- a replay reverts `ActionAlreadyConsumed`.
+
+That proves the two compose. **It is not adoption by their team:** nothing was broadcast, and their GitHub account is
+gone.
+
 ## Deployments
 
 | Chain | Contract | Address |
@@ -325,6 +341,23 @@ themselves unavailable with no fetch, no credits spent, and the model is told so
 evidence always records whether Nansen was available for a given verdict. Full detail, including the
 exact request/response shapes and the per-check credit cost, is in [docs/nansen.md](./docs/nansen.md).
 
+## Limitations
+
+Known gaps, stated plainly. The full threat model is P12's.
+
+- **`risk-v1` can't see ERC-20 transfers.** Its simulation tool reports MON movements and each inner call's selector,
+  never the call's arguments or logs. Tokens moved inside an action, such as an escrow's payout, a router sweeping a
+  balance, or any `transfer` the target makes, show the model no recipient and no amount: **a token drain made that way
+  is invisible to it.** A direct `token.transfer(to, amount)` reaches it only as raw calldata hex, and no rule of its
+  rubric reads token value.
+  - **The fix:** a `risk-v2` that decodes `Transfer` logs from the call trace. Monad's RPC serves `callTracer` with
+    logs, so it is feasible. It needs a new tag, because `risk-v1`'s evidence format is frozen. Roadmap, not built
+    ([ARCHITECTURE §12](./ARCHITECTURE.md#12-extension-points-and-roadmap)).
+- **`mandate-v1`'s caps count native MON only.** A mandate that allowlists a token-moving selector (`transfer`,
+  `approve`, …) doesn't cap the token amount. Together with the previous point, **an action that moves tokens is today
+  bounded only by the mandate's target and selector allowlist**, so allowlist such selectors only with targets you'd
+  trust with the whole balance ([ARCHITECTURE §9](./ARCHITECTURE.md#9-security-design-decisions)).
+
 ## Built with AI
 
 This project is built with **Claude Code** (Anthropic; model Claude Opus 5.5) as a coding assistant. The developer writes the specification and architecture, reviews each change, and runs the tests. Claude Code writes much of the code, tests and docs under the rules in [CLAUDE.md](./CLAUDE.md). Commits it co-authored carry a `Co-Authored-By: Claude` trailer.
@@ -357,6 +390,17 @@ At runtime, `risk-v1` calls a **Groq-hosted** model through an OpenAI-compatible
 - `ValidationRegistry` was written for this project. Its behaviour deliberately matches the reference [`erc-8004/erc-8004-contracts`](https://github.com/erc-8004/erc-8004-contracts) `ValidationRegistryUpgradeable` (MIT), but no code was copied from it. The differences are in [docs/spec-notes.md](./docs/spec-notes.md).
 - The expected values in the shared hash vectors (`packages/sdk/test/vectors.json`) are generated with Foundry's `cast`.
 - Deployment goes through the widely used deterministic deployment proxy at `0x4e59b44847b379578588920cA78FbF26c0B4956C` (Arachnid); it is called onchain, and none of its code is included here.
+
+**Composed with, not included:**
+
+- [AgentPassport](https://agentfromzero.netlify.app/agentpassport/) (JobEscrow v2 and AgentPassport on Monad testnet), by
+  agentfromzero, an autonomous AI agent (disclosed). **MIT**, per the SPDX headers of its
+  [Sourcify-verified source](https://sourcify.dev/server/v2/contract/10143/0x41Cb9b1a7Ebe2e1a420d8Cd96D02a9009AC54355) and
+  its npm SDK [`@agentfromzero/agentpassport-sdk`](https://www.npmjs.com/package/@agentfromzero/agentpassport-sdk).
+  - **How we use it:** `contracts/test/fork/AgentPassportIntegration.fork.t.sol` calls their deployed contracts on a fork,
+    and copies only their function, event and error signatures. No code of theirs is in this repository.
+  - **Their GitHub repository and account are gone** (404 as of 5 Oct 2026).
+  - Details: [docs/integrations.md](./docs/integrations.md#credits).
 
 The demo agents are registered by calling the Identity Registry's `register(string)` directly; the [agent0 SDK](https://sdk.ag0.xyz) was not used, because its latest release (1.7.1) has no defaults for Monad. This list grows as libraries are added.
 
