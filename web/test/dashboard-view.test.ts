@@ -55,6 +55,9 @@ describe("labels", () => {
     expect(validatorLabel(A, testnet)).toBe("ours (A · mandate-v1)");
     expect(validatorLabel(B, testnet)).toBe("ours (B · risk-v1)");
     expect(validatorLabel(STRANGER, testnet)).toBe(STRANGER);
+    expect(validatorLabel(testnet.validators.creMandateV1, testnet)).toBe(
+      "ours (C · mandate-v1) · CRE workflow (simulation forwarder, not a trust root)",
+    );
     expect(agentLabel(1984n, testnet)).toBe("1984 (demo agent, ours)");
     expect(agentLabel(1985n, testnet)).toBe("1985 (demo agent, ours)");
     expect(agentLabel(1982n, testnet)).toBe("1982 (test agent, ours)");
@@ -165,6 +168,7 @@ describe("offlineView", () => {
       "DemoAgentVault",
       "Validator A (mandate-v1)",
       "Validator B (risk-v1)",
+      "Validator C (CreValidator) · CRE workflow (simulation forwarder, not a trust root)",
     ]);
     for (const c of view.contracts) expect(c.url, c.label).toBe(`https://monad-testnet.socialscan.io/address/${c.address.toLowerCase()}`);
     expect(view.contracts[1]?.address).toBe(getAddress(testnet.mandateRegistries[1]?.address ?? ""));

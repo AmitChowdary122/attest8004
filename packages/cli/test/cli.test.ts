@@ -802,3 +802,23 @@ describe("chainVerifiers: the real verifiers over one reader", () => {
     expect(() => chainVerifiers({ reader, chainId: 1 })).toThrow(/no Attest8004 deployment recorded for chain 1/);
   });
 });
+
+describe("verify: validator C (P11) is labelled, never passed off as a trust root", () => {
+  const C = DEPLOYMENTS[10143].validators.creMandateV1;
+
+  it("cli_labelsCreValidator: a C verdict's text names it a CRE workflow on a simulation forwarder, checkable by this re-run", async () => {
+    const h = harness({ report: { ...matchReport, validator: C } });
+    await expect(h.run(["verify", HASH])).resolves.toBe(0);
+    const text = h.out.join("\n");
+    expect(text).toContain(`validator          ${C}`);
+    expect(text).toContain(
+      "                   validator C: CRE workflow (simulation forwarder, not a trust root); this re-execution is what makes its verdict checkable",
+    );
+  });
+
+  it("cli_noLabelForA: validator A's text has no such line", async () => {
+    const h = harness();
+    await expect(h.run(["verify", HASH])).resolves.toBe(0);
+    expect(h.out.join("\n")).not.toContain("CRE workflow");
+  });
+});

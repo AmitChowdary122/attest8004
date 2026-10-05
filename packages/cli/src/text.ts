@@ -3,6 +3,7 @@
 // comes from chain data and our own fixed text, never from the RPC URL. Strings from the chain (a tag,
 // a model name, a finding's explanation) can carry control characters; `main` passes every output
 // through `printable` before it reaches the terminal.
+import { CRE_VALIDATOR_LABEL, DEPLOYMENTS } from "@attest8004/sdk";
 import type { VerifyProblem, VerifyReport } from "@attest8004/validator-mandate";
 import type { RiskVerifyProblem, RiskVerifyReport, ToolCallRef } from "@attest8004/validator-risk";
 import { formatEther } from "viem";
@@ -111,6 +112,14 @@ function mandateVerdictLine(report: VerifyReport): string {
   }
 }
 
+/**
+ * Whether `address` is validator C (P11) on any recorded chain: CreValidator, whose verdicts arrive through CRE's
+ * mock forwarder and are never a trust root (`CRE_VALIDATOR_LABEL`).
+ */
+function isCreValidator(address: string): boolean {
+  return Object.values(DEPLOYMENTS).some((d) => d.validators.creMandateV1.toLowerCase() === address.toLowerCase());
+}
+
 /** A `mandate-v1` report as text: the verdict, then the re-run's inputs and outcome. */
 export function mandateText(report: VerifyReport): string {
   const out = rows();
@@ -120,6 +129,9 @@ export function mandateText(report: VerifyReport): string {
 
   row("request", report.requestHash);
   row("validator", report.validator);
+  if (isCreValidator(report.validator)) {
+    more(`validator C: ${CRE_VALIDATOR_LABEL}; this re-execution is what makes its verdict checkable`);
+  }
   row("tag", JSON.stringify(posted.tag));
   pinnedRows(out, report, "named by the evidence; not re-run");
   row("score", `posted ${posted.score}, recomputed ${recomputed?.score ?? "-"}`);

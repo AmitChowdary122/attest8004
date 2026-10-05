@@ -1,7 +1,7 @@
 // /dashboard's view model: indexed data turned into plain strings (never HTML), links only from explorer.ts, and our
 // own validators and demo agents labelled as ours, so the page never passes our e2e traffic off as anyone else's.
 // Pure: the page renders these strings as React text.
-import { currentMandateRegistry, type Deployment, type IndexedVerdict, type TrustApiErrorKind, type ValidatorStats } from "@attest8004/sdk/browser";
+import { CRE_VALIDATOR_LABEL, currentMandateRegistry, type Deployment, type IndexedVerdict, type TrustApiErrorKind, type ValidatorStats } from "@attest8004/sdk/browser";
 import { getAddress, type Address } from "viem";
 import { explorerAddress, explorerTx } from "../explorer.ts";
 
@@ -12,6 +12,7 @@ export function validatorLabel(address: Address, deployment: Deployment): string
   const a = getAddress(address);
   if (a === getAddress(deployment.validators.mandateV1)) return "ours (A · mandate-v1)";
   if (a === getAddress(deployment.validators.riskV1)) return "ours (B · risk-v1)";
+  if (a === getAddress(deployment.validators.creMandateV1)) return `ours (C · mandate-v1) · ${CRE_VALIDATOR_LABEL}`;
   return a;
 }
 
@@ -148,6 +149,7 @@ export function offlineView(deployment: Deployment, kind: TrustApiErrorKind): Of
       contract("DemoAgentVault", deployment.demoAgentVault),
       contract("Validator A (mandate-v1)", deployment.validators.mandateV1),
       contract("Validator B (risk-v1)", deployment.validators.riskV1),
+      contract(`Validator C (CreValidator) · ${CRE_VALIDATOR_LABEL}`, deployment.validators.creMandateV1),
     ],
     verifyLine: "pnpm attest8004 verify <requestHash>",
     inbox: "/inbox still finds reports from the chain (within 600 blocks of each verdict) and decrypts them with your passkey.",
