@@ -70,6 +70,10 @@ export const TRUST_API_QUERIES = {
   AgentTrustSummary(order_by: {lastActivityBlock: desc}, limit: 200) { id }
   ${META(10143)}
 }`,
+  verdicts: `query Verdicts($where: ValidationRequest_bool_exp!, $limit: Int!, $offset: Int!) {
+  ValidationRequest(where: $where, order_by: [{requestBlock: asc}, {id: asc}], limit: $limit, offset: $offset) { ${VERDICT_FIELDS} }
+  ${META(10143)}
+}`,
   findReports: `query FindReports($where: FindingsPost_bool_exp!, $limit: Int!) {
   FindingsPost(where: $where, order_by: {block: asc}, limit: $limit) { requestHash agentId validator envelope block tx logIndex trusted trustProblem }
   ${META(10143)}
@@ -434,6 +438,29 @@ export async function getTrustOverview(o: TrustApiOptions = {}): Promise<TrustOv
     agentsTruncated: data.AgentTrustSummary.length === 200,
     indexedTo: indexedTo(data._meta, o.chainId ?? 10143),
   };
+}
+
+/** The most verdicts one {@link getIndexedVerdicts} page returns. */
+export const MAX_VERDICTS_PAGE = 200;
+
+const verdictsData = z.object({ ValidationRequest: z.array(verdictRow).max(MAX_VERDICTS_PAGE), _meta: metaRows });
+
+/**
+ * One page of indexed requests with their latest verdicts, oldest first, for an agent and/or a validator. Page with
+ * `offset` until a page comes back shorter than `limit`.
+ */
+export async function getIndexedVerdicts(
+  o: TrustApiOptions & { agentId?: bigint; validator?: Address; limit?: number; offset?: number },
+): Promise<{ verdicts: IndexedVerdict[]; indexedTo: bigint }> {
+  const limit = o.limit ?? MAX_VERDICTS_PAGE;
+  const offset = o.offset ?? 0;
+  if (!Number.isInteger(limit) || limit < 1 || limit > MAX_VERDICTS_PAGE) throw new RangeError(`limit must be 1 to ${MAX_VERDICTS_PAGE}, got ${limit}`);
+  if (!Number.isSafeInteger(offset) || offset < 0) throw new RangeError(`offset must be a non-negative integer, got ${offset}`);
+  const where: Record<string, unknown> = {};
+  if (o.agentId !== undefined) where.agentId = { _eq: o.agentId.toString() };
+  if (o.validator !== undefined) where.validator = { _eq: o.validator.toLowerCase() };
+  const data = await query(o, TRUST_API_QUERIES.verdicts, { where, limit, offset }, verdictsData);
+  return { verdicts: data.ValidationRequest, indexedTo: indexedTo(data._meta, o.chainId ?? 10143) };
 }
 
 const reportsData = z.object({ FindingsPost: z.array(postRow).max(MAX_INDEXED_REPORTS), _meta: metaRows });

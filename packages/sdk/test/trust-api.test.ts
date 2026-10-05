@@ -9,6 +9,7 @@ import {
   findIndexedReports,
   findingsPostedEvent,
   getAgentTrust,
+  getIndexedVerdicts,
   getTrustOverview,
   postMatchesReceipt,
   type IndexedReport,
@@ -389,5 +390,23 @@ describe("postMatchesReceipt and confirmIndexedReport", () => {
     expect(await confirmIndexedReport({ publicClient: client([getAddress(A), 1984n], [log()]), deployment: testnet, report })).toEqual({ ok: true });
     expect(await confirmIndexedReport({ publicClient: client([getAddress(B_), 1984n], [log()]), deployment: testnet, report })).toEqual({ ok: false, problems: ["UNTRUSTED"] });
     expect(await confirmIndexedReport({ publicClient: client([getAddress(A), 1984n], []), deployment: testnet, report })).toEqual({ ok: false, problems: ["NOT_ON_CHAIN"] });
+  });
+});
+
+describe("getIndexedVerdicts", () => {
+  it("pages through an agent's or a validator's verdicts, oldest first", async () => {
+    const { fetchImpl, calls } = fakeFetch(() => json({ data: { ValidationRequest: [verdictRow(), verdictRow({ id: hash("r2") })], _meta: meta() } }));
+    const { verdicts, indexedTo } = await getIndexedVerdicts({ url: URL_, fetchImpl, agentId: 1984n, validator: getAddress(A), offset: 200 });
+    expect(verdicts.map((v) => v.requestHash)).toEqual([hash("request"), hash("r2")]);
+    expect(indexedTo).toBe(68_347_114n);
+    expect(calls[0]?.body.query).toBe(TRUST_API_QUERIES.verdicts);
+    expect(calls[0]?.body.variables).toEqual({ where: { agentId: { _eq: "1984" }, validator: { _eq: A } }, limit: 200, offset: 200 });
+  });
+
+  it("refuses a page over 200 or a negative offset before any fetch", async () => {
+    const { fetchImpl, calls } = fakeFetch(() => json({}));
+    await expect(getIndexedVerdicts({ url: URL_, fetchImpl, limit: 201 })).rejects.toThrow(RangeError);
+    await expect(getIndexedVerdicts({ url: URL_, fetchImpl, offset: -1 })).rejects.toThrow(RangeError);
+    expect(calls).toHaveLength(0);
   });
 });
