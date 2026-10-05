@@ -79,3 +79,9 @@ describe("currentMandateRegistry", () => {
     expect(() => currentMandateRegistry({ mandateRegistries: [] })).toThrow(/no MandateRegistry/);
   });
 });
+
+describe("findingsBoard", () => {
+  it("findingsBoard is null until deployed (10143)", () => {
+    expect(DEPLOYMENTS[10143].findingsBoard).toBeNull();
+  });
+});

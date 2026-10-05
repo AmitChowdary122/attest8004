@@ -9,6 +9,12 @@ export interface MandateRegistryEpoch {
   fromBlock: bigint;
 }
 
+/** The FindingsBoard (P7) and its deployment block: `/inbox` searches for reports from there on. */
+export interface FindingsBoardDeployment {
+  address: Address;
+  fromBlock: bigint;
+}
+
 /** One chain's recorded Attest8004 addresses and demo-agent data. */
 export interface Deployment {
   identityRegistry: Address;
@@ -32,6 +38,11 @@ export interface Deployment {
    * the last entry ({@link currentMandateRegistry}).
    */
   mandateRegistries: readonly MandateRegistryEpoch[];
+  /**
+   * Where validators post encrypted operator reports (SPEC §4.7), or `null` before it is deployed: then the
+   * validators post nothing and `/inbox` has nothing to read.
+   */
+  findingsBoard: FindingsBoardDeployment | null;
   /** The two reference validators (SPEC §4.5 `mandate-v1`; §4.6 `risk-v1`, built, funded and tested). */
   validators: {
     mandateV1: Address;
@@ -80,6 +91,8 @@ export const DEPLOYMENTS = {
       { address: "0x2523197373ef813E19b5b14Ef2984130868cD17c", fromBlock: 67_842_487n },
       { address: "0x2Ee5f78149762DE630c6bFF8CD81166010D0454B", fromBlock: 68_196_462n },
     ],
+    /** Not deployed yet (P7). */
+    findingsBoard: null,
     validators: {
       /** `mandate-v1`, deterministic. */
       mandateV1: "0xa62DaB21E0C0F57e94B3ed6e675F214199989e92",

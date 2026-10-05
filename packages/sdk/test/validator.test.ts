@@ -28,6 +28,7 @@ import {
   type CursorStore,
   type Outcome,
   type RequestEvent,
+  type RespondedResponse,
   type RequestJsonV1,
   type ValidationStatus,
   type ValidatorChain,
@@ -105,14 +106,14 @@ class FakeChain implements ValidatorChain {
   }
 }
 
-type RespondedInfo = { requestHash: Hex; score: number; txHash: Hash; blockNumber: bigint; gasLimit: bigint };
+type RespondedInfo = RespondedResponse;
 
 class TestValidator extends ValidatorBase {
   readonly checked: VerifiedRequest[] = [];
   readonly responded: RespondedInfo[] = [];
   result: () => CheckResult | { decline: string } = () => ({ score: 100, reasons: ["OK"] });
   accept: (request: VerifiedRequest) => boolean | { decline: string } = () => true;
-  onRespondedImpl: (info: RespondedInfo) => void = () => {};
+  onRespondedImpl: (info: RespondedInfo) => void | Promise<void> = () => {};
   readonly gaveUp: Hex[] = [];
   onGaveUpImpl: (requestHash: Hex) => void = () => {};
   protected override async accepts(request: VerifiedRequest): Promise<boolean | { decline: string }> {
@@ -122,9 +123,9 @@ class TestValidator extends ValidatorBase {
     this.checked.push(request);
     return this.result();
   }
-  protected override onResponded(info: RespondedInfo): void {
+  protected override onResponded(info: RespondedInfo): void | Promise<void> {
     this.responded.push(info);
-    this.onRespondedImpl(info);
+    return this.onRespondedImpl(info);
   }
   protected override onGaveUp(requestHash: Hex): void {
     this.gaveUp.push(requestHash);
@@ -368,9 +369,61 @@ describe("ValidatorBase", () => {
 
     await v.pollOnce();
 
-    expect(v.responded).toEqual([
-      { requestHash: e.requestHash, score: 100, txHash: expect.any(String), blockNumber: 55_123n, gasLimit: 90_210n },
-    ]);
+    expect(v.responded).toHaveLength(1);
+    expect(v.responded[0]).toMatchObject({ requestHash: e.requestHash, score: 100, txHash: expect.any(String), blockNumber: 55_123n, gasLimit: 90_210n });
+  });
+
+  it("onResponded receives request, evidence (the published document) and responseHash", async () => {
+    const e = event();
+    chain.events.push(e);
+    const v = validator();
+    v.result = () => ({ score: 40, reasons: ["X"], evidence: { extra: "1" } });
+
+    await v.pollOnce();
+
+    const info = v.responded[0] as RespondedInfo;
+    expect(info.request.event).toEqual(e);
+    expect(info.request.json).toEqual(request());
+    expect(info.evidence).toEqual(buildEvidence({ tag: "test-v1", requestHash: e.requestHash, result: { score: 40, reasons: ["X"], evidence: { extra: "1" } } }));
+    expect(info.responseHash).toBe(chain.responses[0]?.responseHash);
+    expect(info.responseHash).toBe(keccak256(stringToBytes(canonicalJson(info.evidence))));
+  });
+
+  it("the base awaits an async onResponded before the next request", async () => {
+    const first = event();
+    const second = event({ json: request({ salt: `0x${"22".repeat(32)}` }), logIndex: 1 });
+    chain.events.push(first, second);
+    const order: string[] = [];
+    const respond = chain.respond.bind(chain);
+    chain.respond = async (r) => {
+      order.push(`respond ${r.requestHash.slice(0, 6)}`);
+      return respond(r);
+    };
+    const v = validator();
+    v.onRespondedImpl = async (info) => {
+      await new Promise((resolve) => setTimeout(resolve, 5));
+      order.push(`hook done ${info.requestHash.slice(0, 6)}`);
+    };
+
+    await v.pollOnce();
+
+    const [a, b] = [first.requestHash.slice(0, 6), second.requestHash.slice(0, 6)];
+    expect(order).toEqual([`respond ${a}`, `hook done ${a}`, `respond ${b}`, `hook done ${b}`]);
+  });
+
+  it("a rejected onResponded is logged and the outcome stays responded", async () => {
+    const e = event();
+    chain.events.push(e);
+    const v = validator({ maxFailedCycles: 1 });
+    v.onRespondedImpl = async () => {
+      throw new Error("report post failed");
+    };
+
+    const { outcomes } = await v.pollOnce();
+
+    expect(outcomes).toEqual([expect.objectContaining({ kind: "responded", requestHash: e.requestHash })]);
+    expect(chain.respondCalls).toBe(1);
+    expect(logs.some((l) => l.level === "error" && String(l.error).includes("report post failed"))).toBe(true);
   });
 
   it("onResponded is not called when the status check finds the request ALREADY_RESPONDED", async () => {

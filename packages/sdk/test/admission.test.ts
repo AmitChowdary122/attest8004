@@ -277,3 +277,64 @@ describe("Admission: release (final review A3)", () => {
     expect(admission.admit({ requestHash: hashOf("o-4"), agentId: AGENT_B, now: now + 100n + 86_400n })).toEqual({ ok: true });
   });
 });
+
+describe("Admission: report gas (P7)", () => {
+  const withReports: AdmissionOptions = {
+    maxRequestsPerAgent: 20,
+    agentWindowSeconds: 3_600n,
+    dailyGasBudget: 1_000_000n,
+    maxGasPerResponse: 400_000n,
+    maxGasPerReport: 100_000n,
+  };
+  const now = 1_700_000_000n;
+
+  it("reserves response + report gas", () => {
+    // 1,200,000 holds three response-only reservations (3 × 400,000) but only two with reports (2 × 500,000).
+    const admission = new Admission({ ...withReports, dailyGasBudget: 1_200_000n });
+    expect(admission.admit({ requestHash: hashOf("r-0"), agentId: AGENT_A, now })).toEqual({ ok: true });
+    expect(admission.admit({ requestHash: hashOf("r-1"), agentId: AGENT_A, now })).toEqual({ ok: true });
+    const third = admission.admit({ requestHash: hashOf("r-2"), agentId: AGENT_A, now });
+    expect(third).toMatchObject({ ok: false, reason: "GAS_BUDGET_EXHAUSTED" });
+    expect(third.ok === false && third.detail).toContain("1,000,000 + 500,000 > 1,200,000");
+  });
+
+  it("settle keeps the report reservation", () => {
+    const admission = new Admission(withReports);
+    admission.admit({ requestHash: hashOf("r-0"), agentId: AGENT_A, now });
+    admission.settle({ requestHash: hashOf("r-0"), gasLimit: 0n, now });
+    // 100,000 still reserved for r-0's report: 100,000 + 500,000 + 500,000 > 1,000,000.
+    expect(admission.admit({ requestHash: hashOf("r-1"), agentId: AGENT_A, now })).toEqual({ ok: true });
+    expect(admission.admit({ requestHash: hashOf("r-2"), agentId: AGENT_A, now })).toMatchObject({ ok: false, reason: "GAS_BUDGET_EXHAUSTED" });
+  });
+
+  it("settleReport replaces it; 0n when nothing was sent", () => {
+    const admission = new Admission(withReports);
+    admission.admit({ requestHash: hashOf("r-0"), agentId: AGENT_A, now });
+    admission.settle({ requestHash: hashOf("r-0"), gasLimit: 0n, now });
+    admission.settleReport({ requestHash: hashOf("r-0"), gasLimit: 0n, now });
+    expect(admission.admit({ requestHash: hashOf("r-1"), agentId: AGENT_A, now })).toEqual({ ok: true });
+    expect(admission.admit({ requestHash: hashOf("r-2"), agentId: AGENT_A, now })).toEqual({ ok: true });
+    // An unknown hash is a no-op.
+    expect(() => admission.settleReport({ requestHash: hashOf("never"), gasLimit: 1n, now })).not.toThrow();
+  });
+
+  it("release zeroes both", () => {
+    const admission = new Admission(withReports);
+    admission.admit({ requestHash: hashOf("r-0"), agentId: AGENT_A, now });
+    admission.admit({ requestHash: hashOf("r-1"), agentId: AGENT_A, now });
+    admission.release(hashOf("r-0"));
+    expect(admission.admit({ requestHash: hashOf("r-2"), agentId: AGENT_A, now })).toEqual({ ok: true });
+  });
+
+  it("budget check uses the per-request sum", () => {
+    const admission = new Admission({ ...withReports, dailyGasBudget: 499_999n, maxGasPerReport: 99_999n });
+    expect(admission.admit({ requestHash: hashOf("r-0"), agentId: AGENT_A, now })).toEqual({ ok: true });
+    expect(admission.admit({ requestHash: hashOf("r-1"), agentId: AGENT_A, now })).toMatchObject({ ok: false, reason: "GAS_BUDGET_EXHAUSTED" });
+  });
+
+  it("constructor refuses maxGasPerResponse + maxGasPerReport > budget, and a negative report cap", () => {
+    expect(() => new Admission({ ...withReports, dailyGasBudget: 499_999n })).toThrow(RangeError);
+    expect(() => new Admission({ ...withReports, dailyGasBudget: 500_000n })).not.toThrow();
+    expect(() => new Admission({ ...withReports, maxGasPerReport: -1n })).toThrow(RangeError);
+  });
+});

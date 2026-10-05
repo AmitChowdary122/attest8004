@@ -1,4 +1,5 @@
-// A fetch for viem's http transport that keeps one process under the public Monad testnet RPC's per-IP rate limit.
+// A fetch for viem's http transport that keeps one process (or one page) under the public Monad testnet RPC's per-IP
+// rate limit. Browser-safe: it uses only fetch, Response and setTimeout.
 // Measured on 5 Oct 2026: past 15 requests a second the node answers JSON-RPC error -32011, "requests limited to
 // 15/sec", which viem doesn't retry. The e2e runs both validators in-process next to its own reads, all through
 // common.ts's clients, so their bursts add up; every request now waits for a slot, and a refused one is retried.

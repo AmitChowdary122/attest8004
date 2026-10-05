@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs";
 import { getAbiItem, parseAbi, toEventSelector, toEventSignature, toFunctionSelector, toFunctionSignature, type AbiParameter } from "viem";
 import { describe, expect, it } from "vitest";
-import { mandateRegistryAbi } from "../src/index.ts";
+import { findingsBoardAbi, findingsPostedEvent, mandateRegistryAbi } from "../src/index.ts";
 
 // passkey-vectors.json is shared with contracts/test/MandateRegistry.t.sol; its selectors and topics come
 // from cast (passkey-vectors.sh), independent of both the contract and this ABI.
@@ -59,5 +59,21 @@ describe("mandateRegistryAbi (MandateRegistry v2)", () => {
     for (const name of ["getMandate", "mandateHashOf", "identityRegistry", "MandateSet", "MandateRevoked"] as const) {
       expect(getAbiItem({ abi: mandateRegistryAbi, name }), name).toEqual(getAbiItem({ abi: p4Abi, name }));
     }
+  });
+});
+
+describe("findingsBoardAbi (FindingsBoard, P7)", () => {
+  const inbox = JSON.parse(readFileSync(new URL("./inbox-vectors.json", import.meta.url), "utf8")) as { findingsPostedTopic: string };
+
+  it("findingsBoardAbi's event topic equals the vector's", () => {
+    expect(toEventSelector(findingsPostedEvent)).toBe(inbox.findingsPostedTopic);
+    expect(toEventSelector(getAbiItem({ abi: findingsBoardAbi, name: "FindingsPosted" }))).toBe(inbox.findingsPostedTopic);
+  });
+
+  it("has post, the cap, the event and the error, and nothing else", () => {
+    expect(findingsBoardAbi.map((item) => item.name).sort()).toEqual(
+      ["EnvelopeTooLarge", "FindingsPosted", "MAX_ENVELOPE_BYTES", "post"].sort(),
+    );
+    expect(toFunctionSelector(getAbiItem({ abi: findingsBoardAbi, name: "post" }))).toBe(toFunctionSelector("post(bytes32,uint256,bytes)"));
   });
 });

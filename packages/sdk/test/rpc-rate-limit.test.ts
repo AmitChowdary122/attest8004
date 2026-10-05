@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { rateLimitedFetch } from "./rpc-rate-limit.ts";
+import { rateLimitedFetch } from "../src/rpc-rate-limit.ts";
 
 /** A fake clock: `sleep` advances it, so the limiter's waits are observable and instant. */
 function fakeClock() {

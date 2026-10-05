@@ -64,6 +64,22 @@ export type SkipReason =
   /** The subclass's `accepts()` turned the request away. */
   | "DECLINED";
 
+/** What `onResponded` is told about a response that landed. */
+export interface RespondedResponse {
+  requestHash: Hex;
+  score: number;
+  txHash: Hash;
+  blockNumber: bigint;
+  /** The gas limit the response was sent with. */
+  gasLimit: bigint;
+  /** keccak256 of the published evidence: the response's `responseHash`. */
+  responseHash: Hex;
+  /** The request the response answers, as the base verified it. */
+  request: VerifiedRequest;
+  /** The evidence document the response published (`buildEvidence`'s output); read it, never change it. */
+  evidence: Record<string, unknown>;
+}
+
 export type Outcome =
   | { kind: "responded"; requestHash: Hex; score: number; txHash: Hash; blockNumber: bigint }
   | { kind: "skipped"; requestHash: Hex; reason: SkipReason; detail?: string }
@@ -194,13 +210,15 @@ export abstract class ValidatorBase {
 
   /**
    * Called once per response that actually landed onchain, right after `chain.respond` resolves,
-   * with the block it landed in and the gas limit that was sent. Never called when the status check
-   * finds the request already answered (nothing landed through this call). A subclass might use it
-   * to record spend or update a rate-limit counter. If it throws, the throw is logged and swallowed:
-   * the response already landed, so treating it as failed would retry and double-post. Default:
-   * no-op.
+   * with the block it landed in, the gas limit that was sent, the request, the published evidence
+   * and its hash. Never called when the status check finds the request already answered (nothing
+   * landed through this call). A subclass might use it to record spend, update a rate-limit counter
+   * or post an operator report (P7). It may return a Promise: the base awaits it before the next
+   * request, so a transaction it sends stays in sequence with this key's next response. If it
+   * throws, or its Promise rejects, that is logged and swallowed: the response already landed, so
+   * treating it as failed would retry and double-post. Default: no-op.
    */
-  protected onResponded(_response: { requestHash: Hex; score: number; txHash: Hash; blockNumber: bigint; gasLimit: bigint }): void {
+  protected onResponded(_response: RespondedResponse): void | Promise<void> {
     // no-op by default
   }
 
@@ -328,11 +346,18 @@ export abstract class ValidatorBase {
     const reserved = Object.keys(result.evidence ?? {}).filter((key) => RESERVED_EVIDENCE_KEYS.includes(key));
     if (reserved.length > 0) throw new Error(`check() evidence reuses reserved keys: ${reserved.join(", ")}`);
 
-    const evidence = await this.publishEvidence(buildEvidence({ tag, requestHash, result }));
-    return this.respond(requestHash, result.score, evidence);
+    const document = buildEvidence({ tag, requestHash, result });
+    const evidence = await this.publishEvidence(document);
+    return this.respond(requestHash, result.score, evidence, verified, document);
   }
 
-  private async respond(requestHash: Hex, score: number, evidence: { uri: string; hash: Hex }): Promise<Outcome> {
+  private async respond(
+    requestHash: Hex,
+    score: number,
+    evidence: { uri: string; hash: Hex },
+    request: VerifiedRequest,
+    document: Record<string, unknown>,
+  ): Promise<Outcome> {
     const { chain, tag, sendAttempts, retryDelayMs } = this.options;
     for (let attempt = 1; ; attempt++) {
       // Before every send: a response may have landed since (another run, or a send that errored late).
@@ -358,15 +383,15 @@ export abstract class ValidatorBase {
       }
       const { txHash, blockNumber, gasLimit } = sent;
       this.log("info", "responded", { requestHash, score, txHash, blockNumber, gasLimit });
-      this.notifyResponded({ requestHash, score, txHash, blockNumber, gasLimit });
+      await this.notifyResponded({ requestHash, score, txHash, blockNumber, gasLimit, responseHash: evidence.hash, request, evidence: document });
       return { kind: "responded", requestHash, score, txHash, blockNumber };
     }
   }
 
-  /** Calls the subclass's `onResponded`, swallowing a throw: the response already landed. */
-  private notifyResponded(response: { requestHash: Hex; score: number; txHash: Hash; blockNumber: bigint; gasLimit: bigint }): void {
+  /** Calls the subclass's `onResponded` and awaits it, swallowing a throw or a rejection: the response already landed. */
+  private async notifyResponded(response: RespondedResponse): Promise<void> {
     try {
-      this.onResponded(response);
+      await this.onResponded(response);
     } catch (error) {
       this.log("error", "onResponded threw; the response already landed and was not retried", {
         requestHash: response.requestHash,

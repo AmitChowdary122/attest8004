@@ -13,7 +13,7 @@ import {
   type WalletClient,
 } from "viem";
 import { monadTestnet } from "viem/chains";
-import { rateLimitedFetch } from "./rpc-rate-limit.ts";
+import { rateLimitedFetch } from "@attest8004/sdk";
 
 export const chain = monadTestnet;
 

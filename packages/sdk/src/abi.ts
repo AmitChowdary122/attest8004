@@ -153,3 +153,18 @@ export const attestGateAbi = parseAbi([
   "error ZeroTagHash(address validator)",
   "error TagMismatch(address validator, bytes32 requestHash, bytes32 expected, bytes32 actual)",
 ]);
+
+/**
+ * contracts/src/FindingsBoard.sol (P7): validators' encrypted operator reports. It stores nothing and judges
+ * nothing; readers keep a post only when `getValidationStatus` names its validator and agent.
+ */
+export const findingsBoardAbi = parseAbi([
+  "function post(bytes32 requestHash, uint256 agentId, bytes envelope)",
+  "function MAX_ENVELOPE_BYTES() view returns (uint256)",
+  "event FindingsPosted(bytes32 indexed requestHash, uint256 indexed agentId, address indexed validator, bytes envelope)",
+  "error EnvelopeTooLarge(uint256 length, uint256 max)",
+]);
+
+export const findingsPostedEvent = parseAbiItem(
+  "event FindingsPosted(bytes32 indexed requestHash, uint256 indexed agentId, address indexed validator, bytes envelope)",
+);

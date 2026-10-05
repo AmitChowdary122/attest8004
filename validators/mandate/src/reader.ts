@@ -1,6 +1,7 @@
 import {
   agentKeySetEvent,
   attestGateAbi,
+  blocksWithTimestamp,
   blockWindows,
   deploymentsFor,
   identityRegistryAbi,
@@ -24,7 +25,6 @@ import {
   type Hex,
   type PublicClient,
 } from "viem";
-import { blocksWithTimestamp } from "./blocks.ts";
 import { concurrencyLimit, mapWithConcurrency, type Limiter } from "./concurrency.ts";
 import { MANDATE_V1 } from "./params.ts";
 import type { MandateRecord, PermissionEvent, PinnedBlock, Simulation } from "./types.ts";
