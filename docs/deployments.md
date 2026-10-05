@@ -916,6 +916,43 @@ runner's process. The logs are kept outside the repo (`../plans/p9-demo-live.log
   - `/inbox` (Find reports) found 12 verdicts with 12 encrypted reports, each re-checked on chain;
   - the console was clean on both.
 
+## P11 CRE run: validator C, orchestrated by Chainlink CRE (testnet, 2026-10-06)
+
+`pnpm cre:demo` ([docs/cre.md](./cre.md)), first live take, on 6 Oct 2026, with CRE CLI v1.37.0, `@chainlink/cre-sdk`
+1.23.0 and Bun 1.3.14. Each scene:
+1. Agent 1984's hot key asked validator C through the AgentRequestForwarder.
+2. `cre workflow simulate validator-c --broadcast` ran the workflow on that transaction's ValidationRequest log, pinning
+   the request's own block.
+3. The workflow called the read-only `/evaluate` (127.0.0.1:8787) through identical-aggregation consensus,
+   cross-checked the evidence against its own reads, and wrote through CRE's MockKeystoneForwarder.
+4. The workflow then read C's verdict back on chain.
+
+The reports were broadcast by `CRE_BROADCAST_ADDRESS` `0x0D86BDea58a9638b0B3033290e89D37919468ddE`.
+**C is a CRE workflow (simulation forwarder, not a trust root)**: no gate requires it, and the preflight checked that
+the live DemoAgentVault still requires A and B only.
+
+| Scene | Request (hot key → forwarder) | Pin `P` (request block) | Report tx (forwarder.report) | Gas limit | C's verdict | `verify` |
+|---|---|---|---|---|---|---|
+| Benign: 0.0005 MON to the owner | [`0xc3ffd9e6…f6ac48`](https://monad-testnet.socialscan.io/tx/0xc3ffd9e6ef537e5311436dff6d0b1a22fb8db36ff32d86c4da89733262f6ac48) (requestHash `0x28cf80d3…69b71b`) | 68,508,314 | [`0x66d47022…d75dc3`](https://monad-testnet.socialscan.io/tx/0x66d470221949e17e8a75be2263b2dadaa1af657f3caa00266574baeb35d75dc3) (block 68,508,374) | 236,051 | **100**, no reasons | match |
+| Violating: 0.001 MON to an address outside the mandate | [`0x0575b052…205c7c`](https://monad-testnet.socialscan.io/tx/0x0575b052c41975df60d3168464b46d90def506fca0d0bf896af7d37f71205c7c) (requestHash `0x2d993008…51f1aa9`) | 68,508,429 | [`0xcbf28a6d…bba6da0`](https://monad-testnet.socialscan.io/tx/0xcbf28a6d61baee08f7f881d3298639fa31f00d0fac26be97604f29adcbba6da0) (block 68,508,495) | 247,061 | **0**, `TARGET_NOT_ALLOWED` | match |
+
+- **Evidence:** 1,651 and 1,928 bytes. That is the frozen `mandate-v1` format, under CRE's 25 kB consensus limit and 50 kB
+  report limit. `/evaluate` answered `pending` once and twice, then `done`; each scene took about 16-19 s inside the
+  simulator, and about 36 s end to end.
+- **Gas:**
+  - **The limit.** Each limit is `max(onReport estimate + routing, calldata floor) × 1.2`. For the benign scene that
+    was `(146,709 + 50,000) × 1.2`.
+  - **The real use.** Monad's receipts and the trace's top frame report the whole limit, so the real use comes from the
+    trace's inner frames. For the benign report that is about 201k:
+    - about 70.6k of intrinsic gas and calldata before the forwarder's `route()`;
+    - 126,308 in `route()`, of which `onReport` took 85,689 and the registry's `validationResponse` 61,398;
+    - plus the `ReportProcessed` event.
+  - **The fix.** About 201k is 85 % of the limit. The forwarder's overhead over the `onReport` estimate came to about
+    54.5k, so `routing` is now 60,000 (it was 50,000 for this take).
+- **By hand:** `pnpm attest8004 verify 0x28cf80d3ee1f48427d01c56b4f17d89cd20b61f72b688e6809a536a28e69b71b` (or
+  `0x2d9930087362aefc0780b2dcc2d30b8a3e2b33250f114e8740cf297db51f1aa9`) re-executes C's verdict. The full output is
+  in `../plans/p11-cre-demo-live.log`, outside the repo.
+
 ## Canonical contracts used (not deployed by us)
 
 | Contract | Monad testnet (10143) | Monad mainnet (143) |
