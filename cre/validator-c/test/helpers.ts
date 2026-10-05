@@ -40,7 +40,7 @@ export function testConfig(over: Partial<WorkflowConfig> = {}): WorkflowConfig {
     maxEvidenceBytes: 16_384,
     pollAttempts: 10,
     httpTimeout: "9s",
-    gas: { outerBase: 40_000, outerPerByte: 20, headroomPercent: 20, max: 1_000_000 },
+    gas: { outerBase: 49_000, outerPerByte: 40, routing: 50_000, headroomPercent: 20, max: 1_000_000 },
     ...over,
   };
 }

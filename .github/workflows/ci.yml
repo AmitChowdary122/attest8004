@@ -181,3 +181,6 @@ jobs:
 
       - name: Typecheck (the WASM program with types [], and the tests)
         run: bun run typecheck
+
+      - name: Compile the workflow to WASM (what cre workflow simulate runs)
+        run: bun run compile

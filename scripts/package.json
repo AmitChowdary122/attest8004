@@ -17,7 +17,8 @@
     "submit-approval": "node --conditions=@attest8004/source --env-file=../.env src/submit-approval.ts",
     "e2e": "node --conditions=@attest8004/source --env-file=../.env src/e2e.ts",
     "indexer-check": "node --conditions=@attest8004/source --env-file=../.env src/indexer-check.ts",
-    "indexer-keepalive": "node src/indexer-keepalive.ts"
+    "indexer-keepalive": "node src/indexer-keepalive.ts",
+    "cre-gas-probe": "node --conditions=@attest8004/source --env-file=../.env src/cre-gas-probe.ts"
   },
   "dependencies": {
     "@attest8004/sdk": "workspace:*",

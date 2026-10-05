@@ -42,6 +42,7 @@ export const workflowConfigSchema = z.strictObject({
   gas: z.strictObject({
     outerBase: count,
     outerPerByte: count,
+    routing: count,
     headroomPercent: z.number().int().min(0).max(100),
     max: z.number().int().positive().max(10_000_000),
   }),

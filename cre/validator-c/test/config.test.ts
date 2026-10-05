@@ -1,5 +1,4 @@
 import { describe, expect, test } from "bun:test";
-import { readFileSync } from "node:fs";
 import { WORKFLOW_NAME, workflowConfigSchema, workflowNameBytes10 } from "../src/config.ts";
 import { testConfig } from "./helpers.ts";
 
@@ -13,15 +12,16 @@ describe("workflowNameBytes10: CRE's bytes10 for a workflow name (the first 10 h
     expect(workflowNameBytes10(WORKFLOW_NAME)).toBe("0x36386365303833636635");
   });
 
-  test("workflow.yaml names this workflow", () => {
-    const yaml = readFileSync(new URL("../workflow.yaml", import.meta.url), "utf8");
+  test("workflow.yaml names this workflow", async () => {
+    // Bun.file, not node:fs: the CRE SDK's types declare Node's modules unavailable in a workflow.
+    const yaml = await Bun.file(new URL("../workflow.yaml", import.meta.url)).text();
     expect(yaml).toContain(`workflow-name: "${WORKFLOW_NAME}"`);
   });
 });
 
 describe("workflowConfigSchema", () => {
-  test("accepts the committed config.monad-testnet.json", () => {
-    const committed = JSON.parse(readFileSync(new URL("../config.monad-testnet.json", import.meta.url), "utf8"));
+  test("accepts the committed config.monad-testnet.json", async () => {
+    const committed = await Bun.file(new URL("../config.monad-testnet.json", import.meta.url)).json();
     expect(workflowConfigSchema.safeParse(committed).success).toBe(true);
   });
 
