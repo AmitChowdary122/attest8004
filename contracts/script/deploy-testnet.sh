@@ -4,8 +4,8 @@
 #   ./script/deploy-testnet.sh <Contract>               # dry run: no transaction is sent
 #   BROADCAST=1 ./script/deploy-testnet.sh <Contract>   # send the transaction
 #
-# <Contract> is ValidationRegistry, AgentRequestForwarder, MandateRegistry, DemoAgentVault or
-# DemoPassThrough; the script is script/Deploy<Contract>.s.sol, which must provide run() and
+# <Contract> is ValidationRegistry, AgentRequestForwarder, MandateRegistry, DemoAgentVault,
+# DemoPassThrough or FindingsBoard; the script is script/Deploy<Contract>.s.sol, which must provide run() and
 # deployPlan(uint256 chainId).
 #
 # Reads DEPLOYER_PRIVATE_KEY and MONAD_TESTNET_RPC_URL from the repo's .env as environment
@@ -16,7 +16,7 @@
 # if the estimate is above the limit: Monad charges the full limit even when a tx runs out of gas.
 set -euo pipefail
 
-name="${1:?usage: deploy-testnet.sh <ValidationRegistry|AgentRequestForwarder|MandateRegistry|DemoAgentVault|DemoPassThrough>}"
+name="${1:?usage: deploy-testnet.sh <ValidationRegistry|AgentRequestForwarder|MandateRegistry|DemoAgentVault|DemoPassThrough|FindingsBoard>}"
 cd "$(dirname "$0")/.."
 script="script/Deploy${name}.s.sol"
 [[ -f "$script" ]] || { echo "no deploy script $script" >&2; exit 1; }

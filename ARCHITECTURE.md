@@ -41,6 +41,7 @@ flowchart LR
   IDX["Envio HyperIndex"]
   UI["SDK getAgentTrust()<br/>+ dashboard"]
   INBOX["/inbox<br/>(decrypt with passkey)"]
+  FB["FindingsBoard<br/>(encrypted operator reports)"]
 
   OP -->|"approve mandate,<br/>publish inbox key"| MR
   OP -.->|"approve(forwarder, agentId),<br/>setAgentKey(agentId, hot key)"| FW
@@ -56,7 +57,10 @@ flowchart LR
   VB -->|validationResponse| VR
   AG -->|"execute(action)"| GATE
   GATE -->|getValidationStatus| VR
-  VB -->|encrypted findings| INBOX
+  VA -->|"encrypted report (post)"| FB
+  VB -->|"encrypted report (post)"| FB
+  INBOX -->|"FindingsPosted logs"| FB
+  INBOX -.->|"trust rule: getValidationStatus"| VR
   OP --> INBOX
   IDX -.->|indexes events| VR
   IDX -.-> MR
@@ -73,6 +77,7 @@ flowchart LR
 | Onchain | `ValidationRegistry` | `contracts/src/` | Stores validation requests and responses. EIP-8004 interface. Authorises requesters via the canonical Identity Registry. No admin, not upgradeable. |
 | Onchain | `AgentRequestForwarder` | `contracts/src/` | The agent owner's ERC-721 operator for validation requests only. Forwards `validationRequest` for the hot key the agent's owner registered, while that owner still owns the agent. No admin, not upgradeable, holds no funds. |
 | Onchain | `MandateRegistry` | `contracts/src/` | The current spending mandate per agent (targets, selectors, value caps, expiry), the agent's passkey public key and its inbox public key. v2 (P6): every change needs the owner's transaction and a WebAuthn assertion from the agent's passkey, verified via `0x0100`; revoking needs the owner only. (P4's live deployment is owner-set.) |
+| Onchain | `FindingsBoard` | `contracts/src/` | Carries validators' encrypted operator reports: `post(requestHash, agentId, envelope)` emits `FindingsPosted` with the poster as `validator`. Stores nothing and judges nothing; envelopes are capped at 8,192 bytes. A reader trusts a post only when `getValidationStatus(requestHash)` names that validator and agent (§6). No admin, no storage, no constructor arguments, holds no funds. |
 | Onchain | `AttestGate` (abstract contract with the `onlyValidated` modifier) | `contracts/src/` | For each required validator, recomputes that validator's `requestHash` from the call and checks its verdict: the named validator, the agentId and the minimum score. Every requirement must pass, and each action runs once. |
 | Onchain | `DemoAgentVault` | `contracts/src/` | Example consumer, bound to one agentId: holds that agent's test funds; `execute(Action)` is gated. |
 | Offchain | `@attest8004/sdk` client | `packages/sdk/` | Builds actions, computes `requestHash`, submits requests, waits for verdicts, reads trust summaries. |
@@ -99,6 +104,7 @@ flowchart TB
   P256["P256VERIFY precompile @ 0x0100"]
   G["AttestGate<br/>onlyValidated(action)<br/>immutable (validator, minScore, tagHash)[]"]
   V["DemoAgentVault<br/>execute(action)"]
+  FB["FindingsBoard<br/>post (emits FindingsPosted)<br/>no storage, no calls"]
   ID --> VR
   ID --> FW
   FW -->|validationRequest| VR
@@ -106,11 +112,13 @@ flowchart TB
   MR -->|"verify (via OpenZeppelin WebAuthn/P256)"| P256
   VR --> G
   G --> V
+  VR -.->|"readers: getValidationStatus names the poster"| FB
 ```
 
 - **ValidationRegistry** reads the Identity Registry only to check that `msg.sender` is the owner or approved operator of `agentId` (`ownerOf`, `isApprovedForAll`, `getApproved`). It never trusts its own callers for this. The Identity Registry address is a **constructor argument** stored as an `immutable`. The EIP describes an `initialize(address)` instead, as used by the reference's upgradeable proxy; we have no proxy, owner or `initialize`, and `getIdentityRegistry()` returns the address. Because the Identity Registry address is part of the init code, the registry's CREATE2 address depends on it: testnet and mainnet use different Identity Registries, so their addresses differ. All differences from the EIP are in [`docs/spec-notes.md`](./docs/spec-notes.md).
 - **AgentRequestForwarder** takes the ValidationRegistry as its only constructor argument and reads that registry's Identity Registry (`getIdentityRegistry()`), so the two can't disagree about who owns an agent. The owner approves it as an ERC-721 operator. Its `request` checks the caller is the agent's registered key and that the owner who registered it still owns the agent, then makes exactly one call, `validationRequest`, which the registry accepts because the forwarder is the owner's operator (§7).
 - **MandateRegistry** (v2, P6) reads the Identity Registry to authorize every change, and calls the P256 precompile (through OpenZeppelin's `WebAuthn`/`P256`) for the passkey-approved ones. Its constructor takes the Identity Registry and `rpIdHash` (`sha256("attest8004.vercel.app")`), both immutable. The owner binds a passkey to the agent once (`setPasskey`, owner only, the key must be on the curve). After that, `setMandate`, `rotatePasskey` and `setInboxKey` each need **two factors**, checked by one internal hook, `_authorize(agentId, changeHash, auth)`, before any write: `msg.sender == identityRegistry.ownerOf(agentId)` (an operator or approved address is not enough), then a WebAuthn assertion from the agent's passkey over `challengeFor(agentId, changeHash, nonce)` (§9). Success increments the agent's nonce. `revokeMandate` needs the owner only and also increments the nonce (§7). The mandate record still stores the owner who set it, so a mandate goes stale the moment the agent is transferred, even to an owner who already approved other operators. `MandateSet` and `MandateRevoked` keep P4's exact signatures, so one ABI decodes both registries. v2 replaced P4's source in place (P4's deployed source is at commit `6e08223`); it is a new deployment, not an upgrade.
+- **FindingsBoard** (P7) calls nothing and stores nothing. `post(requestHash, agentId, envelope)` emits `FindingsPosted(requestHash indexed, agentId indexed, validator indexed = msg.sender, envelope)` and reverts `EnvelopeTooLarge` above `MAX_ENVELOPE_BYTES = 8192`. Anyone can post; the board doesn't check the registry, so the trust rule lives in readers: a post counts only when `ValidationRegistry.getValidationStatus(requestHash)` names that post's validator and agent, and every reader asks the RPC only for posts whose indexed `validator` and `agentId` match the status, then checks again in code (§6). It has no constructor arguments, so its CREATE2 address is the same wherever the factory exists. Validators' public plaintext evidence stays at their `responseURI`; the board carries only ciphertext for the agent's inbox key.
 - **AttestGate** reads the ValidationRegistry. It holds an **immutable list of `(validator, minScore, tagHash)` requirements** (1 to 4), chosen by whoever deploys the consumer contract, not by Attest8004, and fixed at deployment. Every requirement must pass, including the tag: `requestHash` already binds one validator to one exact action, but not to any particular check that validator ran for it, so the gate also requires the stored tag to hash to the requirement's `tagHash` — a verdict from some other check that same validator happens to run for the same action doesn't satisfy it. The constructor rejects a zero `tagHash`, because no real tag hashes to the zero value, so it would be a requirement nothing could ever satisfy.
 
 ### 4.2 Canonical addresses used
@@ -576,7 +584,7 @@ Encodings are `mandate-v1`'s: every `bigint` (block numbers, timestamps, wei, ga
 | P256 precompile `0x0100` | Raw ECDSA P-256 verification | WebAuthn semantics, low-s | OpenZeppelin's `WebAuthn`/`P256` check the challenge, type, flags and low-s, and never treat an empty return as valid; MandateRegistry checks the rpIdHash itself (§9) |
 | `mandate-v1` | A deterministic verdict | — | **Anyone can re-execute it** (§5.5) |
 | `risk-v1` | Advisory risk score and explanation; and its operator, for the claim that the recorded model output is what the model returned | Being "correct". LLMs can be wrong or manipulated | Evidence hash committed onchain and the full trace in public evidence. Re-checking that evidence (`pnpm attest8004 verify`, §5.5) proves three things: **the score follows from the recorded findings; every onchain fact shown to the model was true at `P`; the injection rule was applied.** It does **not** prove that the recorded output came from the model: trusting `risk-v1` means trusting validator B's operator, which is why the gate also requires `mandate-v1`, which anyone can fully reproduce. Never the only gate |
-| Validator storage (HTTP) | Availability | Integrity | `responseHash` onchain |
+| FindingsBoard | Carrying each post with its sender as `validator` | Deciding who may post, or anything about the content | Open source, immutable, no admin, no storage, no calls. Readers keep only posts from the validator `getValidationStatus` names for that request and agent; the envelope's AAD binds the chain, the board, the registry, the request, the agent, the validator and the recipient key, so a ciphertext can't be replayed under another of them (§6, §9) |
 | Consumer (gate deployer) | Choosing which validators to require and each one's minimum score | — | Fixed at deployment in immutables, readable with `requirements()` |
 
 **The demo uses least privilege: a per-token `approve(forwarder, agentId)` for each demo agent, not a blanket operator approval.** The registry accepts a token-approved address the same way it accepts an operator (`getApproved`), so the forwarder works unchanged. The exposure is then that one agent, and a transfer clears the approval (pinned by `test_Request_WorksWithPerTokenApproval_OnlyForThatAgent`). The cost is one approval per agent, renewed after any transfer. Owners can also call `validationRequest` from the owner wallet directly. The deployer's earlier blanket `setApprovalForAll(forwarder, true)` has been revoked (`setApprovalForAll(forwarder, false)`; `docs/deployments.md` has the transactions); agent 1982 (the P1/P2 test agent) was never individually approved and `scripts/src/gated-execute.ts` calls `validationRequest` as the owner directly, so it's unaffected.

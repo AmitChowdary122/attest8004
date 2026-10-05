@@ -1,6 +1,6 @@
 # contracts
 
-Foundry project for the Attest8004 contracts (SPEC §4.1–4.4; `DemoPassThrough` below is the §4.6 demo target, for the end-to-end demo scenario in §5):
+Foundry project for the Attest8004 contracts (SPEC §4.1–4.4 and §4.7; `DemoPassThrough` below is the §4.6 demo target, for the end-to-end demo scenario in §5):
 
 | Contract | Status |
 |---|---|
@@ -8,6 +8,7 @@ Foundry project for the Attest8004 contracts (SPEC §4.1–4.4; `DemoPassThrough
 | `AttestGate` + `DemoAgentVault` | **live on Monad testnet**: `DemoAgentVault` at `0x12fAb3E3cA810Cc44bD9f537613a230a2be8D614`, for demo agent 1984, requiring both `mandate-v1` and `risk-v1` (the P2 vault for agent 1982 and the single-validator P3 vault for agent 1984 are superseded; see [docs/deployments.md](../docs/deployments.md)) |
 | `AgentRequestForwarder` | **live on Monad testnet** at `0x1451F3C36545b191d3642f759D59f21DcFD657B2` (P3; see [docs/deployments.md](../docs/deployments.md)) |
 | `MandateRegistry` | **v2 (P6, owner + passkey), deployed on testnet** at `0x2Ee5f78149762DE630c6bFF8CD81166010D0454B` (block 68,196,462). P4's owner-set registry, `0x2523197373ef813E19b5b14Ef2984130868cD17c` (source at commit `6e08223`), stays readable for verdicts pinned before that block (see [docs/deployments.md](../docs/deployments.md)) |
+| `FindingsBoard` | **P7, not deployed yet**: carries validators' encrypted operator reports (`FindingsPosted`) for the Mera inbox; stores nothing, judges nothing |
 | `DemoPassThrough` | demo-only, **live on Monad testnet** at `0xEEEBBa55620afC42E9c88b5d962476367b8da338`: the P5 risky-but-mandated target (SPEC §4.6) that forwards every payment to a fixed sink nobody controls; now allowlisted in demo agent 1984's mandate, next to the deployer (see [docs/deployments.md](../docs/deployments.md)) |
 
 ```bash
@@ -85,6 +86,19 @@ The expected challenge, change hashes, e2e mandate hash, selectors and topics in
 `packages/sdk/test/passkey-vectors.json` come from `cast` and `sha256sum` (`passkey-vectors.sh`; CI runs it with
 `--check`).
 
+## FindingsBoard
+
+`src/FindingsBoard.sol` carries validators' encrypted operator reports (SPEC §4.7, P7). `post(requestHash, agentId, envelope)`
+emits `FindingsPosted(requestHash indexed, agentId indexed, validator indexed = msg.sender, envelope)`; an envelope over
+`MAX_ENVELOPE_BYTES = 8192` reverts `EnvelopeTooLarge`. Anyone can post: readers keep a post only when
+`ValidationRegistry.getValidationStatus(requestHash)` names that validator and agent (ARCHITECTURE §6). No admin, no
+storage, no constructor arguments, holds no funds.
+
+| Test file | What it covers |
+|---|---|
+| `test/FindingsBoard.t.sol` | The event with the sender as `validator`, any caller, the 8,192-byte cap (8,193 reverts), an empty envelope, no value, no storage reads or writes (`vm.accesses`), the compiled ABI pinned (post, the cap, the event, the error), fuzzed inputs and oversized envelopes |
+| `test/DeployFindingsBoard.t.sol` | The CREATE2 deploy script: predicted address, idempotence, the plan the wrapper estimates, testnet only |
+
 ## AttestGate and DemoAgentVault
 
 `src/ActionHash.sol` defines the `Action` struct and the two hashes (SPEC §4.3): `requestHash`, one per validator,
@@ -144,12 +158,12 @@ CI runs them in a separate `contracts-fork` job that may fail without turning th
 
 ## Deploying
 
-`script/DeployValidationRegistry.s.sol`, `script/DeployAgentRequestForwarder.s.sol`, `script/DeployMandateRegistry.s.sol`, `script/DeployDemoAgentVault.s.sol` and `script/DeployDemoPassThrough.s.sol` deploy through the CREATE2
+`script/DeployValidationRegistry.s.sol`, `script/DeployAgentRequestForwarder.s.sol`, `script/DeployMandateRegistry.s.sol`, `script/DeployDemoAgentVault.s.sol`, `script/DeployDemoPassThrough.s.sol` and `script/DeployFindingsBoard.s.sol` deploy through the CREATE2
 factory `0x4e59…956C` with a **literal gas limit** (`DEPLOY_GAS`), because Monad charges for the gas limit, not
 the gas used. The address depends on the init code, which includes the constructor arguments: the
 ValidationRegistry's and the MandateRegistry's addresses depend on the Identity Registry (so testnet and mainnet
 differ; the MandateRegistry's also on its `rpIdHash`), the forwarder's on its ValidationRegistry, the vault's on its registry, agent and validator requirements,
-and the pass-through's on its `sink`. Re-running is a no-op once the contract exists.
+and the pass-through's on its `sink`; the board has no constructor arguments. Re-running is a no-op once the contract exists.
 
 ```bash
 ./script/deploy-testnet.sh ValidationRegistry               # dry run against Monad testnet; nothing is sent
@@ -158,6 +172,7 @@ BROADCAST=1 ./script/deploy-testnet.sh ValidationRegistry   # deploy
 ./script/deploy-testnet.sh MandateRegistry                  # same, for the mandate registry
 ./script/deploy-testnet.sh DemoAgentVault                   # same, for the demo vault
 ./script/deploy-testnet.sh DemoPassThrough                  # same, for the risky-but-mandated demo target
+./script/deploy-testnet.sh FindingsBoard                    # same, for the encrypted-report board
 ```
 
 The wrapper loads `../.env` into the environment and never prints it. The deployer key reaches forge through
