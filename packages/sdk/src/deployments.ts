@@ -15,6 +15,15 @@ export interface FindingsBoardDeployment {
   fromBlock: bigint;
 }
 
+/**
+ * The hosted Envio indexer's public GraphQL endpoint (P8, SPEC §4.8). A convenience, never a trust root: verdicts and
+ * `verify` never read it. On Envio Cloud's free plan the URL changes with every deployment, so a redeploy updates it
+ * here, in web/vercel.json's CSP and in docs/deployments.md.
+ */
+export interface TrustApiDeployment {
+  graphqlUrl: string;
+}
+
 /** One chain's recorded Attest8004 addresses and demo-agent data. */
 export interface Deployment {
   identityRegistry: Address;
@@ -43,6 +52,11 @@ export interface Deployment {
    * validators post nothing and `/inbox` has nothing to read.
    */
   findingsBoard: FindingsBoardDeployment | null;
+  /**
+   * The trust API (the hosted Envio indexer), or `null` before it is deployed: then `getAgentTrust` needs an explicit
+   * URL, `/dashboard` shows its offline view and `/inbox` searches the chain.
+   */
+  trustApi: TrustApiDeployment | null;
   /** The two reference validators (SPEC §4.5 `mandate-v1`; §4.6 `risk-v1`, built, funded and tested). */
   validators: {
     mandateV1: Address;
@@ -93,6 +107,8 @@ export const DEPLOYMENTS = {
     ],
     /** P7's encrypted operator reports: deploy tx 0x1d43bad3…6136b (docs/deployments.md). */
     findingsBoard: { address: "0xa7d52B3B08FAB0cd0527c6242ca678f9Feee6a1c", fromBlock: 68_296_810n },
+    /** The hosted Envio indexer (P8): recorded once deployed. */
+    trustApi: null,
     validators: {
       /** `mandate-v1`, deterministic. */
       mandateV1: "0xa62DaB21E0C0F57e94B3ed6e675F214199989e92",

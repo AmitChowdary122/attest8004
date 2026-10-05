@@ -18,3 +18,4 @@ export * from "./inbox-crypto.ts";
 export * from "./report.ts";
 export * from "./inbox-read.ts";
 export * from "./inbox-post.ts";
+export * from "./trust-api.ts";

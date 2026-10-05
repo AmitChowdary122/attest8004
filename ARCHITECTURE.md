@@ -419,6 +419,27 @@ The tag is always `risk-v1`, the request limit the SDK's 16 KB and the deadline 
 
 ---
 
+### 5.7 Trust API: read from the indexer, then re-check on chain (P8)
+
+The Envio indexer (`indexer/`, hosted on Envio Cloud) turns the contracts' events into per-request, per-validator and per-agent records (§6, "Trust API entities"). Three readers use it, and none of them treats it as a trust root (§7):
+
+```mermaid
+sequenceDiagram
+  participant C as Caller (SDK, /dashboard, /inbox)
+  participant I as Envio GraphQL
+  participant R as Monad RPC
+  C->>I: one GraphQL query (getAgentTrust / getTrustOverview / findIndexedReports)
+  I-->>C: rows, each with requestHash, tx, logIndex, block
+  Note over C: zod-validated: hex as hex, codes as codes, integers as integers
+  C->>R: confirmIndexedVerdict: getValidationStatus(requestHash)
+  C->>R: confirmIndexedReport: getValidationStatus + the post's transaction receipt
+  Note over C: verdicts themselves: pnpm attest8004 verify <requestHash>
+```
+
+- **The SDK** (`packages/sdk/src/trust-api.ts`, browser-safe): `getAgentTrust(agentId)`, `getTrustOverview()` and `findIndexedReports({agentId, requestHashes})` each send **one** GraphQL POST (Envio's free plan serves 100 queries a minute) with no credentials and no referrer, and abort after 10 s. Every answer is validated with zod; anything malformed is a `TrustApiError` (`NOT_CONFIGURED`, `NETWORK`, `HTTP`, `RATE_LIMITED`, `TIMEOUT`, `GRAPHQL`, `SHAPE`). A validator's tag is free text it chose, so it is shown printable-ASCII only (anything else becomes `?`) and cut to 64 characters. `getAgentTrust` returns the mandate, passkey and inbox key on the MandateRegistry valid at the indexer's progress block (`mandateRegistryAt`), and `indexedTo`, so a caller sees how fresh it is.
+- **Re-checking:** `confirmIndexedVerdict` compares an indexed verdict with `getValidationStatus` now (validator, agent, score, `responseHash`, tag). `confirmIndexedReport` applies the trust rule against `getValidationStatus`, then checks that the post's transaction receipt carries exactly that `FindingsPosted` log (`postMatchesReceipt`: the board's address, the log index, the topics and the envelope). The receipt check matters because the envelope's encryption doesn't authenticate the sender: anyone can seal a report to an agent's public inbox key and name any validator in its AAD; only the chain's `msg.sender` says who posted it. To re-run a verdict itself, `pnpm attest8004 verify <requestHash>` reads only the chain.
+- **The endpoint** is `DEPLOYMENTS[10143].trustApi.graphqlUrl` (`null` until the hosted indexer is recorded). On Envio's free plan it changes with every deployment, so a redeploy updates it there, in `web/vercel.json`'s CSP and in `docs/deployments.md`.
+
 ## 6. Data formats
 
 **Request JSON v1.** Referenced by `requestURI` as a `data:application/json` URI (base64 or percent-encoded), so no hosting is needed. There is one per validator, because `validator` is part of `requestHash`.
@@ -677,7 +698,7 @@ The recommended gate policy is *require `mandate-v1` = 100 **and** `risk-v1` ≥
 | Deployer | secp256k1 | `.env` | Builder | Deploys only. No admin rights afterwards. |
 | LLM API key (`LLM_API_KEY`: an OpenAI-compatible endpoint, Groq today; also used for Prompt Guard) | Bearer token | Validator B's service env (`.env`, never committed), read by `validators/risk/src/config.ts`; also by `record-fixtures` | Validator B operator | None. Never logged or recorded: logs and evidence carry the endpoint's host only, and fixtures hold request and response bodies, never headers |
 | Nansen API key (`NANSEN_API_KEY`, optional) | API key header | Validator B's service env | Builder | None. Without it both Nansen tools answer "unavailable" |
-| Envio API token | Bearer token | Indexer env | Builder | None |
+| Envio API token (`ENVIO_API_TOKEN`) | Bearer token (HyperSync) | `.env`, for **local** indexing only: `indexer/scripts/envio.mjs` reads just this one line and hands it to `envio dev`, never printing it; Envio Cloud doesn't need it | Builder | None. The GraphQL API needs no key: it serves public chain data |
 
 The LLM never sees or holds any private key. Validators sign; the model only proposes a structured verdict, which is checked against a schema.
 
