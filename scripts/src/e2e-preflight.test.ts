@@ -9,6 +9,7 @@ import {
   permissionWindowWait,
   reportsExpected,
   restartBudget,
+  retryUntil,
   validatorNeed,
 } from "./e2e-preflight.ts";
 
@@ -191,5 +192,29 @@ describe("operator reports (P7)", () => {
   it("validatorNeed: the floor alone when reports are off; floor + 3 × cap × maxFee when on", () => {
     expect(validatorNeed({ floor: parseEther("0.5"), reports: false, maxFeePerGas: FEE })).toBe(parseEther("0.5"));
     expect(validatorNeed({ floor: parseEther("0.5"), reports: true, maxFeePerGas: FEE })).toBe(parseEther("0.5") + 3n * OPERATOR_REPORT_GAS_CAP * FEE);
+  });
+});
+
+describe("retryUntil (P7 review I2: a lagging RPC node mustn't fail the live run)", () => {
+  it("returns the first result that is done, waiting between attempts", async () => {
+    const results = [1, 2, 3];
+    const waits: number[] = [];
+    const got = await retryUntil(async () => results.shift() ?? 0, (n) => n === 3, { attempts: 4, delayMs: 5_000, sleep: async (ms) => void waits.push(ms) });
+    expect(got).toBe(3);
+    expect(waits).toEqual([5_000, 5_000]);
+  });
+
+  it("returns the last result after the last attempt, without a wait after it", async () => {
+    let calls = 0;
+    const waits: number[] = [];
+    const got = await retryUntil(async () => ++calls, () => false, { attempts: 3, delayMs: 10, sleep: async (ms) => void waits.push(ms) });
+    expect(got).toBe(3);
+    expect(waits).toEqual([10, 10]);
+  });
+
+  it("stops at once when the first result is done", async () => {
+    let calls = 0;
+    await retryUntil(async () => ++calls, () => true, { attempts: 4, delayMs: 10, sleep: async () => {} });
+    expect(calls).toBe(1);
   });
 });

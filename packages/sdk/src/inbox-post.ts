@@ -27,8 +27,11 @@ export interface InboxPort {
   validationRegistry: Address;
   /** The agent's X25519 inbox key on the current MandateRegistry; the zero hash when none is set. */
   inboxKeyOf(agentId: bigint): Promise<Hex>;
-  /** Sends `FindingsBoard.post` and resolves once it succeeded onchain. */
-  post(p: { requestHash: Hex; agentId: bigint; envelope: Hex }): Promise<{ txHash: Hash; blockNumber: bigint; gasLimit: bigint }>;
+  /**
+   * Sends `FindingsBoard.post` and resolves once it succeeded onchain. Once `signal` is aborted (the caller gave up
+   * waiting), it must not broadcast: a late send would contend for the key's next nonce.
+   */
+  post(p: { requestHash: Hex; agentId: bigint; envelope: Hex }, signal?: AbortSignal): Promise<{ txHash: Hash; blockNumber: bigint; gasLimit: bigint }>;
 }
 
 /**
@@ -52,7 +55,7 @@ export function viemInboxPort(o: { publicClient: PublicClient; walletClient: Wal
     validationRegistry: getAddress(deployment.validationRegistry),
     inboxKeyOf: (agentId) =>
       publicClient.readContract({ address: mandateRegistry, abi: mandateRegistryAbi, functionName: "inboxKeyOf", args: [agentId] }),
-    async post({ requestHash, agentId, envelope }) {
+    async post({ requestHash, agentId, envelope }, signal) {
       const { hash, receipt, gasLimit } = await writeWithGasGuard({
         publicClient,
         walletClient,
@@ -62,6 +65,7 @@ export function viemInboxPort(o: { publicClient: PublicClient; walletClient: Wal
         args: [requestHash, agentId, envelope],
         gasLimit: { headroomPercent: 20, max: OPERATOR_REPORT_GAS_CAP },
         label: "FindingsBoard.post",
+        signal,
       });
       return { txHash: hash, blockNumber: receipt.blockNumber, gasLimit };
     },
@@ -79,22 +83,28 @@ export type SendReportOutcome =
  * Seals `report` to its agent's inbox key and posts it, as `port.validator`. The request and the agent come from the
  * report. Never throws: an agent with no inbox key, a low-order key or a report too large to fit is `skipped`
  * (nothing sent); any other failure, or no answer within `timeoutMs` (default {@link REPORT_POST_TIMEOUT_MS}), is
- * `failed`, with viem's short message only (the full one can carry the RPC URL).
+ * `failed`, with viem's short message only (the full one can carry the RPC URL). A timeout also aborts the post, so
+ * one still preparing never broadcasts afterwards (one already sent can't be recalled; the gas guard then treats a
+ * transaction of this key that it replaced as a failed send, never as landed).
  */
 export async function sendOperatorReport(port: InboxPort, o: { report: OperatorReport; timeoutMs?: number }): Promise<SendReportOutcome> {
   const timeoutMs = o.timeoutMs ?? REPORT_POST_TIMEOUT_MS;
+  const controller = new AbortController();
   let timer: ReturnType<typeof setTimeout> | undefined;
   const timedOut = new Promise<SendReportOutcome>((resolve) => {
-    timer = setTimeout(() => resolve({ kind: "failed", error: `timed out after ${timeoutMs} ms` }), timeoutMs);
+    timer = setTimeout(() => {
+      controller.abort();
+      resolve({ kind: "failed", error: `timed out after ${timeoutMs} ms` });
+    }, timeoutMs);
   });
   try {
-    return await Promise.race([postReport(port, o.report), timedOut]);
+    return await Promise.race([postReport(port, o.report, controller.signal), timedOut]);
   } finally {
     clearTimeout(timer);
   }
 }
 
-async function postReport(port: InboxPort, report: OperatorReport): Promise<SendReportOutcome> {
+async function postReport(port: InboxPort, report: OperatorReport, signal: AbortSignal): Promise<SendReportOutcome> {
   try {
     const agentId = BigInt(report.agentId);
     const requestHash = report.requestHash;
@@ -127,7 +137,8 @@ async function postReport(port: InboxPort, report: OperatorReport): Promise<Send
     } finally {
       plaintext.fill(0);
     }
-    const sent = await port.post({ requestHash, agentId, envelope });
+    if (signal.aborted) return { kind: "failed", error: "timed out before sending" };
+    const sent = await port.post({ requestHash, agentId, envelope }, signal);
     return { kind: "posted", ...sent, envelopeBytes: (envelope.length - 2) / 2 };
   } catch (error) {
     return { kind: "failed", error: shortMessage(error) };

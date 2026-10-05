@@ -57,7 +57,7 @@ class FakePort implements InboxPort {
     this.reads.push(agentId);
     return this.inboxKey;
   }
-  async post(p: { requestHash: Hex; agentId: bigint; envelope: Hex }) {
+  async post(p: { requestHash: Hex; agentId: bigint; envelope: Hex }, _signal?: AbortSignal) {
     this.posts.push(p);
     return this.postImpl();
   }
@@ -127,6 +127,21 @@ describe("sendOperatorReport", () => {
     expect(outcome).toEqual({ kind: "failed", error: "RPC Request failed." });
   });
 
+  it("a timeout aborts the post's signal, so a post still preparing never broadcasts afterwards (P7 review I1)", async () => {
+    const port = new FakePort();
+    port.inboxKey = recipient().publicKey;
+    let seen: AbortSignal | undefined;
+    port.post = async (p, signal) => {
+      port.posts.push(p);
+      seen = signal;
+      await new Promise((resolve) => setTimeout(resolve, 60));
+      return { txHash: keccak256(toHex("late")), blockNumber: 8n, gasLimit: 90_000n };
+    };
+    const outcome = await sendOperatorReport(port, { report: report(), timeoutMs: 20 });
+    expect(outcome).toEqual({ kind: "failed", error: "timed out after 20 ms" });
+    expect(seen?.aborted).toBe(true);
+  });
+
   it("post hangs past timeoutMs → failed", async () => {
     const port = new FakePort();
     port.inboxKey = recipient().publicKey;
@@ -182,6 +197,16 @@ describe("viemInboxPort", () => {
     };
     return { publicClient: publicClient as never, walletClient: wallet as never, sent };
   }
+
+  it("post never broadcasts once its signal is aborted (P7 review I1)", async () => {
+    const deployment = { ...DEPLOYMENTS[10143], findingsBoard: { address: BOARD, fromBlock: 1n } };
+    const clients = fakeClients(100_000n);
+    const port = viemInboxPort({ ...clients, deployment }) as InboxPort;
+    const controller = new AbortController();
+    controller.abort();
+    await expect(port.post({ requestHash: keccak256(toHex("r")), agentId: 1984n, envelope: "0x01" }, controller.signal)).rejects.toThrow(/aborted before sending/);
+    expect(clients.sent).toHaveLength(0);
+  });
 
   it("post sends FindingsBoard.post with the estimate × 1.2, refusing above OPERATOR_REPORT_GAS_CAP", async () => {
     const deployment = { ...DEPLOYMENTS[10143], findingsBoard: { address: BOARD, fromBlock: 1n } };

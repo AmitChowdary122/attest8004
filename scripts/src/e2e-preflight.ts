@@ -47,6 +47,23 @@ export function validatorNeed(o: { floor: bigint; reports: boolean; maxFeePerGas
   return o.floor + (o.reports ? 3n * OPERATOR_REPORT_GAS_CAP * o.maxFeePerGas : 0n);
 }
 
+/**
+ * Runs `attempt` up to `attempts` times, waiting `delayMs` between tries, until `done` accepts its result; returns
+ * that result, or the last one. For reads that a lagging RPC node can answer a few blocks short.
+ */
+export async function retryUntil<T>(
+  attempt: () => Promise<T>,
+  done: (result: T) => boolean,
+  o: { attempts: number; delayMs: number; sleep?: (ms: number) => Promise<void> },
+): Promise<T> {
+  const sleep = o.sleep ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
+  for (let i = 1; ; i++) {
+    const result = await attempt();
+    if (done(result) || i >= o.attempts) return result;
+    await sleep(o.delayMs);
+  }
+}
+
 /** Why the deployer can't pay for the run (`held` below `need.total`), or `null` when it can. */
 export function deployerShortfall(o: { held: bigint; need: ReturnType<typeof deployerNeed>; marginPercent: number }): string | null {
   const { held, need } = o;

@@ -143,3 +143,51 @@ describe("sendWithGasGuard (plain value transfers)", () => {
     expect(rpc.sent).toHaveLength(1);
   });
 });
+
+describe("writeWithGasGuard: a replaced send, and an abort before sending (P7 review I1)", () => {
+  /** viem stand-ins: `onWait` sees waitForTransactionReceipt's parameters (to call onReplaced); writes are recorded. */
+  function stubClients(onWait: (params: { onReplaced?: (r: unknown) => void }) => void = () => {}) {
+    const sent: unknown[] = [];
+    const publicClient = {
+      simulateContract: async () => ({}),
+      estimateContractGas: async () => 50_000n,
+      getChainId: async () => 10143,
+      estimateFeesPerGas: async () => ({ maxFeePerGas: 2n, maxPriorityFeePerGas: 1n }),
+      getTransactionCount: async () => 9,
+      waitForTransactionReceipt: async (params: { onReplaced?: (r: unknown) => void }) => {
+        onWait(params);
+        return { status: "success", blockNumber: 5n };
+      },
+    };
+    const walletClient = {
+      account,
+      chain: { id: 10143 },
+      writeContract: async (call: unknown) => {
+        sent.push(call);
+        return keccak256(toHex("ours"));
+      },
+    };
+    return { publicClient: publicClient as never, walletClient: walletClient as never, sent };
+  }
+  const call = { address: FORWARDER, abi: agentRequestForwarderAbi, functionName: "request", args: [VALIDATOR, 7n, "data:,", HASH], gasLimit: 60_000n, label: "forwarder.request" } as const;
+
+  it("a transaction replaced by another (not repriced) is a failed send, even with a successful receipt", async () => {
+    const stub = stubClients((params) => params.onReplaced?.({ reason: "replaced", transaction: { hash: keccak256(toHex("theirs")) } }));
+    await expect(writeWithGasGuard({ ...stub, ...call })).rejects.toThrow(/was replaced by 0x/);
+  });
+
+  it("a cancelled transaction is a failed send too; a repriced one still counts as sent", async () => {
+    const cancelled = stubClients((params) => params.onReplaced?.({ reason: "cancelled", transaction: { hash: keccak256(toHex("x")) } }));
+    await expect(writeWithGasGuard({ ...cancelled, ...call })).rejects.toThrow(/was cancelled/);
+    const repriced = stubClients((params) => params.onReplaced?.({ reason: "repriced", transaction: { hash: keccak256(toHex("y")) } }));
+    await expect(writeWithGasGuard({ ...repriced, ...call })).resolves.toMatchObject({ gasLimit: 60_000n });
+  });
+
+  it("an aborted signal stops the write before anything is broadcast", async () => {
+    const stub = stubClients();
+    const controller = new AbortController();
+    controller.abort();
+    await expect(writeWithGasGuard({ ...stub, ...call, signal: controller.signal })).rejects.toThrow(/aborted before sending/);
+    expect(stub.sent).toHaveLength(0);
+  });
+});

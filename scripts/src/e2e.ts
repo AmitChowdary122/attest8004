@@ -161,6 +161,7 @@ import {
   permissionWindowWait,
   reportsExpected,
   restartBudget,
+  retryUntil,
   validatorNeed,
 } from "./e2e-preflight.ts";
 
@@ -207,6 +208,9 @@ const RISK_ADMISSION = {
 const LLM_PACING_DEFAULTS = { requestsPerMinute: 30, tokensPerMinute: 8_000 } as const;
 /** Prompt Guard's own pacer (validators/risk/src/main.ts): Groq's free tier for llama-prompt-guard-2-86m. */
 const GUARD_PACING = { requestsPerMinute: 30, tokensPerMinute: 15_000 } as const;
+/** How often the report check looks again for a report a lagging RPC node didn't show yet, and how long it waits between. */
+const REPORT_DISCOVERY_ATTEMPTS = 4;
+const REPORT_DISCOVERY_DELAY_MS = 5_000;
 /** JSON-RPC requests each validator's reader keeps in flight at once, as the services do. */
 const READER_CONCURRENCY = 8;
 
@@ -919,7 +923,13 @@ async function main(): Promise<void> {
   const checkReports = async (heading: string): Promise<void> => {
     console.log(`\n${heading}`);
     const board = (deployment as Deployment).findingsBoard;
-    const entries = board === null ? [] : await findInboxEntries(viemInboxReader({ publicClient, deployment }), { agentId, findingsBoard: board, maxResponses: 6 });
+    const discover = async () =>
+      board === null ? [] : await findInboxEntries(viemInboxReader({ publicClient, deployment }), { agentId, findingsBoard: board, maxResponses: 6 });
+    // The last report lands moments before this runs: a node a block or two behind would answer short, so a missing
+    // report is looked for again (up to 4 tries, 5 s apart) before it fails the run.
+    const complete = (found: Awaited<ReturnType<typeof discover>>) =>
+      !reports.expected || pairs.every(([label, side]) => found.find((e) => e.status.requestHash === hashOf(label, side))?.posts.length === 1);
+    const entries = await retryUntil(discover, complete, { attempts: REPORT_DISCOVERY_ATTEMPTS, delayMs: REPORT_DISCOVERY_DELAY_MS });
     for (const [label, side] of pairs) {
       const entry = entries.find((e) => e.status.requestHash === hashOf(label, side));
       const posts = entry?.posts ?? [];

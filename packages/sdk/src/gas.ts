@@ -34,6 +34,11 @@ export interface GasGuardedWrite {
   gasLimit: GasLimit;
   /** Names the transaction in errors. */
   label: string;
+  /**
+   * Stops the write if aborted before the transaction is broadcast (checked right before sending); once it is sent,
+   * it can't be recalled. A caller that gives up waiting aborts it, so a late send can't take the key's next nonce.
+   */
+  signal?: AbortSignal;
 }
 
 /**
@@ -63,12 +68,14 @@ export async function writeWithGasGuard(write: GasGuardedWrite): Promise<{
   const estimate = await publicClient.estimateContractGas({ ...call, account: account.address } as never);
   const limit = resolveGasLimit(gasLimit, estimate, label);
 
+  const fees = await feesAndNonce(publicClient, account.address);
+  if (write.signal?.aborted) throw new Error(`${label}: aborted before sending`);
   const hash = await walletClient.writeContract({
     ...call,
     account,
     chain: walletClient.chain,
     gas: limit,
-    ...(await feesAndNonce(publicClient, account.address)),
+    ...fees,
   } as never);
   return { hash, receipt: await successfulReceipt(publicClient, hash, label), estimate, gasLimit: limit };
 }
@@ -128,8 +135,22 @@ async function feesAndNonce(publicClient: PublicClient, address: Address) {
   return { chainId, maxFeePerGas, maxPriorityFeePerGas, nonce };
 }
 
+/**
+ * Waits for `hash`'s receipt and requires success. A transaction replaced by another one at the same nonce (viem
+ * then returns the replacement's receipt) is a failed send unless it was only repriced: otherwise another
+ * transaction's success, such as a late send from the same key, would be taken for this one's.
+ */
 async function successfulReceipt(publicClient: PublicClient, hash: Hash, label: string) {
-  const receipt = await publicClient.waitForTransactionReceipt({ hash });
+  let replaced: { reason: string; by: Hash } | undefined;
+  const receipt = await publicClient.waitForTransactionReceipt({
+    hash,
+    onReplaced: (replacement) => {
+      replaced = { reason: replacement.reason, by: replacement.transaction.hash };
+    },
+  });
+  if (replaced !== undefined && replaced.reason !== "repriced") {
+    throw new Error(`${label}: transaction ${hash} was ${replaced.reason} by ${replaced.by}`);
+  }
   if (receipt.status !== "success") throw new Error(`${label}: transaction ${hash} reverted`);
   return receipt;
 }
