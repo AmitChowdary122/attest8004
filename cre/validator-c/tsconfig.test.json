@@ -3,7 +3,8 @@
   "compilerOptions": {
     "types": [
       "bun"
-    ]
+    ],
+    "resolveJsonModule": true
   },
   "include": [
     "main.ts",

@@ -1,4 +1,11 @@
-// packages/sdk/src/action.ts (imported for requestHash) has buildAction, which reads the global `crypto`. The
-// workflow never calls it, and CRE's QuickJS runtime has no `crypto`, but the workflow compiles with `types: []`,
-// so tsc needs the name declared. Only tsconfig.json includes this file; the tests get `crypto` from Bun's types.
-declare const crypto: { getRandomValues<T extends ArrayBufferView>(array: T): T };
+// The workflow compiles with `types: []`. This file gives tsc the CRE QuickJS runtime's globals (console, TextEncoder/
+// TextDecoder, atob/btoa: the CRE SDK's own declarations), plus `crypto`, which packages/sdk/src/action.ts's buildAction
+// reads. The workflow never calls buildAction, and CRE's runtime has no `crypto`. Only tsconfig.json includes this
+// file; the tests get both from Bun's types.
+import type {} from "@chainlink/cre-sdk";
+
+declare global {
+  const crypto: { getRandomValues<T extends ArrayBufferView>(array: T): T };
+}
+
+export {};
