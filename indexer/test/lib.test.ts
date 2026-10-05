@@ -11,7 +11,7 @@ import {
   toBase64,
   type Action,
 } from "../../packages/sdk/src/index.ts";
-import { decodeEvidence, decodeRequest, MAX_EVIDENCE_BYTES } from "../src/lib/decode.ts";
+import { bytes4, decodeEvidence, decodeRequest, MAX_EVIDENCE_BYTES } from "../src/lib/decode.ts";
 import { inEpoch, MANDATE_EPOCHS } from "../src/lib/epochs.ts";
 import { scoreBucket } from "../src/lib/stats.ts";
 
@@ -172,5 +172,15 @@ describe("MandateRegistry epochs", () => {
 
   it("take checksummed addresses too", () => {
     expect(inEpoch("0x2Ee5f78149762DE630c6bFF8CD81166010D0454B", 68_196_462n)).toBe(true);
+  });
+});
+
+describe("bytes4", () => {
+  // HyperSync hands a bytes4 array element over as a full 32-byte ABI word (seen live: agent 1984's 0x00000000).
+  it("takes a selector from a 32-byte word, left- or right-aligned, or as given", () => {
+    expect(bytes4("0x" + "00".repeat(32))).toBe("0x00000000");
+    expect(bytes4("0xA9059CBB" + "00".repeat(28))).toBe("0xa9059cbb");
+    expect(bytes4("0x" + "00".repeat(28) + "a9059cbb")).toBe("0xa9059cbb");
+    expect(bytes4("0xa9059cbb")).toBe("0xa9059cbb");
   });
 });

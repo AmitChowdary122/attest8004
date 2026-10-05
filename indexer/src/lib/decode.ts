@@ -163,3 +163,17 @@ export function decodeRequest(uri: string, requestHash: string, chainId: number)
   );
   return { status: "VERIFIED", gate: gate.toLowerCase(), target: target.toLowerCase(), value, deadline: BigInt(deadline), actionHash };
 }
+
+/**
+ * A bytes4 value (a function selector) as 4-byte lowercase hex. HyperSync hands a `bytes4[]` element over as its full
+ * 32-byte ABI word (left-aligned, as the ABI encodes bytesN); a right-aligned word is read too, and anything else is
+ * kept as given.
+ */
+export function bytes4(value: string): string {
+  const v = value.toLowerCase();
+  if (/^0x[0-9a-f]{64}$/.test(v)) {
+    if (/^0{56}$/.test(v.slice(10))) return v.slice(0, 10);
+    if (/^0{56}$/.test(v.slice(2, 58))) return `0x${v.slice(58)}`;
+  }
+  return v;
+}

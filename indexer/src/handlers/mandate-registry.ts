@@ -2,6 +2,7 @@
 // the registry valid at its pin (plan decision 8). Mandates, passkeys and inbox keys are kept per registry; a retired
 // registry's later events are stored as out-of-epoch permission events and change nothing.
 import { indexer } from "envio";
+import { bytes4 } from "../lib/decode.ts";
 import { inEpoch } from "../lib/epochs.ts";
 import { anchorOf, recordPermission, touchAgent } from "./shared.ts";
 
@@ -22,7 +23,7 @@ for (const contract of ["MandateRegistryV1", "MandateRegistryV2"] as const) {
         mandateHash,
         owner,
         allowedTargets: event.params.allowedTargets.map((t) => t.toLowerCase()),
-        allowedSelectors: event.params.allowedSelectors.map((s) => s.toLowerCase()),
+        allowedSelectors: event.params.allowedSelectors.map(bytes4),
         maxValuePerTx: event.params.maxValuePerTx.toString(),
         maxValuePerDay: event.params.maxValuePerDay.toString(),
         validUntil: event.params.validUntil,

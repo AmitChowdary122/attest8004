@@ -7,7 +7,9 @@
     "declaration": false,
     "noEmit": true,
     // Tests import the pages' pure modules (e.g. src/explorer.ts) by their .ts path.
-    "allowImportingTsExtensions": true
+    "allowImportingTsExtensions": true,
+    // ...and the SDK as source, like the pages (vite.config.ts resolves the same condition).
+    "customConditions": ["@attest8004/source"]
   },
   "include": ["vite.config.ts", "test"]
 }

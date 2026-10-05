@@ -42,7 +42,8 @@ const mandateSet = (registry: Address, block: number, o: { agentId?: bigint; own
     mandateHash: MANDATE_HASH,
     owner: o.owner ?? OWNER,
     allowedTargets: ["0x00000000000000000000000000000000000000D4" as Address],
-    allowedSelectors: ["0x00000000"],
+    // As HyperSync decodes a bytes4[] element: the full left-aligned 32-byte word.
+    allowedSelectors: ["0x" + "00".repeat(32), "0xa9059cbb" + "00".repeat(28)],
     maxValuePerTx: 2_000_000_000_000_000n,
     maxValuePerDay: 5_000_000_000_000_000n,
     validUntil: 1_793_404_800n,
@@ -85,7 +86,7 @@ describe("MandateRegistries", () => {
       mandateHash: MANDATE_HASH,
       owner: OWNER,
       allowedTargets: ["0x00000000000000000000000000000000000000d4"],
-      allowedSelectors: ["0x00000000"],
+      allowedSelectors: ["0x00000000", "0xa9059cbb"],
       maxValuePerTx: "2000000000000000",
       maxValuePerDay: "5000000000000000",
       validUntil: 1_793_404_800n,

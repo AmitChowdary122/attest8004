@@ -225,3 +225,71 @@ footer {
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
   font-weight: 600;
 }
+
+/* /dashboard (P8) */
+main.wide {
+  max-width: 1040px;
+}
+
+.verdicts,
+.contracts,
+.events {
+  display: grid;
+  gap: 8px;
+  margin: 12px 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.verdicts > li {
+  padding: 12px 14px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--panel);
+}
+
+.verdicts p {
+  margin: 2px 0;
+  overflow-wrap: anywhere;
+}
+
+.tag {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.85rem;
+}
+
+.events li,
+.contracts li {
+  overflow-wrap: anywhere;
+}
+
+.table-wrap {
+  overflow-x: auto;
+}
+
+table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.9rem;
+}
+
+th,
+td {
+  padding: 6px 8px;
+  border-bottom: 1px solid var(--border);
+  text-align: left;
+  white-space: nowrap;
+}
+
+th {
+  color: var(--muted);
+  font-weight: 500;
+}
+
+button[aria-pressed="true"] {
+  border-color: var(--text);
+}
+
+.agent {
+  margin-top: 16px;
+}
