@@ -9,7 +9,7 @@
 import { decodeErrorResult, decodeEventLog, getAddress, zeroHash, type Address, type Hash, type Hex, type PublicClient } from "viem";
 import { z } from "zod";
 import { findingsPostedEvent, validationRegistryAbi } from "./abi.ts";
-import { deploymentsFor, mandateRegistryAt, type Deployment } from "./deployments.ts";
+import { DEPLOYMENTS, deploymentsFor, mandateRegistryAt, type Deployment } from "./deployments.ts";
 import type { FindingsPost } from "./inbox-read.ts";
 
 /** Why a call failed; `INCOMPLETE` means an answer hit its row limit, so a caller can't rely on it being complete. */
@@ -281,7 +281,8 @@ export type IndexedReport = FindingsPost & { trusted: boolean; trustProblem: Ind
 function urlFor(o: TrustApiOptions): string {
   if (o.url !== undefined) return o.url;
   const chainId = o.chainId ?? 10143;
-  const url = deploymentsFor(chainId).trustApi?.graphqlUrl;
+  const recorded = (DEPLOYMENTS as Record<number, Deployment | undefined>)[chainId];
+  const url = recorded?.trustApi?.graphqlUrl;
   if (url === undefined) throw new TrustApiError("NOT_CONFIGURED", `no trust API is recorded for chain ${chainId}`);
   return url;
 }

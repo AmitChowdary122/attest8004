@@ -107,8 +107,11 @@ export const DEPLOYMENTS = {
     ],
     /** P7's encrypted operator reports: deploy tx 0x1d43bad3…6136b (docs/deployments.md). */
     findingsBoard: { address: "0xa7d52B3B08FAB0cd0527c6242ca678f9Feee6a1c", fromBlock: 68_296_810n },
-    /** The hosted Envio indexer (P8): recorded once deployed. */
-    trustApi: null,
+    /**
+     * The hosted Envio indexer (P8): Envio Cloud's free plan, deployment of commit c62592f on the `envio` branch,
+     * 5 Oct 2026. Its URL changes with each deployment; docs/deployments.md says how to redeploy.
+     */
+    trustApi: { graphqlUrl: "https://indexer.dev.hyperindex.xyz/3d57e4d/v1/graphql" },
     validators: {
       /** `mandate-v1`, deterministic. */
       mandateV1: "0xa62DaB21E0C0F57e94B3ed6e675F214199989e92",

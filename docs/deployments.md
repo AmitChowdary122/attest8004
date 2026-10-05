@@ -190,15 +190,42 @@ passkeys** — a preview gets its own subdomain, which would mint passkeys bound
 
 | What | Value |
 |---|---|
-| GraphQL endpoint | **pending**: recorded here, in `DEPLOYMENTS[10143].trustApi` and in `web/vercel.json`'s CSP once Envio Cloud serves it |
-| Host | Envio Cloud, free (Development) plan; deployed from the `envio` branch, root directory `indexer`, config `config.yaml` |
-| Indexed | Monad testnet (10143) through HyperSync, each contract from its deploy block above; the canonical Identity Registry from its first event (block 10,675,492) |
+| GraphQL endpoint | [`https://indexer.dev.hyperindex.xyz/3d57e4d/v1/graphql`](https://indexer.dev.hyperindex.xyz/3d57e4d/v1/graphql) (public, no key; POST GraphQL) |
+| Deployed commit | `c62592f` on the `envio` branch (the reviewed indexer is `1ecfc36`; `c62592f` is the empty commit that triggered the first deployment) |
+| Deployed | 2026-10-05, 14:17 IST (Envio Cloud, region EU, HyperIndex 3.12.1) |
+| Host | Envio Cloud, free **Development** plan; root directory `./indexer`, config `config.yaml`, deploy branch `envio` |
+| Indexed | Monad testnet (10143) through HyperSync, each contract from its deploy block above; the canonical Identity Registry from its first event (block 10,675,492). First sync: 3,628 events in about a minute |
+| Recorded in | `DEPLOYMENTS[10143].trustApi` (the SDK, `/dashboard`, `/inbox`, `indexer-check`, the keep-alive), `web/vercel.json`'s CSP `connect-src` (exactly this URL), and here |
 
 - **A convenience, never a trust root.** No verdict and no `verify` reads it; every record carries its transaction, and
   the SDK's `confirmIndexedVerdict` / `confirmIndexedReport` re-check one from the chain (ARCHITECTURE §5.7, §7).
-- **Checked against the chain:** `pnpm --filter @attest8004/scripts indexer-check -- --url <endpoint>`. Against a
-  local `envio dev` on 5 Oct 2026 (indexed to block 68,349,874): OK for agents 1982, 1984 and 1985 (31 + 2 requests, 6
-  trusted reports) and both validators (A: 21 requests, 20 answered; B: 12, 9).
+- **Checked against the chain** with `pnpm --filter @attest8004/scripts indexer-check -- --url <endpoint>`:
+  - **hosted, 5 Oct 2026:** OK at block 68,358,082 (1 block behind the head): agents 1982, 1984 and 1985 (31 + 2
+    requests, 6 trusted reports) and both validators (A: 21 requests, 20 answered; B: 12, 9);
+  - **local `envio dev`, after the review's fixes:** OK at block 68,356,215.
+- **CORS:** the endpoint answers a preflight from `https://attest8004.vercel.app` for `POST` with `content-type`.
+  Rate limit: `x-ratelimit-limit: 100;w=60` (100 queries a minute, shared by every visitor).
+
+**Free-plan limits, and keeping it alive through judging.**
+- **It expires:** Envio deletes a Development deployment **30 days after it was created**, so this one goes **around
+  4 Nov 2026**. It is also deleted after **7 days without a query**, or past 100,000 events processed (3,628 so far) or
+  5 GB.
+- **The keep-alive:** `.github/workflows/indexer-keepalive.yml` queries it daily (06:17 UTC, and on
+  `workflow_dispatch`) with `node scripts/src/indexer-keepalive.ts`. It needs no install and no secrets, and has
+  `permissions: {}`. It fails loudly when the indexer is gone, reports no Monad testnet progress, or is more than
+  283,000 blocks (about a day) behind. It keeps the 7-day rule from firing, but can't extend the 30 days.
+
+**How to redeploy** (before about 4 Nov 2026, after a deletion, or for an indexer change):
+1. Push the commit to deploy to the `envio` branch: `git push origin <commit>:envio`. Envio Cloud builds and re-syncs
+   from the start block in about a minute; the free plan keeps at most 3 deployments per indexer (delete old ones on
+   the indexer's page).
+2. Copy the new deployment's endpoint from its page on envio.dev. **On the free plan the URL changes with every
+   deployment.**
+3. Put the new URL in `packages/sdk/src/deployments.ts` (`DEPLOYMENTS[10143].trustApi.graphqlUrl`), in
+   `web/vercel.json`'s CSP `connect-src` (exactly the URL, replacing the old one; `web/test/headers.test.ts` fails if
+   the two differ), and in this table.
+4. Run `indexer-check -- --url <new URL>`, then commit and push `main`; Vercel redeploys the pages and the keep-alive
+   picks the new URL up from `DEPLOYMENTS`.
 
 ## Demo agents (testnet)
 

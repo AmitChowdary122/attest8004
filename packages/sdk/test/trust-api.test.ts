@@ -245,10 +245,15 @@ describe("errors and requests", () => {
     expect(await kindOf(getAgentTrust(1984n, { url: URL_, fetchImpl, timeoutMs: 20 }))).toBe("TIMEOUT");
   });
 
-  it("refuses with NOT_CONFIGURED when no trust API is recorded", async () => {
-    expect(testnet.trustApi).toBeNull();
+  it("uses the recorded endpoint by default", async () => {
     const { fetchImpl, calls } = fakeFetch(() => json(agentTrustBody()));
-    expect(await kindOf(getAgentTrust(1984n, { fetchImpl }))).toBe("NOT_CONFIGURED");
+    await getAgentTrust(1984n, { fetchImpl });
+    expect(calls[0]?.url).toBe(testnet.trustApi.graphqlUrl);
+  });
+
+  it("refuses with NOT_CONFIGURED for a chain with no trust API recorded", async () => {
+    const { fetchImpl, calls } = fakeFetch(() => json(agentTrustBody()));
+    expect(await kindOf(getAgentTrust(1984n, { fetchImpl, chainId: 143 }))).toBe("NOT_CONFIGURED");
     expect(calls).toHaveLength(0);
   });
 

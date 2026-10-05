@@ -7,7 +7,7 @@
       "headers": [
         {
           "key": "Content-Security-Policy",
-          "value": "default-src 'self'; connect-src 'self' https://testnet-rpc.monad.xyz; frame-ancestors 'none'; object-src 'none'; base-uri 'none'; form-action 'none'"
+          "value": "default-src 'self'; connect-src 'self' https://testnet-rpc.monad.xyz https://indexer.dev.hyperindex.xyz/3d57e4d/v1/graphql; frame-ancestors 'none'; object-src 'none'; base-uri 'none'; form-action 'none'"
         },
         { "key": "X-Frame-Options", "value": "DENY" },
         { "key": "Referrer-Policy", "value": "no-referrer" },

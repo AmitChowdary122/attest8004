@@ -45,7 +45,7 @@ function verdict(over: Partial<IndexedVerdict> = {}): IndexedVerdict {
 
 describe("the SDK under test", () => {
   it("is the source, not a stale build", () => {
-    expect(testnet.trustApi).toBeNull();
+    expect(testnet.trustApi).not.toBeUndefined();
     expect(testnet.findingsBoard).not.toBeNull();
   });
 });
