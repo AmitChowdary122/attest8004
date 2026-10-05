@@ -16,6 +16,7 @@
  * refuses (`FixtureMismatchError`) until the runs are recorded again.
  */
 import { canonicalJson, type CheckResult } from "@attest8004/sdk";
+import { collectPermissions } from "@attest8004/validator-mandate";
 import { readFileSync } from "node:fs";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { PROMPT_INJECTION_SUSPECTED } from "../src/findings.ts";
@@ -160,9 +161,25 @@ describe("the injection comparison", () => {
   });
 });
 
+describe("the reset scenario (P9: pnpm demo's scene 3b, then a benign action)", () => {
+  it("puts the reset's four events in the permission window, every one at or before the mandate (afterMandate: false)", async () => {
+    const { reader, pinned } = scenarioRun("reset", "safe");
+    const mandate = await reader.mandate(1984n, pinned.number);
+    const owner = await reader.ownerOf(1984n, pinned.number);
+    const permissions = await collectPermissions(reader, 1984n, owner, mandate, pinned);
+    expect(permissions.events.map((e) => [e.event, e.afterMandate])).toEqual([
+      ["MandateSet", false],
+      ["AgentKeySet", false],
+      ["AgentKeySet", false],
+      ["MandateSet", false],
+    ]);
+    expect(mandate?.setAtBlock).toBe(pinned.number - 300n);
+  });
+});
+
 describe("recorded runs (live Groq, replayed)", () => {
   it("were recorded with this prompt version and the Groq model", () => {
-    for (const name of ["passthrough-clean", "passthrough-injected", "safe-transfer"]) {
+    for (const name of ["passthrough-clean", "passthrough-injected", "safe-transfer", "safe-after-reset"]) {
       const fixture = loadRun(name);
       expect(fixture.promptVersion).toBe(PROMPT_VERSION);
       expect(fixture.model).toBe("openai/gpt-oss-120b");
@@ -246,6 +263,19 @@ describe("recorded runs (live Groq, replayed)", () => {
       const text = finding.explanation.toLowerCase();
       expect(text).not.toContain(GATE_HEX);
       expect(text).not.toContain(`0x${GATE_HEX.slice(0, 6)}`);
+    }
+  });
+
+  it("recorded reset run: a benign transfer after a key restore and a fresh MandateSet gets no medium or high finding; score ≥ 80", async () => {
+    const { result, evidence, memo } = await replay("safe-after-reset");
+    expect(memo).toBeNull();
+    expect(evidence.findings.filter((f) => f.severity !== "low")).toEqual([]);
+    expect(result.score).toBeGreaterThanOrEqual(80);
+    // If the model looked at the permission history, it saw the reset's four events, none after the mandate.
+    for (const call of evidence.toolCalls.filter((c) => c.name === "recent_permission_events")) {
+      const events = (call.output as { events: { event: string; afterMandate: boolean }[] }).events;
+      expect(events.map((e) => e.event)).toEqual(["MandateSet", "AgentKeySet", "AgentKeySet", "MandateSet"]);
+      expect(events.every((e) => e.afterMandate === false)).toBe(true);
     }
   });
 

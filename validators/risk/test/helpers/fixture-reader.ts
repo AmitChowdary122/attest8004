@@ -14,7 +14,7 @@ import { riskAddressesAt, riskContractsFor, type RiskAddresses, type RiskReader 
 import type { CallFrame, TraceResult } from "../../src/trace.ts";
 import type { Prerequisite } from "../../src/types.ts";
 
-export type ScenarioName = "passthrough" | "safe";
+export type ScenarioName = "passthrough" | "safe" | "reset";
 
 interface ScenarioAccount {
   label: string;

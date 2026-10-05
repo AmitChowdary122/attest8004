@@ -13,9 +13,9 @@
  *   free-tier pacer, over the synthetic chain scenarios in `test/fixtures/chain/` (read by
  *   `test/helpers/fixture-reader.ts`, the same reader `injection.test.ts` replays with), with Nansen
  *   unavailable (no key), and writes `test/fixtures/llm/<name>.json` holding both recordings. With no
- *   names it records all three: `passthrough-clean`, `passthrough-injected` and `safe-transfer`. A
- *   change to the prompt, the tools or the scenarios means re-recording all three (replay checks every
- *   request's hash). It prints each run's score, findings, guard scores and token usage.
+ *   names it records all four: `passthrough-clean`, `passthrough-injected`, `safe-transfer` and (P9)
+ *   `safe-after-reset`. A change to the prompt, the tools or the scenarios means re-recording all four
+ *   (replay checks every request's hash). It prints each run's score, findings, guard scores and token usage.
  *
  * Run: pnpm --filter @attest8004/validator-risk record-fixtures guard
  *      pnpm --filter @attest8004/validator-risk record-fixtures runs
@@ -75,6 +75,8 @@ const RUNS: ReadonlyArray<{ name: string; scenario: ScenarioName; variant: strin
   { name: "passthrough-clean", scenario: "passthrough", variant: "clean" },
   { name: "passthrough-injected", scenario: "passthrough", variant: "injected" },
   { name: "safe-transfer", scenario: "safe", variant: "safe" },
+  // P9: the benign transfer after a demo reset (a key restore and a fresh MandateSet, each before the mandate).
+  { name: "safe-after-reset", scenario: "reset", variant: "safe" },
 ];
 
 /** Prompt Guard's own pacer, as the service sets it (Decision 5). */
