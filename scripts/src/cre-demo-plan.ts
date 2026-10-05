@@ -135,16 +135,47 @@ export function simulationDecision(status: { responseHash: Hex; tag: string }): 
 }
 
 /**
- * What the demo prints for a request C already answered: verify's re-execution of the existing verdict. A match is C's
- * own earlier verdict; a MISMATCH means someone filled C's slot first through the mock forwarder's public route().
+ * What the demo prints for a request C already answered: verify's re-execution of the existing verdict. A match pinned
+ * at the request's block is C's own earlier verdict (C's workflow always pins there). A match at another block is a
+ * valid mandate-v1 verdict someone else delivered: verify accepts any pin between the request and the response. A
+ * MISMATCH means someone filled C's slot with a forged verdict; "could not verify" usually means an undecodable URI.
  */
-export function alreadyAnsweredLines(report: Pick<VerifyReport, "verdict" | "pinnedBlock" | "posted" | "problems">): string[] {
+export function alreadyAnsweredLines(report: Pick<VerifyReport, "verdict" | "pinnedBlock" | "posted" | "problems">, requestBlock: bigint): string[] {
   const problems = report.problems.join(", ");
-  const line =
-    report.verdict === "match"
-      ? `  match: re-running mandate-v1 at block ${report.pinnedBlock} gives the posted score ${report.posted.score} and responseHash (C's own verdict)`
-      : report.verdict === "mismatch"
-        ? `  MISMATCH (${problems}): the posted verdict doesn't reproduce: someone filled C's slot through the mock forwarder's open route()`
-        : `  could not verify (${problems}): nothing is proven either way`;
+  let line: string;
+  if (report.verdict === "match" && report.pinnedBlock === requestBlock) {
+    line = `  match: re-running mandate-v1 at block ${report.pinnedBlock} gives the posted score ${report.posted.score} and responseHash (C's own verdict: pinned at the request's block)`;
+  } else if (report.verdict === "match") {
+    line = `  match at block ${report.pinnedBlock}, but C pins the request's block ${requestBlock}: a valid mandate-v1 verdict someone else delivered through the mock forwarder's open route(), not C's workflow's`;
+  } else if (report.verdict === "mismatch") {
+    line = `  MISMATCH (${problems}): the posted verdict doesn't reproduce: someone filled C's slot through the mock forwarder's open route()`;
+  } else {
+    line = `  could not verify (${problems}): nothing is proven either way; C's workflow always posts an inline data: URI verify decodes`;
+  }
   return ["C already answered this request; verify re-executes that verdict:", line];
+}
+
+/**
+ * Runs `verify` once the report's block is `lag` (default 5, mandate-v1's PIN_LAG_BLOCKS) under the finalized head:
+ * verify reads the request's status and the response log at the finalized head, so before that it can only answer
+ * "could not verify". Throws if the block doesn't finalize within `timeoutMs`; `verify` is never called then.
+ */
+export async function verifyWhenFinal<R>(o: {
+  reportBlock: bigint;
+  finalized: () => Promise<bigint>;
+  verify: () => Promise<R>;
+  sleep: (ms: number) => Promise<void>;
+  timeoutMs: number;
+  lag?: bigint;
+  pollMs?: number;
+  now?: () => number;
+}): Promise<R> {
+  const now = o.now ?? Date.now;
+  const lag = o.lag ?? 5n;
+  const giveUpAt = now() + o.timeoutMs;
+  for (;;) {
+    if ((await o.finalized()) >= o.reportBlock + lag) return o.verify();
+    if (now() >= giveUpAt) throw new Error(`block ${o.reportBlock} didn't finalize within ${o.timeoutMs / 1000} s; verify not run`);
+    await o.sleep(o.pollMs ?? 500);
+  }
 }

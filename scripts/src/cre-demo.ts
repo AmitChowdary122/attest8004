@@ -43,6 +43,7 @@ import {
   requestLogIndex,
   simulateArgv,
   simulationDecision,
+  verifyWhenFinal,
 } from "./cre-demo-plan.ts";
 import { DEMO_VALUES } from "./demo-budget.ts";
 import { AGENT_ID, FORWARDER, IDENTITY_REGISTRY, MANDATE_CONTRACTS, MANDATE_REGISTRY, REGISTRY, UNKNOWN_TARGET, VAULT } from "./demo-chain.ts";
@@ -318,7 +319,7 @@ async function scene(o: {
 
   const decision = simulationDecision(await readStatus(requestHash));
   if (!decision.simulate) {
-    for (const line of alreadyAnsweredLines(await verify(requestHash))) say(`  ${line}`);
+    for (const line of alreadyAnsweredLines(await verify(requestHash), blockNumber)) say(`  ${line}`);
     return { name: o.name, ok: false, ms: Date.now() - started };
   }
 
@@ -356,7 +357,14 @@ async function scene(o: {
   }
   const scoreLine = `  verdict  C scored ${landed.score} under mandate-v1`;
   say(landed.score === o.expect ? color.ok(scoreLine) : color.bad(`${scoreLine} (expected ${o.expect})`));
-  const report = await verify(requestHash);
+  const reportBlock = (await publicClient.getTransactionReceipt({ hash: reportTx })).blockNumber;
+  const report = await verifyWhenFinal({
+    reportBlock,
+    finalized: async () => (await publicClient.getBlock({ blockTag: "finalized" })).number,
+    verify: () => verify(requestHash),
+    sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+    timeoutMs: FINALITY_TIMEOUT_MS,
+  });
   for (const line of verifyLines(report)) say(line);
   return { name: o.name, ok: landed.score === o.expect && report.verdict === "match", ms: Date.now() - started };
 }

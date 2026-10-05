@@ -13,6 +13,7 @@ import {
   requestLogIndex,
   simulateArgv,
   simulationDecision,
+  verifyWhenFinal,
 } from "./cre-demo-plan.ts";
 
 describe("fitOuterGas: the forwarder's own gas as outerBase + outerPerByte × raw report bytes", () => {
@@ -154,15 +155,63 @@ describe("preflight and refusals", () => {
 
   it("alreadyAnsweredLines_showVerifyVerdict: match, MISMATCH (a forged verdict took C's slot) or unverifiable", () => {
     const base = { requestHash: RH, validator: C, pinnedBlock: 68_500_000n, posted: { score: 100, responseHash: RH, tag: "mandate-v1" }, problems: [] } as unknown as VerifyReport;
-    expect(alreadyAnsweredLines({ ...base, verdict: "match" })).toEqual([
+    expect(alreadyAnsweredLines({ ...base, verdict: "match" }, 68_500_000n)).toEqual([
       "C already answered this request; verify re-executes that verdict:",
-      "  match: re-running mandate-v1 at block 68500000 gives the posted score 100 and responseHash (C's own verdict)",
+      "  match: re-running mandate-v1 at block 68500000 gives the posted score 100 and responseHash (C's own verdict: pinned at the request's block)",
     ]);
-    expect(alreadyAnsweredLines({ ...base, verdict: "mismatch", problems: ["SCORE_MISMATCH"] } as VerifyReport)[1]).toBe(
+    expect(alreadyAnsweredLines({ ...base, verdict: "mismatch", problems: ["SCORE_MISMATCH"] } as VerifyReport, 68_500_000n)[1]).toBe(
       "  MISMATCH (SCORE_MISMATCH): the posted verdict doesn't reproduce: someone filled C's slot through the mock forwarder's open route()",
     );
-    expect(alreadyAnsweredLines({ ...base, verdict: "unverifiable", problems: ["RESPONSE_NOT_FOUND"] } as VerifyReport)[1]).toBe(
-      "  could not verify (RESPONSE_NOT_FOUND): nothing is proven either way",
+    expect(alreadyAnsweredLines({ ...base, verdict: "unverifiable", problems: ["EVIDENCE_NOT_DECODED"] } as VerifyReport, 68_500_000n)[1]).toBe(
+      "  could not verify (EVIDENCE_NOT_DECODED): nothing is proven either way; C's workflow always posts an inline data: URI verify decodes",
     );
+  });
+
+  it("alreadyAnsweredLines_flagsAMatchAtAnotherPin: an honest verdict at a later block isn't C's (C pins the request's block)", () => {
+    const report = { requestHash: RH, validator: C, pinnedBlock: 68_500_007n, posted: { score: 100, responseHash: RH, tag: "mandate-v1" }, problems: [], verdict: "match" } as unknown as VerifyReport;
+    expect(alreadyAnsweredLines(report, 68_500_000n)[1]).toBe(
+      "  match at block 68500007, but C pins the request's block 68500000: a valid mandate-v1 verdict someone else delivered through the mock forwarder's open route(), not C's workflow's",
+    );
+  });
+});
+
+describe("verifyWhenFinal: verify reads at the finalized head, so it waits until the report's block is 5 under it", () => {
+  it("doesn't call verify until finalized ≥ the report's block + 5", async () => {
+    const heads = [104n, 105n, 106n, 110n];
+    const seen: bigint[] = [];
+    let at = 0;
+    const result = await verifyWhenFinal({
+      reportBlock: 105n,
+      finalized: async () => heads[Math.min(at++, heads.length - 1)] as bigint,
+      verify: async () => {
+        seen.push(heads[at - 1] as bigint);
+        return "verified";
+      },
+      sleep: async () => {},
+      timeoutMs: 60_000,
+    });
+    expect(result).toBe("verified");
+    expect(seen).toEqual([110n]);
+  });
+
+  it("gives up after the timeout without calling verify", async () => {
+    let calls = 0;
+    let now = 0;
+    await expect(
+      verifyWhenFinal({
+        reportBlock: 105n,
+        finalized: async () => 100n,
+        verify: async () => {
+          calls++;
+          return "x";
+        },
+        sleep: async (ms) => {
+          now += ms;
+        },
+        now: () => now,
+        timeoutMs: 2_000,
+      }),
+    ).rejects.toThrow(/didn't finalize/);
+    expect(calls).toBe(0);
   });
 });
