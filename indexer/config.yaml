@@ -5,6 +5,10 @@
 name: attest8004
 description: Attest8004 trust API - ERC-8004 validations, mandates and operator reports on Monad testnet
 address_format: lowercase
+# Every row records the transaction it came from (its onchain anchor); block number and timestamp are default fields.
+field_selection:
+  transaction_fields:
+    - hash
 
 contracts:
   - name: ValidationRegistry
