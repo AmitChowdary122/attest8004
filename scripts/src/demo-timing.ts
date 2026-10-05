@@ -87,3 +87,19 @@ export function timingTable(scenes: readonly SceneTiming[]): string[] {
   const widths = header.map((_, i) => Math.max(...rows.map((r) => (r[i] ?? "").length)));
   return rows.map((r) => `  ${r.map((cell, i) => cell.padEnd(widths[i] ?? 0)).join("  ").trimEnd()}`);
 }
+
+/**
+ * Work run one task after another while something else goes on (scene 2 and 3 print each verdict while the other
+ * validator still works). A failed task skips the ones after it, and its error waits for `drain()`: it is never an
+ * unhandled rejection, which would end the process mid-take.
+ */
+export function serialQueue(): { push(task: () => Promise<void>): void; drain(): Promise<void> } {
+  let tail: Promise<void> = Promise.resolve();
+  return {
+    push(task) {
+      tail = tail.then(task);
+      tail.catch(() => {});
+    },
+    drain: () => tail,
+  };
+}

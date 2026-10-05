@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { Timeline, timingTable, waitCloseLine, waitOpenLine } from "./demo-timing.ts";
+import { Timeline, serialQueue, timingTable, waitCloseLine, waitOpenLine } from "./demo-timing.ts";
 
 /** A clock the test moves by hand. */
 function clock() {
@@ -97,5 +97,43 @@ describe("timingTable", () => {
     expect(cells(row("2"))).toEqual(["2", "1:50", "0:00", "0:02", "1:25", "0:00", "0:23"]);
     expect(cells(row("1"))).toEqual(["1", "2:10", "1:50", "0:03", "0:00", "0:00", "2:07"]);
     expect(cells(row("total"))).toEqual(["total", "4:00", "1:50", "0:05", "1:25", "0:00", "2:30"]);
+  });
+});
+
+describe("serialQueue", () => {
+  it("runs tasks one after another, in order", async () => {
+    const seen: number[] = [];
+    const queue = serialQueue();
+    queue.push(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 5));
+      seen.push(1);
+    });
+    queue.push(async () => {
+      seen.push(2);
+    });
+    await queue.drain();
+    expect(seen).toEqual([1, 2]);
+  });
+
+  it("holds a failed task's error for drain(), never as an unhandled rejection, and skips the tasks after it", async () => {
+    const unhandled: unknown[] = [];
+    const onUnhandled = (reason: unknown) => unhandled.push(reason);
+    process.on("unhandledRejection", onUnhandled);
+    try {
+      const queue = serialQueue();
+      let ranAfter = false;
+      queue.push(async () => {
+        throw new Error("print failed");
+      });
+      queue.push(async () => {
+        ranAfter = true;
+      });
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      expect(unhandled).toEqual([]);
+      await expect(queue.drain()).rejects.toThrow("print failed");
+      expect(ranAfter).toBe(false);
+    } finally {
+      process.off("unhandledRejection", onUnhandled);
+    }
   });
 });

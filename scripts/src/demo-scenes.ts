@@ -62,7 +62,7 @@ import {
 } from "./demo-chain.ts";
 import { demoMandateProblems, sceneBlockers, unexpectedOutcome } from "./demo-state.ts";
 import { elapsed, findP256Calls, mandateLines, monShort, narrateLog, palette, plainText, txLine, verdictLines } from "./demo-text.ts";
-import { waitCloseLine, waitOpenLine, type Timeline, type WaitKind } from "./demo-timing.ts";
+import { serialQueue, waitCloseLine, waitOpenLine, type Timeline, type WaitKind } from "./demo-timing.ts";
 import { GAS, READER_CONCURRENCY, counted, pollAll, revertOf, type LiveValidators } from "./live-validators.ts";
 import { checkPermissionWindow } from "./permission-window.ts";
 import { retryUntil } from "./e2e-preflight.ts";
@@ -377,7 +377,7 @@ async function answer(ctx: SceneContext, client: Attest8004Client, a: RequestedV
     out.dim(waitCloseLine(end()));
   };
 
-  let printing: Promise<void> = Promise.resolve();
+  const printing = serialQueue();
   const found: { A?: { verdict: Verdict; text: string }; B?: { verdict: Verdict; text: string } } = {};
   const show = async (side: "A" | "B", outcome: Extract<Outcome, { kind: "responded" }>) => {
     const got = await verdictOf(client, outcome);
@@ -414,14 +414,14 @@ async function answer(ctx: SceneContext, client: Attest8004Client, a: RequestedV
         if (problem !== null || outcome.kind !== "responded") throw new Error(problem ?? "unreachable");
         closeWait();
         if (job === "A") openWait("risk-v1", riskWhat, "risk-v1 working");
-        printing = printing.then(() => show(job as "A" | "B", outcome));
+        printing.push(() => show(job as "A" | "B", outcome));
       },
     );
   } finally {
     closeWait();
     ctx.take.tokens += main.stats.usage.total;
   }
-  await printing;
+  await printing.drain();
   if (!found.A || !found.B) throw new Error("a verdict was answered but not read back");
   const docA = JSON.parse(found.A.text) as { reasons?: unknown; spend?: { total?: unknown } };
   const spend = docA.spend?.total;
