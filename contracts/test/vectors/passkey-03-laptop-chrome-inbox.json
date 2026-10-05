@@ -1,0 +1,26 @@
+{
+  "schema": "attest8004.approval.v1",
+  "chainId": 10143,
+  "registry": "0x2Ee5f78149762DE630c6bFF8CD81166010D0454B",
+  "agentId": "1984",
+  "change": {
+    "kind": "setInboxKey",
+    "x25519Pub": "0x01a9c30086e8174910ef33b9fc3a5bb3a148ee09bafc428ed0c476678d76a03f"
+  },
+  "changeHash": "0x224105c77bab9a5f7d0b317d411dac8bd9d49e4ccea1734d651b75c791db91ae",
+  "nonce": "2",
+  "challenge": "0xdd32ac998ae9d21fa7ffe7b9185292319b1d787d0b1f6cd28d4f97169202cf7e",
+  "passkey": {
+    "credentialId": "0QGvcMotO-w-2c_gJbwNSA",
+    "qx": "0xa2502d7749840f70d8776fd6669ab62988d5026ef92f3c19d680e9642f40958e",
+    "qy": "0xd7988334fe141b7ef9070e078db0e6a89653f1c66f6fa0bc0857add0d0419db6"
+  },
+  "auth": {
+    "r": "0x7b0469f64b9f13081ba29ce0dfaddd56b1ec33c020f516972180c11ed9a6b981",
+    "s": "0x0f44e7c7e3805d27e5ecd3c7f54c48e48177f5bfb5acf2a104bfa9d7d5a5038d",
+    "typeIndex": 1,
+    "challengeIndex": 23,
+    "authenticatorData": "0x73edb32eef76e2327e40680c9f5362a608f5f8b49eae73c45df6af46fd904cbf1d00000000",
+    "clientDataJSON": "{\"type\":\"webauthn.get\",\"challenge\":\"3TKsmYrp0h-n_-e5GFKSMZsdeH0LH2zSjU-XFpICz34\",\"origin\":\"https://attest8004.vercel.app\",\"crossOrigin\":false,\"other_keys_can_be_added_here\":\"do not compare clientDataJSON against a template. See https://goo.gl/yabPex\"}"
+  }
+}

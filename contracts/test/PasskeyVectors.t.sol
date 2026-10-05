@@ -7,9 +7,9 @@ import {MandateRegistry} from "../src/MandateRegistry.sol";
 import {IIdentityRegistry} from "../src/interfaces/IIdentityRegistry.sol";
 
 /// @notice Approval documents (`attest8004.approval.v1`, ARCHITECTURE §6) replayed through MandateRegistry v2:
-/// the SDK-built vector (packages/sdk/test/webauthn-vector.json), which checks the TypeScript WebAuthn parsing against
-/// the Solidity verification, and the real assertions recorded in the P6 live run (test/vectors/: laptop Chrome and
-/// Chrome on Android, one synced Google Password Manager passkey). Each document is replayed at its own registry address and chain id, with the agent's
+/// the SDK-built vectors (packages/sdk/test/webauthn-vector.json and webauthn-inbox-vector.json), which check the
+/// TypeScript WebAuthn parsing against the Solidity verification, and the real assertions recorded in the P6 and P7
+/// live runs (test/vectors/: laptop Chrome and Chrome on Android, one synced Google Password Manager passkey). Each document is replayed at its own registry address and chain id, with the agent's
 /// owner mocked and its passkey set from the document, so the challenge the contract computes is the one that was
 /// signed.
 contract PasskeyVectorsTest is Test {
@@ -34,26 +34,7 @@ contract PasskeyVectorsTest is Test {
         string[] memory files = new string[](1);
         files[0] = SDK_VECTOR;
         MandateRegistry registry = _replay(files, identity);
-
-        string memory json = vm.readFile(SDK_INBOX_VECTOR);
-        uint256 agentId = vm.parseJsonUint(json, ".agentId");
-        assertEq(vm.parseJsonString(json, ".change.kind"), "setInboxKey");
-        assertEq(vm.parseJsonAddress(json, ".registry"), address(registry));
-        assertEq(registry.nonceOf(agentId), vm.parseJsonUint(json, ".nonce"));
-        bytes32 x25519Pub = vm.parseJsonBytes32(json, ".change.x25519Pub");
-        bytes32 changeHash = keccak256(abi.encode(registry.SET_INBOX_KEY(), x25519Pub));
-        assertEq(changeHash, vm.parseJsonBytes32(json, ".changeHash"), "changeHash");
-        assertEq(
-            registry.challengeFor(agentId, changeHash, registry.nonceOf(agentId)),
-            vm.parseJsonBytes32(json, ".challenge"),
-            "challenge"
-        );
-
-        vm.prank(owner);
-        registry.setInboxKey(agentId, x25519Pub, _auth(json));
-
-        assertEq(registry.inboxKeyOf(agentId), x25519Pub);
-        assertEq(registry.nonceOf(agentId), 2);
+        _setInboxKey(registry, SDK_INBOX_VECTOR);
     }
 
     function test_SdkBuiltVector_HighSFails() public {
@@ -67,29 +48,40 @@ contract PasskeyVectorsTest is Test {
         registry.setMandate(agentId, _mandate(json), auth);
     }
 
-    // ------------------------------------------------- real device vectors (P6 live run, 5 Oct 2026)
+    // ------------------------------------------------- real device vectors (P6 and P7 live runs, 5 Oct 2026)
 
     /// The real Google Password Manager passkey: created on laptop Chrome (Linux), then used from laptop Chrome
-    /// (nonce 0) and, synced, from Chrome on Android (nonce 1). Both approvals landed on the live v2 registry.
+    /// (nonce 0) and, synced, from Chrome on Android (nonce 1) to approve the mandate (P6), then from laptop Chrome
+    /// again (nonce 2) to approve the inbox key (P7). All three approvals landed on the live v2 registry.
     address internal constant LIVE_IDENTITY_REGISTRY = 0x8004A818BFB912233c491871b3d84c89A494BD9e;
     string internal constant REGISTRATION = "test/vectors/passkey-registration.json";
     string internal constant LAPTOP = "test/vectors/passkey-01-laptop-chrome.json";
     string internal constant ANDROID = "test/vectors/passkey-02-android-chrome.json";
+    string internal constant LAPTOP_INBOX = "test/vectors/passkey-03-laptop-chrome-inbox.json";
 
+    /// The two setMandate approvals, in the order they landed.
     function _realDevices() internal pure returns (string[] memory files) {
         files = new string[](2);
         files[0] = LAPTOP;
         files[1] = ANDROID;
     }
 
-    /// Each real assertion on its own: its challenge recomputes from its fields as the contract's `challengeFor`
+    /// Every real assertion, whatever its change kind, for the checks that read only the common fields.
+    function _realAssertions() internal pure returns (string[] memory files) {
+        files = new string[](3);
+        files[0] = LAPTOP;
+        files[1] = ANDROID;
+        files[2] = LAPTOP_INBOX;
+    }
+
+    /// Each real assertion on its own (both mandates and the inbox key): its challenge recomputes from its fields as the contract's `challengeFor`
     /// does, its authenticator data starts with the rpIdHash, and OpenZeppelin's `WebAuthn.verify` (UV required)
     /// accepts it against the registered key, which both devices share.
     function test_RealDeviceVectors_LibraryLevel() public view {
         string memory registration = vm.readFile(REGISTRATION);
         bytes32 qx = vm.parseJsonBytes32(registration, ".qx");
         bytes32 qy = vm.parseJsonBytes32(registration, ".qy");
-        string[] memory files = _realDevices();
+        string[] memory files = _realAssertions();
         for (uint256 i; i < files.length; ++i) {
             string memory json = vm.readFile(files[i]);
             assertEq(vm.parseJsonBytes32(json, ".passkey.qx"), qx, "the registered key");
@@ -123,13 +115,22 @@ contract PasskeyVectorsTest is Test {
         _replay(_realDevices(), LIVE_IDENTITY_REGISTRY);
     }
 
+    /// The P7 live run's inbox key approval, after both mandates: the real assertion sets the key the validators
+    /// encrypted the e2e's six operator reports to, and the nonce ends at 3, as on the live registry.
+    function test_RealDeviceInboxVector_SetsInboxKeyThroughTheContract() public {
+        MandateRegistry registry = _replay(_realDevices(), LIVE_IDENTITY_REGISTRY);
+        _setInboxKey(registry, LAPTOP_INBOX);
+        assertEq(registry.inboxKeyOf(1984), 0x01a9c30086e8174910ef33b9fc3a5bb3a148ee09bafc428ed0c476678d76a03f);
+        assertEq(registry.nonceOf(1984), 3);
+    }
+
     /// The same signatures with `s` flipped to `n − s` (equally valid ECDSA) are rejected: OpenZeppelin's P256
-    /// accepts low-s only, so neither real assertion has a second valid form.
+    /// accepts low-s only, so no real assertion has a second valid form.
     function test_RealDeviceVectors_HighSFails() public {
         string memory registration = vm.readFile(REGISTRATION);
         bytes32 qx = vm.parseJsonBytes32(registration, ".qx");
         bytes32 qy = vm.parseJsonBytes32(registration, ".qy");
-        string[] memory files = _realDevices();
+        string[] memory files = _realAssertions();
         for (uint256 i; i < files.length; ++i) {
             string memory json = vm.readFile(files[i]);
             WebAuthn.WebAuthnAuth memory auth = _auth(json);
@@ -179,6 +180,29 @@ contract PasskeyVectorsTest is Test {
             assertEq(storedHash, registry.mandateHashOf(mandate));
         }
         assertEq(registry.nonceOf(agentId), files.length);
+    }
+
+    /// @dev Submits the setInboxKey approval in `file` to `registry`: its change hash and challenge must be the ones
+    /// the contract computes at the registry's current nonce, and the key must be stored with the nonce one higher.
+    function _setInboxKey(MandateRegistry registry, string memory file) internal {
+        string memory json = vm.readFile(file);
+        uint256 agentId = vm.parseJsonUint(json, ".agentId");
+        assertEq(vm.parseJsonString(json, ".change.kind"), "setInboxKey");
+        assertEq(vm.parseJsonAddress(json, ".registry"), address(registry));
+        uint256 nonce = registry.nonceOf(agentId);
+        assertEq(nonce, vm.parseJsonUint(json, ".nonce"), "nonce at submission");
+        bytes32 x25519Pub = vm.parseJsonBytes32(json, ".change.x25519Pub");
+        bytes32 changeHash = keccak256(abi.encode(registry.SET_INBOX_KEY(), x25519Pub));
+        assertEq(changeHash, vm.parseJsonBytes32(json, ".changeHash"), "changeHash");
+        assertEq(
+            registry.challengeFor(agentId, changeHash, nonce), vm.parseJsonBytes32(json, ".challenge"), "challenge"
+        );
+
+        vm.prank(owner);
+        registry.setInboxKey(agentId, x25519Pub, _auth(json));
+
+        assertEq(registry.inboxKeyOf(agentId), x25519Pub);
+        assertEq(registry.nonceOf(agentId), nonce + 1);
     }
 
     function _setUp(string memory json, address identityRegistry)

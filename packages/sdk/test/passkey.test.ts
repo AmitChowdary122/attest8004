@@ -284,7 +284,7 @@ describe("mandateRuleProblems", () => {
   });
 });
 
-describe("the real device vectors (P6 live run: one synced GPM passkey, laptop Chrome then Android Chrome)", () => {
+describe("the real device vectors (P6 and P7 live runs: one synced GPM passkey, laptop Chrome, Android Chrome, laptop Chrome)", () => {
   const vectorsDir = new URL("../../../contracts/test/vectors/", import.meta.url);
   const read = (name: string): unknown => JSON.parse(readFileSync(new URL(name, vectorsDir), "utf8"));
 
@@ -292,14 +292,16 @@ describe("the real device vectors (P6 live run: one synced GPM passkey, laptop C
     expect(registrationProblems(registrationSchema.parse(read("passkey-registration.json")))).toEqual([]);
   });
 
-  it("both approvals are consistent and their assertions verify against the registered key", async () => {
+  it("all three approvals are consistent and their assertions verify against the registered key", async () => {
     const registration = registrationSchema.parse(read("passkey-registration.json"));
-    for (const [name, nonce] of [
-      ["passkey-01-laptop-chrome.json", "0"],
-      ["passkey-02-android-chrome.json", "1"],
+    for (const [name, nonce, kind] of [
+      ["passkey-01-laptop-chrome.json", "0", "setMandate"],
+      ["passkey-02-android-chrome.json", "1", "setMandate"],
+      ["passkey-03-laptop-chrome-inbox.json", "2", "setInboxKey"],
     ] as const) {
       const approval = approvalSchema.parse(read(name));
       expect(approval.nonce, name).toBe(nonce);
+      expect(approval.change.kind, name).toBe(kind);
       expect([approval.passkey.qx, approval.passkey.qy, approval.passkey.credentialId], name).toEqual([registration.qx, registration.qy, registration.credentialId]);
       await expect(approvalSelfProblems(approval), name).resolves.toEqual([]);
     }
