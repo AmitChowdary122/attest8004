@@ -12,9 +12,9 @@ import {FindingsBoard} from "../src/FindingsBoard.sol";
 contract DeployFindingsBoard is Script {
     // CREATE2_FACTORY (0x4e59b448…956C) is inherited from forge-std's CommonBase.
     bytes32 public constant SALT = keccak256("attest8004.FindingsBoard.v1");
-    /// Literal gas limit for the deploy transaction. Provisional until the dry run's
-    /// eth_estimateGas sets it (× 1.2, rounded up to 10k).
-    uint256 public constant DEPLOY_GAS = 200_000;
+    /// Literal gas limit for the deploy transaction. Monad testnet eth_estimateGas for this
+    /// call on 5 Oct 2026 was 154,319; the limit is that x 1.2, rounded up to 10k.
+    uint256 public constant DEPLOY_GAS = 190_000;
 
     error UnsupportedChain(uint256 chainId);
     error DeployFailed(address predicted);
