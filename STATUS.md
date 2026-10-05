@@ -4,6 +4,182 @@ Running log, updated at the end of every session (CLAUDE.md, rule 10). Newest se
 
 ---
 
+## Tue 6 Oct 2026 · P11 Chainlink CRE: validator C, a DON-orchestrated `mandate-v1` verdict (simulation, live on testnet)
+
+### Done
+- **Versions:** CRE CLI **v1.37.0** (`~/.cre/bin/cre`, logged in), `@chainlink/cre-sdk` **1.23.0** (TypeScript; the Go SDK
+  v1.21.0 wasn't used), Bun **1.3.14** (pinned in `cre/mise.toml`), Javy plugin 1.7.0 (bundled by the SDK).
+- **Research and spike** (`../plans/2026-10-05-p11-cre.md` §1; spike copy in `../plans/p11-spike/`):
+  - **The spike:** a log trigger fired on a real monad-testnet request, and the workflow reached 127.0.0.1 with no
+    flag or tunnel.
+  - **CRE's limits:**
+    - the HTTP cap is **10 s**, and a `mandate-v1` run takes ~13.4 s, hence the long-poll;
+    - consensus 25 kB, report 50 kB, log 5 kB (a request log is 608 B).
+  - **CRE's runtime:** QuickJS **lacks `atob`/`btoa`**, so the workflow polyfills them.
+  - **CRE's simulator:**
+    - report metadata is placeholder (owner `0xaa…`, ID `0x11…`, the name real);
+    - a dry-run write reports SUCCESS;
+    - both forwarders swallow receiver reverts;
+    - Monad's mock forwarder has a public `route()`;
+    - the CLI takes `CRE_ETH_PRIVATE_KEY` from its environment.
+- **Validator C on chain:** `CreValidator` (IReceiver + ERC-165, forwarder-only, owner + name metadata check,
+  write-once, tag `mandate-v1`) at **`0x6D12F00870cB6edA2d8e389696f6B5d050423B95`**.
+  - **The deploy:** tx `0x6be1fd19…7fd02a`, block 68,502,019, limit 710,000 against an estimate of 584,252, with CRE's
+    MockKeystoneForwarder `0xB9F7…D192`.
+  - **Tests:** 17 unit and fuzz tests, 6 deploy tests, and 6 fork tests against the live mock (delivery, swallowed
+    revert, open `route()`, the live vault excludes C, the live wiring).
+- **`POST /evaluate`** (`validators/mandate/src/evaluate*.ts`): read-only on 127.0.0.1:8787, run with
+  `pnpm --filter @attest8004/validator-mandate evaluate`.
+  - **The core,** `evaluateAtPin`, runs verify's `requestAt`, `runMandateV1` and `buildEvidence` unchanged. A C answer
+    re-verifies to a match, and a forged one is a MISMATCH.
+  - **The long-poll:** one memoized job per (requestHash, pin), a 6 s hold, the finality wait.
+  - **Input:** strict, a 1,024-byte body limit, 400/413/415/405/404, 503 for a failed read.
+  - **No keys:** it reads none (tested), and a source scan pins that it signs nothing.
+  - **Refactors, no behavior change:** gate parsing and decline texts move to `gates.ts`, `startupChecks` to
+    `startup.ts`, verify's fakes to `test/helpers/fake-chain.ts`.
+- **The workflow** (`cre/validator-c/`, a Bun project outside the pnpm workspace):
+  1. a log trigger on `ValidationRequest` naming C, at `CONFIDENCE_LEVEL_FINALIZED`;
+  2. the request JSON authenticated with the repo SDK's `requestHash`;
+  3. the pin set to the request's block, and its own reads: header(P) = the log's block, the request at P, finality at
+     P+5, unanswered, the deadline window;
+  4. `/evaluate` long-polled through identical aggregation;
+  5. the evidence cross-checked (block, request fields, canonical bytes, hash), with `responseURI` and `responseHash`
+     computed in the workflow;
+  6. the report, the gas from `max(onReport estimate + 60,000, 49,000 + 40 × raw bytes) × 1.2` (cap 1,130,000), the
+     write, and a landing check.
+
+  **Tests:** 61 Bun tests on the real request log and A's real evidence, and the handler against the SDK's mocks. CI's
+  new `cre` job runs the tests, the typecheck and the WASM build.
+- **`pnpm cre:demo`** (`scripts/src/cre-demo*.ts`):
+  - **The preflight:**
+    - C's wiring, and that **the live vault excludes C**;
+    - the mandate and its permission window, and C's spend;
+    - both balances and the takes left;
+    - the CLI and Bun versions, and the port.
+  - **Each scene:** the request, finality, the exact simulate command, the streamed workflow log, the landing check
+    (`ReportProcessed` + status), verify once final, and the explorer links.
+  - **An already-answered request** prints verify's result instead of simulating.
+  - **Keys:** the CLI's environment holds only PATH, HOME and `CRE_ETH_PRIVATE_KEY`.
+- **First live take** (6 Oct; `docs/deployments.md` P11 section; `../plans/p11-cre-demo-live.log`):
+  - **benign:** request `0xc3ffd9e6…`, report `0x66d47022…`, C scored **100**, verify match;
+  - **violating:** request `0x0575b052…`, report `0xcbf28a6d…`, C scored **0** (`TARGET_NOT_ALLOWED`), verify match;
+  - about 36 s a scene;
+  - the hosted indexer has both rows.
+- **Gas, measured:**
+  - **The probe:** read-only `eth_estimateGas` found 40 gas per byte, Monad's calldata floor over the whole tx, so the
+    limit is a `max()`, not a sum.
+  - **The trace:** the first live report used ~201k of its 236,051 limit, so `routing` went from 50,000 to 60,000.
+  - **Receipts can't show it:** Monad's receipts and the trace's top frame report the whole limit.
+- **The CLI's RPC client now goes through `rateLimitedFetch`.** `pnpm attest8004 verify <C's hash>` hit -32011: a
+  recent re-run reads the agent's whole history. Fixed, with a test that failed first.
+- **The label everywhere:** "CRE workflow (simulation forwarder, not a trust root)" (`CRE_VALIDATOR_LABEL`) in `verify`'s
+  text, `/dashboard` (verdict rows and the contracts list), the demo and the docs.
+- **Docs:**
+  - `docs/cre.md` doubles as the bounty answer: the flow, why a deterministic validator fits CRE, the pin and
+    long-poll, the cross-checks, `CreValidator`, the trust model, the limits, how to run it, the live runs, the
+    production path and a 2-minute video script.
+  - The two points you added are stated in docs/cre.md §3 and §7 and in ARCHITECTURE §9:
+    - **A1:** identical aggregation agrees on what `/evaluate` answered; it does not compute the score;
+    - **A2:** write-once griefing on the mock.
+  - README (new section, deployments row, limitations, credits for `@chainlink/cre-sdk`, the CLI, Bun and the copied
+    `IReceiver`).
+  - ARCHITECTURE: the status header, §3, the new §5.8 orchestration flow, §6 formats, §7 trust row, §8 key row, §9,
+    §12 production path, §13.
+  - SPEC §4.11 "as built", `docs/README.md`, `cre/README.md` and `.env.example` (`CRE_*`).
+- **The whole-branch review** (Opus): "with fixes", Critical 0, Important 1, Minor 6, nits 4. Re-graded by effect, and
+  five went into one fix pass, each behind a check that failed first:
+  1. **What `verify` shows for a forged C verdict** (Important). It is a MISMATCH, *or* "could not verify" for an
+     undecodable URI, *or* a match at a later pin, which isn't C's: C pins the request's block. The demo now says
+     "C's own verdict" only for a match at the request's block. `/evaluate` can lie about any computed field, not only
+     the score.
+  2. **The finality wording.** The workflow reads at P before requiring finality, and a DON doesn't re-run a failed
+     execution; §11 now has the service-wait path.
+  3. **The demo now waits for the report's block to finalize before `verify`**, which removed a recording flake.
+  4. **On-chain `getSummary` counts C's verdicts with A's:** a consumer should pass the validators it trusts.
+  5. **Key-custody wording:** `/evaluate` reads no key and has no signer, though its process loads `.env`. The
+     broadcast key has no more power over C than anyone.
+- **Checks on the final tree:** all clean.
+  - **forge:** `fmt --check`, the build, 245 unit tests, 33 fork tests;
+  - **vectors:** `vectors.sh`, `passkey-vectors.sh`, `make-inbox-vectors.ts --check`;
+  - **TypeScript:** `pnpm typecheck`; `pnpm test`, 1,596 tests;
+  - **the web build;**
+  - **cre:** `bun test` 61, typecheck, WASM compile;
+  - **gitleaks** over the full history.
+- **MON spent:**
+  - deployer: 0.0731 (the deploy);
+  - CRE key: 0.0493 (two reports);
+  - hot key: 0.0643 (two requests);
+  - the spike's throwaway key: 0.
+
+### Next
+- **Record the 2-minute video** from `pnpm cre:demo` (script in docs/cre.md §12). Check `/dashboard` shows C's two
+  rows with the label after Vercel redeploys. The preflight showed 6 takes left on the CRE key and 128 requests on the
+  hot key.
+- **Ask Chainlink (Darb)** whether `cre workflow simulate --broadcast` on Monad testnet is enough for the bounty
+  (GAMEPLAN); tick CRE on the submission form.
+- **P12, the auditor self-review:** add ARCHITECTURE §9's P11 items to the threat model:
+  - C on the mock forwarder;
+  - write-once griefing;
+  - the consensus scope;
+  - getSummary mixing;
+  - C's spend at the request's block.
+- **The production path** (roadmap, docs/cre.md §11): a new C with the KeystoneForwarder and the real owner and name,
+  a DON deployment, `/evaluate` at a public HTTPS URL, and a service-side finality wait.
+- **Deferred minors** (from the review; none changes a claim's substance):
+  - **`gas.max` near the evidence cap.** 1,130,000 was sized from the outer floor only. Evidence of ~16.0–16.4 kB would
+    get `GAS_OVER_CAP` (a decline, no fee), and floor-bound reports overpay ~38k. A fork estimate at the cap would fix
+    it.
+  - **The workflow's `NOT_FINAL` throw:** production should rely on the service's wait.
+  - **The landing read-back** can't tell its own write from an identical earlier verdict, and `estimateInner` maps any
+    error to `ESTIMATE_REVERTED`. Decode `ReportProcessed` from the write's receipt instead.
+  - **`cre-demo.ts`'s `JSON.parse`** in the stream handler can throw uncaught on a malformed line.
+  - **`request.ts`'s `status === null` branch** can't be reached.
+  - **On a `NOT_LANDED` throw** the demo prints "simulation failed" plus the raw tail, rather than "✗ not landed".
+  - **The forge-lint `unused-return` warning** at `CreValidator.sol:72` can't be silenced without changing the deployed
+    contract's CREATE2 address.
+- **Out of scope, flagged as a separate task:** literal U+202E bidi characters in `scripts/src/demo-text.test.ts` (P9).
+
+### Blockers or decisions needed
+- **None blocking.**
+- **Your decisions, applied:**
+  - D2: the pin is the request's block; C's spend limitation is documented;
+  - D5: the owner + name check; the workflow-ID pin stays on the roadmap;
+  - D6: write-once with the constant tag;
+  - A1 and A2: the two additions above.
+- **Rulings I made during P11:**
+1. Work on `main` without a worktree, as in P9 and P10. **Cost if wrong:** commits would need moving to a branch.
+2. The agent lookup's per-tag summary counts C under `mandate-v1`. The hosted indexer stays unchanged; the docs say so,
+   and every row is labelled. **Cost if wrong:** a dashboard reader misreads agent 1984's average.
+3. The workflow's (gate, agent) check is its own pre-filter, not `gates.ts`, which Bun can't resolve inside CRE's build.
+   The service enforces A's exact allowlist. **Cost if wrong:** decline texts differ.
+4. `EVIDENCE_SCHEMA_V1` is mirrored in `cre/validator-c/src/mirrored.ts` (the SDK's `validator.ts` uses `setTimeout`,
+   which CRE refuses), pinned by `scripts/src/cre-config.test.ts`. **Cost if wrong:** none while CI runs.
+5. The gas limit is `max(inner + routing, floor) × 1.2`, not the plan's sum: Monad's calldata floor covers the whole tx
+   and the inner estimate already includes intrinsic and calldata gas. **Cost if wrong:** an under-gassed write ends
+   `NOT_LANDED` (no verdict), or it overpays.
+6. `routing` is 60,000, from the first live report's trace. `gas.max` is 1,130,000, to cover the 16,384-byte cap's
+   floor (see the deferred minor). **Cost if wrong:** ~12k gas more per report.
+7. The plan's "receipt ≥ 70 % of the limit" check is replaced by the trace's inner frames: Monad reports the whole
+   limit. **Cost if wrong:** none.
+8. `evaluate-service.ts` and `startup.ts` were added outside the plan's file list, so the demo and the service share
+   one composition. **Cost if wrong:** none.
+9. An oversized `/evaluate` body is drained to 64 KiB, then dropped. **Cost if wrong:** a local client sending more gets
+   a reset, not 413.
+10. `cre:demo` reads its own preflight state (`readDemoState` needs validator and LLM keys it never uses). **Cost if
+    wrong:** none.
+11. Fixed the CLI's RPC client (`rateLimitedFetch`) inside P11, outside this phase's files, because the plan's live
+    `verify` step failed on -32011. **Cost if wrong:** none.
+12. `verify --json` has no label field for C (it's machine output). **Cost if wrong:** a JSON consumer must compare
+    the validator with `DEPLOYMENTS`.
+13. `docs/README.md`'s stale "planned (P11)" rows are left as they are (P11 is now CRE). **Cost if wrong:** stale labels.
+14. `CreValidator.sol` isn't edited after its deploy, not even the NatSpec line overstating MISMATCH or a lint comment:
+    any source change moves the CREATE2 address. **Cost if wrong:** the deployed source keeps one overstated line;
+    the docs carry the correction.
+15. The review's findings were re-graded by effect (#3 docs, #4, #6, #7 raised to Important), and the reviewer's
+    "declined to judge" lines were ruled one by one in the ledger.
+
+---
+
 ## Mon 5 Oct 2026 · P10 AgentPassport: our vault as an escrow's verifier, proven on a fork (no live run; CRE moves to P11, the auditor self-review to P12)
 
 ### Done
