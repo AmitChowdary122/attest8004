@@ -17,6 +17,7 @@ import { BaseError, keccak256, zeroHash, type Address, type Hex } from "viem";
 import type { PreimageCache } from "./collect.ts";
 import { MANDATE_V1 } from "./params.ts";
 import { firstMandateRegistryBlock, mandateAddressesAt, type MandateContracts, type MandateReader } from "./reader.ts";
+import { servedGateDecline, servedGateMap } from "./gates.ts";
 import { mandateReport } from "./report.ts";
 import { mandateRequestOf, runMandateV1 } from "./run.ts";
 import type { PinnedBlock } from "./types.ts";
@@ -156,14 +157,7 @@ export class MandateValidator extends ValidatorBase {
     this.reader = reader;
     this.contracts = contracts;
     this.firstRegistryBlock = firstMandateRegistryBlock(contracts);
-    const served = new Map<string, Set<bigint>>();
-    for (const { gate, agentId } of gates) {
-      const key = gate.toLowerCase();
-      const agents = served.get(key) ?? new Set<bigint>();
-      agents.add(agentId);
-      served.set(key, agents);
-    }
-    this.gates = served;
+    this.gates = servedGateMap(gates);
     this.admission = admission;
     this.cache = cache ?? new Map();
     this.pinTimeoutMs = pinTimeoutMs ?? DEFAULT_PIN_TIMEOUT_MS;
@@ -185,15 +179,8 @@ export class MandateValidator extends ValidatorBase {
 
   protected override async accepts(request: VerifiedRequest): Promise<boolean | { decline: string }> {
     const agentId = request.action.agentId;
-    const agents = this.gates.get(request.gate.toLowerCase());
-    if (agents === undefined) {
-      return { decline: `GATE_NOT_SERVED: agent ${agentId} requested through gate ${request.gate}, which this validator doesn't serve` };
-    }
-    if (!agents.has(agentId)) {
-      const listed = [...agents].sort((a, b) => (a < b ? -1 : a > b ? 1 : 0));
-      const served = listed.length === 1 ? `agent ${listed[0]}` : `agents ${listed.join(", ")}`;
-      return { decline: `GATE_NOT_FOR_AGENT: gate ${request.gate} serves ${served}, not ${agentId}` };
-    }
+    const notServed = servedGateDecline(this.gates, request.gate, agentId);
+    if (notServed !== null) return { decline: notServed };
     // Whether to answer at all, not the verdict: read at the finalized head, not at P.
     const head = await this.reader.finalized();
     // A lagging RPC node may not have the request's block yet, nor a mandate set just before it. Those

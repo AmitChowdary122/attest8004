@@ -14,3 +14,5 @@ export * from "./report.ts";
 export * from "./run.ts";
 export * from "./validator.ts";
 export * from "./verify.ts";
+export * from "./gates.ts";
+export * from "./evaluate.ts";
