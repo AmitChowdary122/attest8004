@@ -16,3 +16,8 @@ export * from "./validator.ts";
 export * from "./verify.ts";
 export * from "./gates.ts";
 export * from "./evaluate.ts";
+export * from "./evaluate-jobs.ts";
+export * from "./evaluate-http.ts";
+export * from "./evaluate-config.ts";
+export * from "./evaluate-service.ts";
+export * from "./startup.ts";

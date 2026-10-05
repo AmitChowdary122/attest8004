@@ -13,7 +13,8 @@
   "scripts": {
     "start": "node --conditions=@attest8004/source --env-file=../../.env src/main.ts",
     "typecheck": "tsc --noEmit",
-    "test": "vitest run"
+    "test": "vitest run",
+    "evaluate": "node --conditions=@attest8004/source --env-file-if-exists=../../.env src/evaluate-main.ts"
   },
   "dependencies": {
     "@attest8004/sdk": "workspace:*",

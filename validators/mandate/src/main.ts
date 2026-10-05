@@ -4,13 +4,10 @@
 // knowing this key's last response. Logs are JSON lines; the key and the RPC URL are never logged.
 import {
   Admission,
-  currentMandateRegistry,
   DEPLOYMENTS,
   jsonLineLog,
-  mandateRegistryAbi,
   OPERATOR_REPORT_GAS_CAP,
   rateLimitedFetch,
-  validationRegistryAbi,
   viemInboxPort,
   viemValidatorChain,
 } from "@attest8004/sdk";
@@ -18,12 +15,13 @@ import { FileCursorStore } from "@attest8004/sdk/node";
 import { mkdir } from "node:fs/promises";
 import { dirname } from "node:path";
 import { fileURLToPath } from "node:url";
-import { BaseError, createPublicClient, createWalletClient, getAddress, http, type PublicClient } from "viem";
+import { BaseError, createPublicClient, createWalletClient, http, type PublicClient } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
 import { monadTestnet } from "viem/chains";
 import { parseServiceConfig } from "./config.ts";
 import { MANDATE_V1 } from "./params.ts";
-import { mandateContractsFor, viemMandateReader, type MandateContracts } from "./reader.ts";
+import { mandateContractsFor, viemMandateReader } from "./reader.ts";
+import { startupChecks } from "./startup.ts";
 import { MandateValidator } from "./validator.ts";
 
 const REPO_ROOT = fileURLToPath(new URL("../../../", import.meta.url));
@@ -66,7 +64,14 @@ async function main(): Promise<void> {
   if (inbox === null) log("info", "operator reports off: no FindingsBoard recorded");
   else log("info", "operator reports on", { findingsBoard: inbox.findingsBoard, maxReportGas: OPERATOR_REPORT_GAS_CAP });
 
-  await startupChecks(publicClient, chain.id, contracts);
+  const checked = await startupChecks(publicClient, chain.id, contracts);
+  log("info", "startup checks passed", {
+    chainId: chain.id,
+    identityRegistry: checked.identityRegistry,
+    validationRegistry: contracts.validationRegistry,
+    mandateRegistry: checked.mandateRegistry,
+    forwarder: contracts.forwarder,
+  });
   await mkdir(dirname(config.cursorPath), { recursive: true });
 
   const validator = new MandateValidator({
@@ -100,37 +105,6 @@ async function main(): Promise<void> {
   }
   await validator.run(stop.signal);
   log("info", "stopped");
-}
-
-/**
- * Refuses to start unless the RPC is on the expected chain and the contracts agree on one Identity
- * Registry, the one the reader uses for owners and permission events. The MandateRegistry checked is
- * the current one (the history's last): the one new mandates are set on.
- */
-async function startupChecks(publicClient: PublicClient, chainId: number, contracts: MandateContracts): Promise<void> {
-  const rpcChainId = await publicClient.getChainId();
-  if (rpcChainId !== chainId) throw new Error(`the RPC is on chain ${rpcChainId}, expected ${chainId}`);
-  const mandateRegistry = currentMandateRegistry(contracts).address;
-  const [fromMandateRegistry, fromValidationRegistry] = await Promise.all([
-    publicClient.readContract({ address: mandateRegistry, abi: mandateRegistryAbi, functionName: "identityRegistry" }),
-    publicClient.readContract({ address: contracts.validationRegistry, abi: validationRegistryAbi, functionName: "getIdentityRegistry" }),
-  ]);
-  const expected = getAddress(contracts.identityRegistry);
-  if (getAddress(fromMandateRegistry) !== getAddress(fromValidationRegistry)) {
-    throw new Error(
-      `MandateRegistry.identityRegistry() is ${fromMandateRegistry}, but ValidationRegistry.getIdentityRegistry() is ${fromValidationRegistry}`,
-    );
-  }
-  if (getAddress(fromValidationRegistry) !== expected) {
-    throw new Error(`the registries use Identity Registry ${fromValidationRegistry}, but the deployment records ${expected}`);
-  }
-  log("info", "startup checks passed", {
-    chainId: rpcChainId,
-    identityRegistry: expected,
-    validationRegistry: contracts.validationRegistry,
-    mandateRegistry,
-    forwarder: contracts.forwarder,
-  });
 }
 
 main().catch((error: unknown) => {
