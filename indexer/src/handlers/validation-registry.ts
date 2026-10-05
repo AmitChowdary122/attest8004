@@ -11,7 +11,7 @@ indexer.onEvent({ contract: "ValidationRegistry", event: "ValidationRequest" }, 
   const agentId = event.params.agentId.toString();
   const validator = event.params.validatorAddress.toLowerCase();
   // The registry refuses a second request with the same hash (RequestExists), so this row is written once.
-  const decoded = decodeRequest(event.params.requestURI, id, event.chainId);
+  const decoded = decodeRequest(event.params.requestURI, id, event.chainId, { validator, agentId: event.params.agentId });
   const verified = decoded.status === "VERIFIED" ? decoded : null;
   context.ValidationRequest.set({
     id,

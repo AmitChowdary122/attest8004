@@ -59,6 +59,9 @@ export async function bumpSummary(context: Context, agentId: string, block: bigi
   context.AgentTrustSummary.set(next as AgentTrustSummary);
 }
 
+/** The most tags a validator's row lists: anyone can answer their own requests with new tags, so the list is capped. */
+export const MAX_VALIDATOR_TAGS = 16;
+
 export function newValidator(id: string, block: bigint): Validator {
   return {
     id,
@@ -115,7 +118,7 @@ export function applyToValidator(v: Validator, previous: Verdict | null, next: V
     latencyBlocksSum,
     latencyCount,
     avgLatencyBlocks: latencyCount > 0 ? Number(latencyBlocksSum) / latencyCount : undefined,
-    tags: v.tags.includes(next.tag) ? v.tags : [...v.tags, next.tag],
+    tags: v.tags.includes(next.tag) || v.tags.length >= MAX_VALIDATOR_TAGS ? v.tags : [...v.tags, next.tag],
     lastActivityBlock: block,
   };
 }

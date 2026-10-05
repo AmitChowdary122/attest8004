@@ -1,4 +1,17 @@
-import { encodeAbiParameters, encodeEventTopics, getAddress, keccak256, toHex, zeroAddress, type Address, type Hex, type PublicClient } from "viem";
+import {
+  ContractFunctionExecutionError,
+  ContractFunctionRevertedError,
+  encodeAbiParameters,
+  encodeErrorResult,
+  encodeEventTopics,
+  getAddress,
+  keccak256,
+  toHex,
+  zeroAddress,
+  type Address,
+  type Hex,
+  type PublicClient,
+} from "viem";
 import { describe, expect, it } from "vitest";
 import {
   DEPLOYMENTS,
@@ -12,6 +25,7 @@ import {
   getIndexedVerdicts,
   getTrustOverview,
   postMatchesReceipt,
+  validationRegistryAbi,
   type IndexedReport,
   type IndexedVerdict,
 } from "../src/index.ts";
@@ -407,6 +421,111 @@ describe("getIndexedVerdicts", () => {
     const { fetchImpl, calls } = fakeFetch(() => json({}));
     await expect(getIndexedVerdicts({ url: URL_, fetchImpl, limit: 201 })).rejects.toThrow(RangeError);
     await expect(getIndexedVerdicts({ url: URL_, fetchImpl, offset: -1 })).rejects.toThrow(RangeError);
+    expect(calls).toHaveLength(0);
+  });
+});
+
+// ---------- the review's fixes ----------
+
+/** The revert viem raises when getValidationStatus meets a hash the registry never saw. */
+function unknownRequestError(requestHash: Hex): Error {
+  const data = encodeErrorResult({ abi: validationRegistryAbi, errorName: "UnknownRequest", args: [requestHash] });
+  const reverted = new ContractFunctionRevertedError({ abi: validationRegistryAbi, data, functionName: "getValidationStatus" });
+  return new ContractFunctionExecutionError(reverted, { abi: validationRegistryAbi, functionName: "getValidationStatus", args: [requestHash], contractAddress: getAddress(testnet.validationRegistry) });
+}
+
+describe("re-checks of a made-up hash (review I2)", () => {
+  const forged = { requestHash: hash("forged"), agentId: 1984n, validator: getAddress(A), score: 100, responseHash: hash("ev"), tag: "mandate-v1", responses: 1 } as unknown as IndexedVerdict;
+
+  it("confirmIndexedVerdict says NOT_FOUND when the registry reverts UnknownRequest", async () => {
+    const publicClient = { readContract: async () => Promise.reject(unknownRequestError(hash("forged"))) } as unknown as PublicClient;
+    expect(await confirmIndexedVerdict({ publicClient, deployment: testnet, verdict: forged })).toEqual({ ok: false, problems: ["NOT_FOUND"] });
+    const raw = { readContract: async () => Promise.reject(Object.assign(new Error("execution reverted"), { code: 3, data: encodeErrorResult({ abi: validationRegistryAbi, errorName: "UnknownRequest", args: [hash("forged")] }) })) } as unknown as PublicClient;
+    expect(await confirmIndexedVerdict({ publicClient: raw, deployment: testnet, verdict: forged })).toEqual({ ok: false, problems: ["NOT_FOUND"] });
+  });
+
+  it("confirmIndexedReport says UNTRUSTED for a post on a hash the registry never saw", async () => {
+    const report = { requestHash: hash("forged"), agentId: 1984n, validator: getAddress(A), envelope: "0x01" as Hex, blockNumber: 1n, txHash: hash("t"), logIndex: 0, trusted: true, trustProblem: null } satisfies IndexedReport;
+    const publicClient = { readContract: async () => Promise.reject(unknownRequestError(hash("forged"))) } as unknown as PublicClient;
+    expect(await confirmIndexedReport({ publicClient, deployment: testnet, report })).toEqual({ ok: false, problems: ["UNTRUSTED"] });
+  });
+
+  it("still throws on an RPC failure, which isn't an answer", async () => {
+    const publicClient = { readContract: async () => Promise.reject(new Error("fetch failed")) } as unknown as PublicClient;
+    await expect(confirmIndexedVerdict({ publicClient, deployment: testnet, verdict: forged })).rejects.toThrow("fetch failed");
+  });
+});
+
+describe("chain-controlled text can't take a whole answer down (review I1)", () => {
+  it("accepts any number of tags and any tag length, showing 16 short printable ones", async () => {
+    const many = Array.from({ length: 65 }, (_, i) => `tag-${i}`);
+    const { fetchImpl } = fakeFetch(() =>
+      json({
+        data: {
+          mandateV1: [verdictRow({ tag: "x".repeat(200_000) })],
+          riskV1: [],
+          pending: [],
+          Validator: [
+            {
+              id: "0x00000000000000000000000000000000000057a1",
+              requests: 65,
+              answered: 1,
+              responseEvents: 65,
+              scoreSum: "0",
+              avgScore: "0",
+              score0: 1,
+              score1to39: 0,
+              score40to79: 0,
+              score80to99: 0,
+              score100: 0,
+              latencyBlocksSum: "1",
+              latencyCount: 1,
+              avgLatencyBlocks: "1",
+              tags: [...many, "y".repeat(200_000)],
+              firstSeenBlock: "1",
+              lastActivityBlock: "2",
+            },
+          ],
+          AgentTrustSummary: [],
+          _meta: meta(),
+        },
+      }),
+    );
+    const o = await getTrustOverview({ url: URL_, fetchImpl });
+    expect(o.validators[0]?.tags).toEqual(many.slice(0, 16));
+    expect(o.validators[0]?.tagCount).toBe(66);
+    expect(o.verdicts[0]?.tag?.length).toBe(65);
+  });
+});
+
+describe("findIndexedReports by request and validator (review I3)", () => {
+  it("asks only for each request's own validator's posts", async () => {
+    const { fetchImpl, calls } = fakeFetch(() => json({ data: { FindingsPost: [], _meta: meta() } }));
+    const r = await findIndexedReports({ url: URL_, fetchImpl, agentId: 1984n, requests: [{ requestHash: hash("one"), validator: getAddress(A) }, { requestHash: hash("two"), validator: getAddress(B_) }] });
+    expect(r.truncated).toBe(false);
+    expect(calls[0]?.body.variables).toEqual({
+      where: {
+        agentId: { _eq: "1984" },
+        _or: [
+          { requestHash: { _eq: hash("one") }, validator: { _eq: A } },
+          { requestHash: { _eq: hash("two") }, validator: { _eq: B_ } },
+        ],
+      },
+      limit: 200,
+    });
+  });
+
+  it("says when an answer hit the limit and may be incomplete", async () => {
+    const row = { requestHash: hash("one"), agentId: "1984", validator: A, envelope: "0x01", block: "5", tx: hash("t"), logIndex: 0, trusted: true, trustProblem: null };
+    const { fetchImpl } = fakeFetch(() => json({ data: { FindingsPost: [row, row], _meta: meta() } }));
+    expect((await findIndexedReports({ url: URL_, fetchImpl, agentId: 1984n, limit: 2 })).truncated).toBe(true);
+    expect((await findIndexedReports({ url: URL_, fetchImpl, agentId: 1984n, limit: 3 })).truncated).toBe(false);
+  });
+
+  it("refuses more than 50 requests before any fetch", async () => {
+    const { fetchImpl, calls } = fakeFetch(() => json({}));
+    const many = Array.from({ length: 51 }, (_, i) => ({ requestHash: hash(`r${i}`), validator: getAddress(A) }));
+    await expect(findIndexedReports({ url: URL_, fetchImpl, requests: many })).rejects.toThrow(RangeError);
     expect(calls).toHaveLength(0);
   });
 });

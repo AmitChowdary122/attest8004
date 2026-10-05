@@ -326,10 +326,17 @@ function fakeTrustApi(rows: (FindingsPost & { trusted?: boolean })[], indexedTo:
     fetchImpl: (async (_url: string, init: RequestInit) => {
       o.calls += 1;
       if (answer) return answer();
-      const { variables } = JSON.parse(String(init.body)) as { variables: { where: { requestHash?: { _in: string[] } } } };
-      const wanted = new Set(variables.where.requestHash?._in ?? []);
+      const { variables } = JSON.parse(String(init.body)) as {
+        variables: { where: { requestHash?: { _in: string[] }; _or?: { requestHash: { _eq: string }; validator: { _eq: string } }[] }; limit: number };
+      };
+      const where = variables.where;
+      const wanted = (r: FindingsPost) =>
+        where._or
+          ? where._or.some((p) => p.requestHash._eq === r.requestHash.toLowerCase() && p.validator._eq === r.validator.toLowerCase())
+          : new Set(where.requestHash?._in ?? []).has(r.requestHash.toLowerCase());
       const FindingsPost = rows
-        .filter((r) => wanted.has(r.requestHash.toLowerCase()))
+        .filter(wanted)
+        .slice(0, variables.limit)
         .map((r) => ({
           requestHash: r.requestHash,
           agentId: r.agentId.toString(),
@@ -458,5 +465,31 @@ describe("discoverInbox", () => {
     const result = await discoverInbox(setup(), { agentId: AGENT, findingsBoard: board, trustApi: null });
     expect(result).toMatchObject({ via: "chain", fallbackReason: null, indexedTo: null });
     expect(result.entries.every((e) => e.source === "chain" && e.posts.length === 1)).toBe(true);
+  });
+});
+
+describe("strangers' posts on a request (review I3)", () => {
+  it("200 junk posts on the request don't hide the validator's report", async () => {
+    const reader = new FakeReader();
+    reader.statusList.push(status("r", 10_000n));
+    const junk = Array.from({ length: 200 }, (_, i) => post("r", 10_001n, { validator: STRANGER, txHash: hashOf(`junk ${i}`), logIndex: i }));
+    const real = post("r", 10_005n);
+    reader.posts.push(...junk, real);
+    const result = await discoverInbox(reader, { agentId: AGENT, findingsBoard: board, trustApi: fakeTrustApi([...junk, real], 20_000n) });
+    expect(result.via).toBe("indexer");
+    expect(result.entries[0]?.posts).toEqual([real]);
+  });
+
+  it("an answer that hit the limit falls back to the chain scan", async () => {
+    const reader = new FakeReader();
+    reader.statusList.push(status("r", 10_000n));
+    const real = post("r", 10_005n);
+    reader.posts.push(real);
+    // 200 posts by the requested validator itself: a full page, so the answer may be missing some.
+    const full = Array.from({ length: 200 }, (_, i) => post("r", 10_006n, { txHash: hashOf(`more ${i}`), logIndex: i }));
+    const result = await discoverInbox(reader, { agentId: AGENT, findingsBoard: board, trustApi: fakeTrustApi(full, 20_000n) });
+    expect(result.via).toBe("chain");
+    expect(result.fallbackReason).toContain("INCOMPLETE");
+    expect(result.entries[0]?.posts).toEqual([real]);
   });
 });

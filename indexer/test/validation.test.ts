@@ -125,3 +125,32 @@ describe("ValidationRegistry handlers", () => {
     expect(row.gate).toBeUndefined();
   });
 });
+
+describe("review fixes", () => {
+  it("keeps at most 16 of a validator's tags (a stranger's 20 re-answers can't grow the list)", async () => {
+    const indexer = createTestIndexer();
+    const r = request({ validator: VALIDATOR_A });
+    await run(indexer, [
+      requestEvent(r, { validator: VALIDATOR_A, block: B }),
+      ...Array.from({ length: 20 }, (_, i) => responseEvent({ validator: VALIDATOR_A, requestHash: r.requestHash, score: 100, tag: `tag-${i}`, block: B + 1 + i })),
+    ]);
+    const v = await indexer.Validator.getOrThrow(VALIDATOR_A);
+    expect(v.tags).toEqual(Array.from({ length: 16 }, (_, i) => `tag-${i}`));
+    expect(v.responseEvents).toBe(20);
+  });
+
+  it("a request whose JSON names another validator or agent than its event is not VERIFIED, and never marked executed", async () => {
+    const indexer = createTestIndexer();
+    // A stranger copies agent 1984's action into a request JSON naming validator A, then requests it as their own
+    // agent 777 from validator B: the hash matches the JSON, but the JSON doesn't describe this request.
+    const copied = request({ validator: VALIDATOR_A, salt: "copied" });
+    await run(indexer, [
+      requestEvent(copied, { validator: VALIDATOR_B, agentId: 777n, block: B }),
+      { contract: "DemoAgentVault", event: "ActionConsumed", srcAddress: "0x12fab3e3ca810cc44bd9f537613a230a2be8d614", params: { actionHash: copied.actionHash, agentId: 1984n }, ...at(B + 5) },
+    ]);
+    const row = await indexer.ValidationRequest.getOrThrow(copied.requestHash);
+    expect(row.requestStatus).toBe("HASH_MISMATCH");
+    expect(row.actionHash).toBeUndefined();
+    expect(row.executedTx).toBeUndefined();
+  });
+});

@@ -73,7 +73,7 @@ type ValidationResponse {
 }
 
 # Per validator address (id). Buckets, scoreSum and avgScore count each answered request's latest response;
-# latency counts first responses only, in blocks.
+# latency counts first responses only, in blocks; tags lists the first 16 tags it used.
 type Validator {
   id: ID!
   requests: Int!

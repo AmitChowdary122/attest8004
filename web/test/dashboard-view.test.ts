@@ -65,6 +65,11 @@ describe("labels", () => {
     expect(utcTime(1_791_173_115n)).toBe("2026-10-05 04:05:15 UTC");
     expect(utcTime(null)).toBe("—");
   });
+
+  it("never throw on a time no Date can hold (a stranger's mandate can say validUntil 2^64 − 1)", () => {
+    expect(utcTime(2n ** 64n - 1n)).toBe("18446744073709551615 (unix seconds)");
+    expect(utcTime(8_640_000_000_001n)).toBe("8640000000001 (unix seconds)");
+  });
 });
 
 describe("verdictRow", () => {
@@ -116,6 +121,7 @@ describe("validatorRow", () => {
       latencyCount: 20,
       avgLatencyBlocks: 91.56,
       tags: ["mandate-v1"],
+      tagCount: 1,
       firstSeenBlock: 67_605_700n,
       lastActivityBlock: 68_300_025n,
     };
@@ -131,6 +137,7 @@ describe("validatorRow", () => {
       avgLatency: "91.6 blocks (~28 s)",
     });
     expect(validatorRow({ ...stats, avgScore: null, avgLatencyBlocks: null, answered: 0 }, testnet)).toMatchObject({ avgScore: "—", avgLatency: "—" });
+    expect(validatorRow({ ...stats, tags: ["a", "b"], tagCount: 66 }, testnet).tags).toBe("a, b (+64 more)");
   });
 });
 
@@ -166,7 +173,7 @@ describe("offlineView", () => {
   });
 
   it("has a sentence for every kind", () => {
-    for (const kind of ["NOT_CONFIGURED", "NETWORK", "HTTP", "RATE_LIMITED", "TIMEOUT", "GRAPHQL", "SHAPE"] as const) {
+    for (const kind of ["NOT_CONFIGURED", "NETWORK", "HTTP", "RATE_LIMITED", "TIMEOUT", "GRAPHQL", "SHAPE", "INCOMPLETE"] as const) {
       expect(offlineView(testnet, kind).reason.length, kind).toBeGreaterThan(10);
     }
   });

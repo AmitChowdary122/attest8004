@@ -97,10 +97,12 @@ const decimal = (value: unknown, max: bigint): value is string =>
 
 /**
  * A request's JSON v1 (SPEC §4.4), read the way the validators read it: `VERIFIED` when its `requestURI` is an inline
- * document the SDK's strict schema accepts and whose fields recompute to `requestHash` on `chainId`, with the gate,
- * target, value, deadline and the `actionHash` the gate marks consumed.
+ * document the SDK's strict schema accepts, whose fields recompute to `requestHash` on `chainId`, and which names the
+ * event's own validator and agent (a validator refuses one that doesn't: WRONG_VALIDATOR, AGENT_MISMATCH), with the
+ * gate, target, value, deadline and the `actionHash` the gate marks consumed. A document that doesn't describe this
+ * request (another chain, hash, validator or agent) is `HASH_MISMATCH`.
  */
-export function decodeRequest(uri: string, requestHash: string, chainId: number): DecodedRequest {
+export function decodeRequest(uri: string, requestHash: string, chainId: number, event: { validator: string; agentId: bigint }): DecodedRequest {
   const decoded = decodeDataUri(uri, MAX_REQUEST_URI_BYTES);
   if (decoded.kind === "not-inline") return { status: "NOT_INLINE" };
   if (decoded.kind === "unreadable") return { status: "UNREADABLE" };
@@ -146,6 +148,7 @@ export function decodeRequest(uri: string, requestHash: string, chainId: number)
     ),
   );
   if (docChain !== chainId || recomputed !== requestHash.toLowerCase()) return { status: "HASH_MISMATCH" };
+  if (validator.toLowerCase() !== event.validator.toLowerCase() || BigInt(agentId) !== event.agentId) return { status: "HASH_MISMATCH" };
   const actionHash = keccak256(
     encodeAbiParameters(
       [

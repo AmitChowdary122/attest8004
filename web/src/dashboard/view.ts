@@ -26,9 +26,16 @@ export function agentLabel(agentId: bigint, deployment: Deployment): string {
 
 export const isOurs = (agentId: bigint, deployment: Deployment) => deployment.demoAgents.includes(agentId) || agentId === TEST_AGENT;
 
-/** A block timestamp as `YYYY-MM-DD hh:mm:ss UTC`. */
+/** The latest instant a JavaScript Date can hold, in seconds (8.64e15 ms). */
+const MAX_DATE_SECONDS = 8_640_000_000_000n;
+
+/**
+ * A timestamp as `YYYY-MM-DD hh:mm:ss UTC`, or the raw number when no Date can hold it: a mandate's `validUntil` is
+ * any uint64 its owner chose, so a stranger's agent can carry 2^64 − 1.
+ */
 export function utcTime(seconds: bigint | null): string {
   if (seconds === null) return "—";
+  if (seconds < 0n || seconds > MAX_DATE_SECONDS) return `${seconds} (unix seconds)`;
   return `${new Date(Number(seconds) * 1000).toISOString().slice(0, 19).replace("T", " ")} UTC`;
 }
 
@@ -93,7 +100,7 @@ export function validatorRow(v: ValidatorStats, deployment: Deployment): Validat
     validator: validatorLabel(v.validator, deployment),
     address: v.validator,
     addressUrl: explorerAddress(v.validator),
-    tags: v.tags.join(", "),
+    tags: v.tagCount > v.tags.length ? `${v.tags.join(", ")} (+${v.tagCount - v.tags.length} more)` : v.tags.join(", "),
     requests: String(v.requests),
     answered: String(v.answered),
     avgScore: v.avgScore === null || v.answered === 0 ? "—" : v.avgScore.toFixed(1),
@@ -118,6 +125,7 @@ const OFFLINE: Record<TrustApiErrorKind, string> = {
   TIMEOUT: "The Envio indexer didn't answer in time.",
   GRAPHQL: "The Envio indexer refused the query.",
   SHAPE: "The Envio indexer's answer wasn't in the expected shape, so nothing from it is shown.",
+  INCOMPLETE: "The Envio indexer's answer may be incomplete, so nothing from it is shown.",
 };
 
 export interface OfflineView {

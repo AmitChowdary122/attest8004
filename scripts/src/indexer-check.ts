@@ -20,6 +20,7 @@ import {
   validationRegistryAbi,
   viemInboxReader,
   type Deployment,
+  type IndexedReport,
   type IndexedVerdict,
   type TrustApiOptions,
   type ValidatorStats,
@@ -73,7 +74,14 @@ async function checkAgent(api: TrustApiOptions, agentId: bigint, at: bigint): Pr
       : (await findInboxEntries(viemInboxReader({ publicClient, deployment }), { agentId, findingsBoard: board, maxResponses: 1_000 })).flatMap((e) =>
           e.posts.filter((p) => p.blockNumber <= at),
         );
-  const indexedReports = (await findIndexedReports({ ...api, agentId })).reports.filter((r) => r.trusted && r.blockNumber <= at);
+  // Each request's own validator's posts, 50 requests a query; an answer that hit its limit can't be compared.
+  const indexedReports: IndexedReport[] = [];
+  for (let i = 0; i < statuses.length; i += 50) {
+    const requests = statuses.slice(i, i + 50).map((s) => ({ requestHash: s.requestHash, validator: s.validator }));
+    const page = await findIndexedReports({ ...api, agentId, requests });
+    if (page.truncated) throw new Error(`the indexer's report answer for agent ${agentId} hit its limit`);
+    indexedReports.push(...page.reports.filter((r) => r.trusted && r.blockNumber <= at));
+  }
   const mismatches = compareAgent(
     { agentId, statuses, trustedReports: chainReports.map((p) => ({ txHash: p.txHash, logIndex: p.logIndex })) },
     { agentId, verdicts, trustedReports: indexedReports.map((p) => ({ txHash: p.txHash, logIndex: p.logIndex })) },

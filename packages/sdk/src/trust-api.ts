@@ -6,13 +6,14 @@
 // result carries its onchain anchors (requestHash, transaction, log index, block), and confirmIndexedVerdict /
 // confirmIndexedReport re-check a result from chain reads. One GraphQL request per call: Envio Cloud's free plan
 // serves 100 queries a minute.
-import { decodeEventLog, getAddress, zeroHash, type Address, type Hash, type Hex, type PublicClient } from "viem";
+import { decodeErrorResult, decodeEventLog, getAddress, zeroHash, type Address, type Hash, type Hex, type PublicClient } from "viem";
 import { z } from "zod";
 import { findingsPostedEvent, validationRegistryAbi } from "./abi.ts";
 import { deploymentsFor, mandateRegistryAt, type Deployment } from "./deployments.ts";
 import type { FindingsPost } from "./inbox-read.ts";
 
-export type TrustApiErrorKind = "NOT_CONFIGURED" | "NETWORK" | "HTTP" | "RATE_LIMITED" | "TIMEOUT" | "GRAPHQL" | "SHAPE";
+/** Why a call failed; `INCOMPLETE` means an answer hit its row limit, so a caller can't rely on it being complete. */
+export type TrustApiErrorKind = "NOT_CONFIGURED" | "NETWORK" | "HTTP" | "RATE_LIMITED" | "TIMEOUT" | "GRAPHQL" | "SHAPE" | "INCOMPLETE";
 
 /** Why a trust API call failed. Its message is plain text, safe to show as text. */
 export class TrustApiError extends Error {
@@ -42,6 +43,8 @@ export const MAX_REPORT_REQUEST_HASHES = 50;
 export const MAX_INDEXED_REPORTS = 200;
 /** How many of a validator's free-text tag characters are shown. */
 export const MAX_TAG_DISPLAY = 64;
+/** How many of a validator's tags are shown (the indexer keeps 16; anyone can answer their own requests with more). */
+export const MAX_TAGS_SHOWN = 16;
 
 // ---------- the documents ----------
 
@@ -121,10 +124,8 @@ const selector = z
   .regex(/^0x[0-9a-fA-F]{8}$/)
   .transform((s) => s.toLowerCase() as Hex);
 const reason = z.string().regex(/^[A-Z][A-Z0-9_]{0,63}$/);
-const tag = z
-  .string()
-  .max(100_000)
-  .transform((s) => displayText(s));
+/** A tag is whatever text a validator chose (no length or alphabet onchain): shown printable and short, never refused. */
+const tag = z.string().transform((s) => displayText(s));
 const score = z.number().int().min(0).max(100);
 const decodeStatus = z.enum(["VERIFIED", "HASH_MISMATCH", "NOT_INLINE", "UNREADABLE"]);
 const permissionKind = z.enum(["TRANSFER", "APPROVAL", "APPROVAL_FOR_ALL", "AGENT_KEY_SET", "MANDATE_SET", "MANDATE_REVOKED", "PASSKEY_SET", "PASSKEY_ROTATED"]);
@@ -182,14 +183,17 @@ const validatorRow = z
     latencyBlocksSum: bigintLike,
     latencyCount: count,
     avgLatencyBlocks: floatLike.nullable(),
-    tags: z.array(tag).max(64),
+    // Any number of tags, of any length: a stranger's validator answering its own requests chooses them.
+    tags: z.array(z.string()),
     firstSeenBlock: bigintLike,
     lastActivityBlock: bigintLike,
   })
-  .transform(({ id, score0, score1to39, score40to79, score80to99, score100, ...rest }) => ({
+  .transform(({ id, score0, score1to39, score40to79, score80to99, score100, tags, ...rest }) => ({
     validator: id,
     buckets: { score0, score1to39, score40to79, score80to99, score100 },
     ...rest,
+    tags: tags.slice(0, MAX_TAGS_SHOWN).map((t) => displayText(t)),
+    tagCount: tags.length,
   }));
 
 /** A validator's indexed stats: buckets and the average over each answered request's latest score; latency in blocks. */
@@ -467,24 +471,66 @@ const reportsData = z.object({ FindingsPost: z.array(postRow).max(MAX_INDEXED_RE
 
 /**
  * Findings discovery: indexed FindingsPosted posts for an agent and/or a set of requests, trusted or not, each with the
- * indexer's flag and its anchors. A post's `trusted` is the indexer's view; re-check one with
- * {@link confirmIndexedReport} before relying on it (`/inbox` re-checks every post it shows).
+ * indexer's flag and its anchors. `requests` asks only for each request's own validator's posts (what the trust rule
+ * can keep), so nobody else's posts on those requests can crowd them out; `requestHashes` asks for everyone's. A
+ * post's `trusted` is the indexer's view; re-check one with {@link confirmIndexedReport} before relying on it
+ * (`/inbox` re-checks every post it shows). `truncated` says the answer hit `limit` and may be missing posts.
  */
 export async function findIndexedReports(
-  o: TrustApiOptions & { agentId?: bigint; requestHashes?: readonly Hex[]; limit?: number },
-): Promise<{ reports: IndexedReport[]; indexedTo: bigint }> {
+  o: TrustApiOptions & { agentId?: bigint; requestHashes?: readonly Hex[]; requests?: readonly { requestHash: Hex; validator: Address }[]; limit?: number },
+): Promise<{ reports: IndexedReport[]; indexedTo: bigint; truncated: boolean }> {
   const hashes = o.requestHashes?.map((h) => h.toLowerCase());
-  if (hashes && hashes.length > MAX_REPORT_REQUEST_HASHES) throw new RangeError(`at most ${MAX_REPORT_REQUEST_HASHES} request hashes per call, got ${hashes.length}`);
-  if (hashes?.some((h) => !/^0x[0-9a-f]{64}$/.test(h))) throw new RangeError("every request hash must be 32 bytes of hex");
+  const pairs = o.requests?.map((r) => ({ requestHash: r.requestHash.toLowerCase(), validator: r.validator.toLowerCase() }));
+  for (const [what, n] of [["request hashes", hashes?.length ?? 0], ["requests", pairs?.length ?? 0]] as const) {
+    if (n > MAX_REPORT_REQUEST_HASHES) throw new RangeError(`at most ${MAX_REPORT_REQUEST_HASHES} ${what} per call, got ${n}`);
+  }
+  if ([...(hashes ?? []), ...(pairs ?? []).map((p) => p.requestHash)].some((h) => !/^0x[0-9a-f]{64}$/.test(h))) throw new RangeError("every request hash must be 32 bytes of hex");
+  if (pairs?.some((p) => !/^0x[0-9a-f]{40}$/.test(p.validator))) throw new RangeError("every validator must be a 20-byte address");
   const where: Record<string, unknown> = {};
   if (o.agentId !== undefined) where.agentId = { _eq: o.agentId.toString() };
   if (hashes !== undefined) where.requestHash = { _in: hashes };
+  if (pairs !== undefined) where._or = pairs.map((p) => ({ requestHash: { _eq: p.requestHash }, validator: { _eq: p.validator } }));
   const limit = Math.min(o.limit ?? MAX_INDEXED_REPORTS, MAX_INDEXED_REPORTS);
   const data = await query(o, TRUST_API_QUERIES.findReports, { where, limit }, reportsData);
-  return { reports: data.FindingsPost, indexedTo: indexedTo(data._meta, o.chainId ?? 10143) };
+  return { reports: data.FindingsPost, indexedTo: indexedTo(data._meta, o.chainId ?? 10143), truncated: data.FindingsPost.length >= limit };
 }
 
 // ---------- re-checks from the chain ----------
+
+/**
+ * Whether a failed `getValidationStatus` read is the registry's `UnknownRequest` revert (a hash it never saw): viem's
+ * decoded revert anywhere on the `cause` chain, or a raw JSON-RPC error with code 3 and revert data. Anything else
+ * (a transport failure, another revert) is not an answer and is rethrown by the callers.
+ */
+export function isUnknownRequestRevert(error: unknown): boolean {
+  let current: unknown = error;
+  for (let depth = 0; depth < 16 && typeof current === "object" && current !== null; depth++) {
+    const e = current as { code?: unknown; data?: unknown; cause?: unknown };
+    if (typeof e.data === "object" && e.data !== null && (e.data as { errorName?: unknown }).errorName === "UnknownRequest") return true;
+    if (e.code === 3) {
+      const data = typeof e.data === "object" && e.data !== null && "data" in e.data ? (e.data as { data: unknown }).data : e.data;
+      if (typeof data === "string" && /^0x[0-9a-fA-F]*$/.test(data)) {
+        try {
+          if (decodeErrorResult({ abi: validationRegistryAbi, data: data as Hex }).errorName === "UnknownRequest") return true;
+        } catch {
+          // not one of the registry's errors
+        }
+      }
+    }
+    current = e.cause;
+  }
+  return false;
+}
+
+/** `getValidationStatus`, or null when the registry never saw the hash. */
+async function statusOrNull(publicClient: PublicClient, registry: Address, requestHash: Hex) {
+  try {
+    return await publicClient.readContract({ address: getAddress(registry), abi: validationRegistryAbi, functionName: "getValidationStatus", args: [requestHash] });
+  } catch (error) {
+    if (isUnknownRequestRevert(error)) return null;
+    throw error;
+  }
+}
 
 export type VerdictProblem = "NOT_FOUND" | "VALIDATOR" | "AGENT" | "SCORE" | "RESPONSE_HASH" | "TAG";
 
@@ -499,13 +545,9 @@ export async function confirmIndexedVerdict(o: {
   verdict: Pick<IndexedVerdict, "requestHash" | "agentId" | "validator" | "responses" | "score" | "responseHash" | "tag">;
 }): Promise<{ ok: true } | { ok: false; problems: VerdictProblem[] }> {
   const { verdict } = o;
-  const [validator, agentId, response, responseHash, tag] = await o.publicClient.readContract({
-    address: getAddress(o.deployment.validationRegistry),
-    abi: validationRegistryAbi,
-    functionName: "getValidationStatus",
-    args: [verdict.requestHash],
-  });
-  if (BigInt(validator) === 0n) return { ok: false, problems: ["NOT_FOUND"] };
+  const status = await statusOrNull(o.publicClient, o.deployment.validationRegistry, verdict.requestHash);
+  if (status === null || BigInt(status[0]) === 0n) return { ok: false, problems: ["NOT_FOUND"] };
+  const [validator, agentId, response, responseHash, tag] = status;
   const answered = verdict.responses > 0;
   const problems: VerdictProblem[] = [];
   if (getAddress(validator) !== getAddress(verdict.validator)) problems.push("VALIDATOR");
@@ -555,12 +597,9 @@ export async function confirmIndexedReport(o: {
 }): Promise<{ ok: true } | { ok: false; problems: ReportProblem[] }> {
   const { report } = o;
   if (o.deployment.findingsBoard === null) return { ok: false, problems: ["NOT_ON_CHAIN"] };
-  const [validator, agentId] = await o.publicClient.readContract({
-    address: getAddress(o.deployment.validationRegistry),
-    abi: validationRegistryAbi,
-    functionName: "getValidationStatus",
-    args: [report.requestHash],
-  });
+  const status = await statusOrNull(o.publicClient, o.deployment.validationRegistry, report.requestHash);
+  if (status === null) return { ok: false, problems: ["UNTRUSTED"] };
+  const [validator, agentId] = status;
   if (BigInt(validator) === 0n || getAddress(validator) !== getAddress(report.validator) || agentId !== report.agentId) return { ok: false, problems: ["UNTRUSTED"] };
   let logs: readonly ReceiptLog[];
   try {

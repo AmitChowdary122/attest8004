@@ -174,7 +174,13 @@ async function indexedEntries(
   head: bigint,
 ): Promise<{ entries: InboxEntry[]; rejected: RejectedPost[]; indexedTo: bigint | null }> {
   if (candidates.length === 0) return { entries: [], rejected: [], indexedTo: null };
-  const { reports, indexedTo } = await findIndexedReports({ ...o.trustApi, agentId: o.agentId, requestHashes: candidates.map((c) => c.requestHash) });
+  // Only each verdict's own validator's posts: nobody else's posts on those requests can crowd them out of the answer.
+  const { reports, indexedTo, truncated } = await findIndexedReports({
+    ...o.trustApi,
+    agentId: o.agentId,
+    requests: candidates.map((c) => ({ requestHash: c.requestHash, validator: c.validator })),
+  });
+  if (truncated) throw new TrustApiError("INCOMPLETE", "the indexer's answer hit its row limit, so it may be missing reports");
   // A verdict's report window is fully indexed when it ends at or before the indexer's progress block, i.e. when its
   // response time is at or before that of block (indexedTo − window + 1). Later ones are searched on chain too.
   const lastIndexed = indexedTo < head ? indexedTo : head;

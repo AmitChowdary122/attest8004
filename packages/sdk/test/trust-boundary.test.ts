@@ -7,7 +7,10 @@ import { describe, expect, it } from "vitest";
 // read it. mandate-v1, risk-v1 and the CLI keep reading chain state at the pin, so their sources never mention it.
 const ROOT = fileURLToPath(new URL("../../../", import.meta.url));
 const VERDICT_SOURCES = ["validators/mandate/src", "validators/risk/src", "packages/cli/src"];
-const FORBIDDEN = /trust-api|graphql|getAgentTrust|findIndexedReports|getTrustOverview|hyperindex|envio/i;
+// Every name trust-api.ts exports (its readers, its queries, its re-checks), plus the module and the indexer itself.
+const TRUST_API = readFileSync(join(ROOT, "packages/sdk/src/trust-api.ts"), "utf8");
+const EXPORTED = [...TRUST_API.matchAll(/^export (?:async )?(?:function|const|class) (\w+)/gm)].map((m) => m[1] as string);
+const FORBIDDEN = new RegExp(`trust-api|graphql|hyperindex|envio|\\b(?:${EXPORTED.join("|")})\\b`, "i");
 
 function sourceFiles(dir: string): string[] {
   return readdirSync(dir).flatMap((name) => {
@@ -18,6 +21,11 @@ function sourceFiles(dir: string): string[] {
 
 describe("the trust boundary", () => {
   const files = VERDICT_SOURCES.flatMap((dir) => sourceFiles(join(ROOT, dir)));
+
+  it("forbids every reader the trust API exports", () => {
+    expect(EXPORTED).toEqual(expect.arrayContaining(["getAgentTrust", "getIndexedVerdicts", "getTrustOverview", "findIndexedReports", "confirmIndexedVerdict", "confirmIndexedReport", "TRUST_API_QUERIES"]));
+    expect(FORBIDDEN.test("const v = await getIndexedVerdicts({ agentId })")).toBe(true);
+  });
 
   it("scans every verdict and verify source", () => {
     expect(files.map((f) => relative(ROOT, f))).toEqual(expect.arrayContaining(["validators/mandate/src/verify.ts", "validators/risk/src/verify.ts", "packages/cli/src/cli.ts"]));

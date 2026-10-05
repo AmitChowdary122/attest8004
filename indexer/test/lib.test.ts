@@ -95,7 +95,7 @@ describe("decodeRequest", () => {
       const json = buildRequestJson({ chainId, gate: v.gate, validator: v.validator, action });
       const { uri } = encodeJsonDataUri(json);
       const requestHash = computeRequestHash({ chainId, gate: v.gate, validator: v.validator, action });
-      expect(decodeRequest(uri, requestHash, chainId), v.name).toEqual({
+      expect(decodeRequest(uri, requestHash, chainId, { validator: v.validator, agentId: BigInt(v.action.agentId) }), v.name).toEqual({
         status: "VERIFIED",
         gate: v.gate.toLowerCase(),
         target: v.action.target.toLowerCase(),
@@ -112,7 +112,7 @@ describe("decodeRequest", () => {
     const json = buildRequestJson({ chainId, gate: v.gate, validator: v.validator, action: toAction(v) });
     const uri = `data:application/json,${encodeURIComponent(JSON.stringify(json))}`;
     const requestHash = computeRequestHash({ chainId, gate: v.gate, validator: v.validator, action: toAction(v) });
-    expect(decodeRequest(uri, requestHash, chainId).status).toBe("VERIFIED");
+    expect(decodeRequest(uri, requestHash, chainId, { validator: v.validator, agentId: BigInt(v.action.agentId) }).status).toBe("VERIFIED");
   });
 
   it("is HASH_MISMATCH on another chain or another hash", () => {
@@ -121,8 +121,12 @@ describe("decodeRequest", () => {
     const json = buildRequestJson({ chainId, gate: v.gate, validator: v.validator, action: toAction(v) });
     const { uri } = encodeJsonDataUri(json);
     const requestHash = computeRequestHash({ chainId, gate: v.gate, validator: v.validator, action: toAction(v) });
-    expect(decodeRequest(uri, requestHash, 143)).toEqual({ status: "HASH_MISMATCH" });
-    expect(decodeRequest(uri, keccak256("0x01"), chainId)).toEqual({ status: "HASH_MISMATCH" });
+    const event = { validator: v.validator, agentId: BigInt(v.action.agentId) };
+    expect(decodeRequest(uri, requestHash, 143, event)).toEqual({ status: "HASH_MISMATCH" });
+    expect(decodeRequest(uri, keccak256("0x01"), chainId, event)).toEqual({ status: "HASH_MISMATCH" });
+    // The validators refuse a request whose JSON names another validator or agent than its event (WRONG_VALIDATOR, AGENT_MISMATCH).
+    expect(decodeRequest(uri, requestHash, chainId, { ...event, validator: "0x00000000000000000000000000000000000057a1" })).toEqual({ status: "HASH_MISMATCH" });
+    expect(decodeRequest(uri, requestHash, chainId, { ...event, agentId: event.agentId + 1n })).toEqual({ status: "HASH_MISMATCH" });
   });
 
   it("is UNREADABLE for an oversized URI, a wrong schema or unknown keys", () => {
@@ -131,14 +135,15 @@ describe("decodeRequest", () => {
     const json = buildRequestJson({ chainId, gate: v.gate, validator: v.validator, action: toAction(v) });
     const requestHash = computeRequestHash({ chainId, gate: v.gate, validator: v.validator, action: toAction(v) });
     const padded = encodeJsonDataUri({ ...json, action: { ...json.action, data: `0x${"00".repeat(9_000)}` } });
-    expect(decodeRequest(padded.uri, requestHash, chainId)).toEqual({ status: "UNREADABLE" });
-    expect(decodeRequest(encodeJsonDataUri({ ...json, schema: "attest8004.request.v2" }).uri, requestHash, chainId)).toEqual({ status: "UNREADABLE" });
-    expect(decodeRequest(encodeJsonDataUri({ ...json, extra: 1 }).uri, requestHash, chainId)).toEqual({ status: "UNREADABLE" });
-    expect(decodeRequest(encodeJsonDataUri({ ...json, agentId: "01984" }).uri, requestHash, chainId)).toEqual({ status: "UNREADABLE" });
+    const event = { validator: v.validator, agentId: BigInt(v.action.agentId) };
+    expect(decodeRequest(padded.uri, requestHash, chainId, event)).toEqual({ status: "UNREADABLE" });
+    expect(decodeRequest(encodeJsonDataUri({ ...json, schema: "attest8004.request.v2" }).uri, requestHash, chainId, event)).toEqual({ status: "UNREADABLE" });
+    expect(decodeRequest(encodeJsonDataUri({ ...json, extra: 1 }).uri, requestHash, chainId, event)).toEqual({ status: "UNREADABLE" });
+    expect(decodeRequest(encodeJsonDataUri({ ...json, agentId: "01984" }).uri, requestHash, chainId, event)).toEqual({ status: "UNREADABLE" });
   });
 
   it("is NOT_INLINE for any other URI", () => {
-    expect(decodeRequest("https://example.com/request.json", keccak256("0x"), 10143)).toEqual({ status: "NOT_INLINE" });
+    expect(decodeRequest("https://example.com/request.json", keccak256("0x"), 10143, { validator: "0x00000000000000000000000000000000000057a1", agentId: 1n })).toEqual({ status: "NOT_INLINE" });
   });
 });
 

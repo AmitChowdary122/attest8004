@@ -20,6 +20,7 @@ import { chainId, client, deployment, readInboxKey } from "../approve/chain.ts";
 import { errorText } from "../approve/exportJson.ts";
 import { currentHostname, stripLinkParameters } from "../approve/url.ts";
 import { explorerTx } from "../explorer.ts";
+import { foundSummary } from "./found.ts";
 import { trustApiOptions } from "../trust-api-url.ts";
 import { ReportCard } from "./ReportCard.tsx";
 
@@ -171,13 +172,7 @@ export function InboxPage() {
                   {current.entries.length}, with {postCount} encrypted report(s)
                 </dd>
                 <dt>Found</dt>
-                <dd>
-                  {current.via === "indexer"
-                    ? `through the Envio indexer (indexed to block ${current.indexedTo?.toString() ?? "?"}); every report re-checked onchain`
-                    : current.fallbackReason !== null
-                      ? `on chain, within ${REPORT_SEARCH_BLOCKS.toString()} blocks of each verdict: the indexer is unavailable (${current.fallbackReason})`
-                      : `on chain, within ${REPORT_SEARCH_BLOCKS.toString()} blocks of each verdict (no indexer recorded)`}
-                </dd>
+                <dd>{foundSummary(current)}</dd>
               </dl>
               {current.rejected.length > 0 && (
                 <p className="notice">
