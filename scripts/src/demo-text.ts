@@ -6,7 +6,7 @@
  * and URLs in error text are replaced, so nothing on the recording can be spoofed or leak an endpoint.
  */
 import { describeMandate, type Mandate, type OperatorReport } from "@attest8004/sdk";
-import { formatEther, type Address, type Hex } from "viem";
+import type { Address, Hex } from "viem";
 import type { SceneId } from "./demo-args.ts";
 
 /** The explorer the web app and the docs link to (web/src/explorer.ts; a test pins them together). */
@@ -14,7 +14,7 @@ export const EXPLORER = "https://monad-testnet.socialscan.io";
 
 const CSI = /\u001b\[[0-?]*[ -/]*[@-~]/g;
 // C0 and C1 controls (newlines and tabs included: they become spaces first), DEL, and the bidi marks and overrides.
-const CONTROLS = /[\u0000-\u0008\u000b-\u001f\u007f-\u009f؜‎‏‪-‮⁦-⁩]/g;
+const CONTROLS = /[\u0000-\u0008\u000b-\u001f\u007f-\u009f\u061c\u200e\u200f\u202a-\u202e\u2066-\u2069]/g;
 
 /** `s` as one line of plain text: no escape sequences, controls or bidi marks, whitespace collapsed, at most `max` characters. */
 export function plainText(s: string, max = 600): string {
@@ -158,6 +158,16 @@ export function narrateLog(entry: Record<string, unknown>, seen: Set<string>): s
   return `! ${validator}: ${plainText(msg, 120)}${why ? ` (${plainText(redactUrls(why), 200)})` : ""}`;
 }
 
+/** `wei` as MON rounded to 4 decimals for the screen (a non-zero amount below that shows as `<0.0001 MON`). */
+export function monShort(wei: bigint): string {
+  if (wei === 0n) return "0 MON";
+  const tenThousandths = (wei + 50_000_000_000_000n) / 100_000_000_000_000n;
+  if (tenThousandths === 0n) return "<0.0001 MON";
+  const whole = tenThousandths / 10_000n;
+  const fraction = (tenThousandths % 10_000n).toString().padStart(4, "0").replace(/0+$/, "");
+  return `${whole}${fraction ? `.${fraction}` : ""} MON`;
+}
+
 /** `ms` as m:ss. */
 export function elapsed(ms: number): string {
   const seconds = Math.max(0, Math.round(ms / 1000));
@@ -167,7 +177,7 @@ export function elapsed(ms: number): string {
 /** A key that can't pay for a take, with its full address to paste into the faucet (Decision 24). */
 export function shortKeyLine(o: { name: string; address: Address; balance: bigint; need: bigint; takes: number }): string {
   return (
-    `${o.name} ${o.address} holds ${formatEther(o.balance)} MON, needs ${formatEther(o.need)} MON for ${o.takes} take${o.takes === 1 ? "" : "s"}: ` +
+    `${o.name} ${o.address} holds ${monShort(o.balance)}, needs ${monShort(o.need)} for ${o.takes} take${o.takes === 1 ? "" : "s"}: ` +
     "paste the address into https://faucet.monad.xyz, or run `pnpm demo --fund`"
   );
 }

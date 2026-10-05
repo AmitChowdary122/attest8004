@@ -7,6 +7,7 @@ import {
   elapsed,
   findP256Calls,
   narrateLog,
+  monShort,
   plainText,
   shortKeyLine,
   txLine,
@@ -23,7 +24,7 @@ describe("plainText", () => {
     expect(plainText("a\u001b[31mred\u001b[0m\nb")).toBe("ared b");
   });
   it("removes C1 controls and bidi overrides", () => {
-    expect(plainText("x\u0085y\u009bz‮evil⁦q")).toBe("xyzevilq");
+    expect(plainText("x\u0085y\u009bz\u202eevil\u2066q")).toBe("xyzevilq");
   });
   it("clips a long text to 600 characters, ending with …", () => {
     const out = plainText("w ".repeat(350));
@@ -166,5 +167,15 @@ describe("shortKeyLine", () => {
     expect(line).toContain("pnpm demo --fund");
     expect(line).toContain("0.0147 MON");
     expect(line).toContain("0.0769 MON");
+  });
+});
+
+describe("monShort", () => {
+  it("rounds to 4 decimals for the screen, without trailing zeros, and never shows a balance as 0 that isn't", () => {
+    expect(monShort(3_902_800_239_995_889_000n)).toBe("3.9028 MON");
+    expect(monShort(parseEther("0.01"))).toBe("0.01 MON");
+    expect(monShort(parseEther("0.0005"))).toBe("0.0005 MON");
+    expect(monShort(parseEther("0.00004"))).toBe("<0.0001 MON");
+    expect(monShort(0n)).toBe("0 MON");
   });
 });
