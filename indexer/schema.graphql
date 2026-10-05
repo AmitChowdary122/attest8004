@@ -164,7 +164,8 @@ type PermissionEvent {
 }
 
 # Every FindingsPosted (id: <tx>-<logIndex>), trusted or not: never dropped. trusted applies SPEC §4.7's rule to the
-# indexed request: it names this validator and this agent.
+# indexed request: it names this validator and this agent. counted: whether AgentTrustSummary counts it (its agent had
+# appeared in our contracts when it was indexed, or when its request re-evaluated it).
 type FindingsPost {
   id: ID!
   requestHash: String! @index
@@ -174,6 +175,7 @@ type FindingsPost {
   envelopeBytes: Int!
   trusted: Boolean!
   trustProblem: TrustProblem
+  counted: Boolean!
   block: BigInt!
   time: BigInt!
   tx: String!

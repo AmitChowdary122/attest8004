@@ -2,6 +2,7 @@
 // response event kept, and the validator, agent and agent-tag stats (ARCHITECTURE §6, plan decisions 11–13).
 import { indexer } from "envio";
 import { decodeEvidence, decodeRequest } from "../lib/decode.ts";
+import { reevaluatePosts } from "./findings-board.ts";
 import { anchorOf, applyToAgentTags, applyToValidator, bumpSummary, eventId, newValidator, touchAgent } from "./shared.ts";
 
 indexer.onEvent({ contract: "ValidationRegistry", event: "ValidationRequest" }, async ({ event, context }) => {
@@ -43,6 +44,8 @@ indexer.onEvent({ contract: "ValidationRegistry", event: "ValidationRequest" }, 
   await bumpSummary(context, agentId, a.block, { requests: 1 });
   const v = (await context.Validator.get(validator)) ?? newValidator(validator, a.block);
   context.Validator.set({ ...v, requests: v.requests + 1, lastActivityBlock: a.block });
+  // A report posted before its request is judged now (decision 15).
+  await reevaluatePosts(context, { id, validator, agentId }, a.block);
 });
 
 indexer.onEvent({ contract: "ValidationRegistry", event: "ValidationResponse" }, async ({ event, context }) => {
