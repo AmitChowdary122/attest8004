@@ -1,6 +1,6 @@
 // State helpers shared by the handlers: the agents that use our contracts, their summaries, and the bookkeeping that
 // keeps validator and agent-tag stats over each request's latest response (plan decisions 10 and 13).
-import type { AgentTagSummary, AgentTrustSummary, EvmOnEventContext, Validator } from "envio";
+import type { AgentTagSummary, AgentTrustSummary, EvmOnEventContext, PermissionEvent, Validator } from "envio";
 import { scoreBucket } from "../lib/stats.ts";
 
 type Context = EvmOnEventContext;
@@ -22,12 +22,12 @@ export const eventId = (a: Anchor) => `${a.tx}-${a.logIndex}`;
 
 /**
  * The agent's row and summary, created on its first appearance in our contracts (decision 10). The owner comes from
- * the Identity Registry's last transfer of that token, or `ownerHint` (an event that names the owner) when given.
+ * the Identity Registry's last transfer of that token, else from `ownerHint` (an event of ours that names the owner).
  */
 export async function touchAgent(context: Context, agentId: string, block: bigint, ownerHint?: string): Promise<void> {
   const agent = await context.Agent.get(agentId);
   if (!agent) {
-    const owner = ownerHint ?? (await context.TokenOwner.get(agentId))?.owner;
+    const owner = (await context.TokenOwner.get(agentId))?.owner ?? ownerHint;
     context.Agent.set({ id: agentId, owner, firstSeenBlock: block, hotKey: undefined, hotKeyOwner: undefined });
   } else if (agent.owner === undefined && ownerHint !== undefined) {
     context.Agent.set({ ...agent, owner: ownerHint });
@@ -163,4 +163,33 @@ export async function applyToAgentTags(context: Context, agentId: string, reques
       lastResponseBlock: block,
     }),
   );
+}
+
+/**
+ * One of mandate-v1's permission events for an agent (ARCHITECTURE §6). An in-epoch event counts in the agent's
+ * summary; a retired registry's event after its successor took over is stored with `inEpoch: false` and counted
+ * nowhere. `idSuffix` keeps one log's rows apart when it concerns several agents (ApprovalForAll).
+ */
+export async function recordPermission(
+  context: Context,
+  a: Anchor,
+  e: Pick<PermissionEvent, "agentId" | "kind" | "source" | "inEpoch"> & Partial<Pick<PermissionEvent, "from" | "to" | "approved" | "mandateHash">>,
+  idSuffix = "",
+): Promise<void> {
+  context.PermissionEvent.set({
+    id: `${eventId(a)}${idSuffix}`,
+    agentId: e.agentId,
+    kind: e.kind,
+    source: e.source,
+    inEpoch: e.inEpoch,
+    from: e.from,
+    to: e.to,
+    approved: e.approved,
+    mandateHash: e.mandateHash,
+    block: a.block,
+    time: a.time,
+    tx: a.tx,
+    logIndex: a.logIndex,
+  });
+  if (e.inEpoch) await bumpSummary(context, e.agentId, a.block, { permissionChanges: 1 }, true);
 }
