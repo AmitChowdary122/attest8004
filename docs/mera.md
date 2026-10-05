@@ -133,5 +133,9 @@ the phone derives the same inbox key and decrypts the same reports, with nothing
    - `risk-v1` on S ("Score 100: no findings.");
    - `mandate-v1` on O ("Refused: 3 mandate rule(s) failed (score 0).").
 
+<img src="img/p7-android-inbox-decrypt.jpg" alt="Android Chrome on attest8004.vercel.app/inbox after Decrypt with passkey: the line 'This passkey derives 0x01a9c300…8d76a03f: agent 1984's inbox key. Key zeroed.', then decrypted risk-v1 reports for O, R and S and the mandate-v1 report for O, each headed 'Matches the verdict onchain'" width="288">
+
+*Android Chrome, 5 Oct 2026, right after **Decrypt with passkey** (the screenshot as taken on the phone).*
+
 The same passkey derived the same key on two devices, and nothing was stored on either. Every transaction and the
 full report table are in `docs/deployments.md` ("P7 inbox run").

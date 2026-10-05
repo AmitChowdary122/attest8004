@@ -777,7 +777,8 @@ for B.
 | **Laptop Chrome** (Linux) | **Find reports**, then **Decrypt with passkey** (GPM PIN): "This passkey derives `0x01a9c30086e8174910ef33b9fc3a5bb3a148ee09bafc428ed0c476678d76a03f`: agent 1984's inbox key. Key zeroed." |
 | **Android Chrome**, the same passkey synced | **Find reports**: inbox key onchain `0x01a9c300…8d76a03f`, "6, with 6 encrypted report(s)". **Decrypt with passkey** (screen lock): the same "This passkey derives `0x01a9c300…8d76a03f`: agent 1984's inbox key. Key zeroed." line, and the decrypted reports. The screenshot shows four of them (validator B's on O, R and S, and validator A's on O), each headed "Matches the verdict onchain" (below) |
 
-What the Android screenshot shows, verbatim from the decrypted reports:
+The screenshot, as taken on the phone: [`docs/img/p7-android-inbox-decrypt.jpg`](./img/p7-android-inbox-decrypt.jpg)
+(also shown in [docs/mera.md](./mera.md#5-the-cross-device-test)). What it shows, verbatim from the decrypted reports:
 - **B on O:** "Matches the verdict onchain: risk-v1 scored 0." "Score 0: 1 high, 0 medium, 0 low finding(s)." One item:
   high `MANDATE_VIOLATION`, with the model's explanation and the action "Don't execute it. mandate-v1's report names the
   rule that failed."
