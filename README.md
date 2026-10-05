@@ -9,7 +9,7 @@
 >
 > The refusals were checked by simulation. Anyone can re-check all six verdicts with `pnpm attest8004 verify <requestHash>` (see [Deployments](#deployments)). `mandate-v1` is re-run in full. For `risk-v1`, the onchain facts and the scoring are re-checked, but the model output is recorded, not re-run.
 >
-> **Passkey-approved mandates are live (5 Oct 2026).** MandateRegistry v2 accepts a mandate change only with the owner's transaction **and** an assertion from the agent's passkey, verified onchain by Monad's P256 precompile (`0x0100`; the 6,900-gas call shows in the transaction's trace). One Google Password Manager passkey, created on [`/approve`](https://attest8004.vercel.app/approve), approved agent 1984's mandate from laptop Chrome and again, synced, from Chrome on Android; both real assertions are test vectors. The same three-action e2e then passed against v2 (`e2e OK`, all six verdicts `match`), and the P4/P5 verdicts still verify. The findings inbox and the indexer are being built. Progress is in [STATUS.md](./STATUS.md).
+> **Passkey-approved mandates are live (5 Oct 2026).** MandateRegistry v2 accepts a mandate change only with the owner's transaction **and** an assertion from the agent's passkey, verified onchain by Monad's P256 precompile (`0x0100`; the 6,900-gas call shows in the transaction's trace). One Google Password Manager passkey, created on [`/approve`](https://attest8004.vercel.app/approve), approved agent 1984's mandate from laptop Chrome and again, synced, from Chrome on Android; both real assertions are test vectors. The same three-action e2e then passed against v2 (`e2e OK`, all six verdicts `match`), and the P4/P5 verdicts still verify. **The Mera findings inbox is built (P7) and goes live with its board's deployment:** validators post an encrypted operator report after each verdict to a new `FindingsBoard`, sealed to an X25519 key derived from the agent's passkey through Mera's PRF, and [`/inbox`](https://attest8004.vercel.app/inbox) decrypts them on any device with that passkey ([docs/mera.md](./docs/mera.md)). The indexer is next. Progress is in [STATUS.md](./STATUS.md).
 
 ## What
 
@@ -24,7 +24,7 @@ Attest8004 provides that answer onchain. It has five parts:
   - `risk-v1`: agentic, an LLM with read-only onchain tools and Nansen (unused until a key is set). It has posted
     live verdicts on testnet, and its tests replay recorded Groq runs offline
     ([`validators/risk/test/fixtures/llm/`](./validators/risk/test/fixtures/llm/))
-- **Private findings inbox**: detailed findings are encrypted to a key derived from the operator's passkey (Mera PRF). The key is never stored.
+- **Private findings inbox (Mera)**: after each verdict, each validator posts an operator report (its reasons, the agent's spend, each finding with a recommended action) to `FindingsBoard`, encrypted to an X25519 key derived from the operator's passkey through Mera's PRF. The key is derived on demand, never stored, and zeroed after use; any device with the same synced passkey derives the same key (the PRF fingerprints matched on laptop and Android in P6; the cross-device decrypt is P7's live run, [docs/mera.md](./docs/mera.md)). The public evidence stays public, for `verify`.
 - **Trust API**: an Envio HyperIndex indexer behind the SDK and the dashboard.
 
 Monad's ERC-8004 docs list the Validation Registry as "coming soon", and the canonical [`erc-8004-contracts`](https://github.com/erc-8004/erc-8004-contracts) repo has no Validation Registry deployed on any chain. Attest8004 fills that gap.
@@ -144,7 +144,12 @@ pnpm --filter @attest8004/scripts set-passkey <registration.json> --confirm <cod
 pnpm --filter @attest8004/scripts submit-approval <approval.json>                          # dry run: re-checks it, shows the mandate in plain words
 pnpm --filter @attest8004/scripts submit-approval <approval.json> --confirm <code>         # setMandate from the owner
 # after a new mandate is set, wait about 31 minutes (6,000 blocks) before the e2e: it refuses to start sooner
+# P7, the Mera inbox: on /approve section 4, "Derive inbox key" (Mera PRF), Prepare, Sign with passkey, download the approval.
+pnpm --filter @attest8004/scripts submit-approval <inbox-approval.json>                    # dry run: shows the inbox key it sets
+pnpm --filter @attest8004/scripts submit-approval <inbox-approval.json> --confirm <code>   # setInboxKey from the owner (no wait after it)
 pnpm --filter @attest8004/scripts e2e                          # hot key -> forwarder -> mandate-v1 and risk-v1 -> gated execute; verify all six
+# with an inbox key set, each verdict also gets an encrypted operator report: read them at https://attest8004.vercel.app/inbox
+# (agent 1984 -> Find reports -> Decrypt with passkey), on any device with the agent's passkey
 pnpm --filter @attest8004/scripts gated-execute                # P2: the superseded agent-1982 vault, owner requests directly
 ```
 

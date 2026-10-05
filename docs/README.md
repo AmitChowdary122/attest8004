@@ -13,7 +13,7 @@ The docs are part of the product (SPEC §4.10). Each file is added in the phase 
 | `trust-modes.md` | Deterministic vs agentic validation | planned (P11) |
 | `migration.md` | Migrating to the canonical Validation Registry | planned (P11) |
 | `btx.md` | BTX encrypted-mempool design note (**future work, not live**) | planned (P11) |
-| `mera.md` | Passkey-derived findings inbox and the cross-device test | planned (P7) |
+| [mera.md](./mera.md) | The Mera findings inbox: why it is non-account use of Mera, the key lifecycle and zeroing, what's on chain, the cross-device test | done (P7); the cross-device results are added after the live run |
 | `security-review.md` | Auditor self-review | planned (P10) |
 
 How the system works is in [../ARCHITECTURE.md](../ARCHITECTURE.md). How to re-check a verdict (`pnpm attest8004 verify <requestHash>`: a `mandate-v1` one is re-run, a `risk-v1` one re-checked without re-running the model) is in its §5.5 and the [README](../README.md#quickstart).
