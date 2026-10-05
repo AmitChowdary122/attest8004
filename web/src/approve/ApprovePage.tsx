@@ -1,13 +1,15 @@
 import { RP_ID, isApproveHost } from "@attest8004/sdk/browser";
 import { useState } from "react";
 import { ApproveChange } from "./ApproveChange.tsx";
+import { InboxKey } from "./InboxKey.tsx";
 import { PrfCheck } from "./PrfCheck.tsx";
 import { Register } from "./Register.tsx";
 import { registry } from "./chain.ts";
 import { currentHostname, stripLinkParameters } from "./url.ts";
 
 /**
- * /approve (SPEC §4.2, §4.9): create the agent's passkey, check it with Mera's PRF, and approve a mandate change.
+ * /approve (SPEC §4.2, §4.7, §4.9): create the agent's passkey, check it with Mera's PRF, approve a mandate change, and
+ * publish the agent's inbox key.
  * Client-only: no server, nothing stored, and nothing read from the URL.
  */
 export function ApprovePage() {
@@ -27,6 +29,7 @@ export function ApprovePage() {
       <Register enabled={enabled} />
       <PrfCheck enabled={enabled} />
       <ApproveChange enabled={enabled} />
+      <InboxKey enabled={enabled} />
       <footer>
         <p className="muted">
           This page stores nothing and sends nothing but public chain reads; everything it shows or exports is public data. MandateRegistry{" "}

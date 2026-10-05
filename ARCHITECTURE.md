@@ -223,10 +223,11 @@ sequenceDiagram
   Op->>MR: submit-approval → setInboxKey(agentId, x25519Pub, webauthnAuth)  [owner wallet tx; same two factors]
 ```
 
-> **P4 vs. P6.** The `MandateRegistry` steps above are MandateRegistry v2 as built in P6 (`contracts/src/MandateRegistry.sol`), deployed on testnet at `0x2Ee5f78149762DE630c6bFF8CD81166010D0454B` from block 68,196,462. P4's registry (`0x2523…D17c`), where the owner's wallet alone called `setMandate(agentId, mandate)` and `revokeMandate(agentId)` with no passkey, now only serves verdicts pinned before that block (§6). In v2, `revokeMandate(agentId)` stays owner-only (no passkey) and also increments the nonce (§7). `/approve` is built (P6); `/inbox` is still design.
+> **P4 vs. P6.** The `MandateRegistry` steps above are MandateRegistry v2 as built in P6 (`contracts/src/MandateRegistry.sol`), deployed on testnet at `0x2Ee5f78149762DE630c6bFF8CD81166010D0454B` from block 68,196,462. P4's registry (`0x2523…D17c`), where the owner's wallet alone called `setMandate(agentId, mandate)` and `revokeMandate(agentId)` with no passkey, now only serves verdicts pinned before that block (§6). In v2, `revokeMandate(agentId)` stays owner-only (no passkey) and also increments the nonce (§7). `/approve` is built (P6; P7 adds its inbox-key section), and so is `/inbox` (P7, §5.4).
 >
 > **`/approve`, as built (P6; `web/src/approve/`).** A client-only page: no server, and nothing stored (no localStorage, sessionStorage, IndexedDB or cookie).
 > - **What it does.** It creates the passkey and exports its public registration. It runs the Mera PRF check. It reads the agent's owner, passkey, nonce and current mandate from the public RPC. It shows the new mandate in plain words next to the current one. "Prepare approval" reads the agent fresh and cross-checks the page's own `mandateHash` and challenge against the registry's `mandateHashOf` and `challengeFor`. "Sign with passkey" then asks for the assertion straight away and verifies it locally against the agent's onchain key, refusing to export on any mismatch (the wrong passkey picked, flags, rpId, challenge). Finally it exports the signed approval (§6, "Passkey files"). Changing the agent id or the mandate drops everything read, prepared or signed before, so what is shown is always what would be signed.
+> - **Section 4, the inbox key (P7).** Two ceremonies, because Mera evaluates one salt per ceremony. (a) **Derive inbox key** runs Mera's `getPasskeyPrfOutput` with the inbox salt and `inboxPublicKeyFromPrf`, which zeroes the PRF output and the private key before it returns: the page keeps only the credential id and the X25519 public key, and says so when it is already the agent's key. (b) **Prepare** reads the agent fresh and cross-checks the challenge with the registry's `challengeFor`; **Sign with passkey** asks for an assertion with `allowCredentials` set to (a)'s credential, then verifies it against the agent's **onchain** passkey, so the key provably comes from the agent's own passkey (a stray passkey picked in (a) is refused here). It exports an `attest8004.approval.v1` with `change.kind: "setInboxKey"` for `submit-approval`.
 > - **It never sends a transaction.** The owner's wallet does, through `set-passkey` and `submit-approval`, and both re-check everything first. Both are dry runs by default: `submit-approval` prints the new mandate next to the current one in plain words (the owner's own check of what the passkey signed, since a WebAuthn prompt shows no content), and each sends only with `--confirm <first 8 hex digits>` of the value it binds (the changeHash, or the passkey's qx). Neither factor alone can change a mandate.
 > - **Ceremonies run only on `attest8004.vercel.app`** (`isApproveHost`). Anywhere else the buttons are disabled, so a passkey is never created on a preview URL or on localhost.
 > - **Security headers** come from `web/vercel.json`, and `vite preview` serves the same ones:
@@ -309,7 +310,11 @@ sequenceDiagram
   W->>W: decrypt, show the reports, zero every buffer
 ```
 
-The same synced passkey gives the same PRF output on every device, so the phone decrypts exactly what the laptop does. Nothing secret is ever written to storage. Posting a report happens in the validator's `onResponded`, after its response landed: it can't change the verdict, and a failure is logged and swallowed (§6).
+The same synced passkey gives the same PRF output on every device, so the phone decrypts exactly what the laptop does. Nothing secret is ever written to storage.
+
+> **`/inbox`, as built (P7; `web/src/inbox/`).** Client-only, with `/approve`'s CSP, headers and no-URL-input rule (it reuses `approve/url.ts`), and nothing stored (`web/test/no-storage.test.ts` forbids web storage, IndexedDB, cookies, the Cache API and service workers in every page's source).
+> - **Find reports** (no passkey): `inboxKeyOf`, then `findInboxEntries` through `viemInboxReader` on the page's one RPC client (rate-limited to 8 requests a second). Each answered verdict is shown with its validator (labelled from `DEPLOYMENTS`, otherwise its address), its tag and score, its `requestHash` linked to the `ValidationResponse` transaction on `monad-testnet.socialscan.io` (the public evidence), and `pnpm attest8004 verify <requestHash>`; then "encrypted report found (n bytes, block b)", or "no report found within 600 blocks of this verdict".
+> - **Decrypt with passkey** (only on `attest8004.vercel.app`): Mera's `getPasskeyPrfOutput` with the inbox salt, then `withInboxKey`, inside which `openInbox` opens every report; the key and the PRF output are zeroed when it returns, and each decrypted plaintext is wiped once decoded. A passkey whose key isn't the agent's onchain key is refused before anything is opened ("this passkey derives 0x…, but the agent's inbox key is 0x…"). Each report shows "matches the verdict onchain" (or "for an earlier response"), its summary, its items (severity, code, text, recommended action) and its notes, all as plain text. **Forget decrypted reports** drops them; so does a reload. Posting a report happens in the validator's `onResponded`, after its response landed: it can't change the verdict, and a failure is logged and swallowed (§6).
 
 ### 5.5 Re-check a verdict (why `mandate-v1` is "trust", not "opinion", and what `risk-v1`'s re-check proves)
 
@@ -661,7 +666,7 @@ The recommended gate policy is *require `mandate-v1` = 100 **and** `risk-v1` ≥
 
 The LLM never sees or holds any private key. Validators sign; the model only proposes a structured verdict, which is checked against a schema.
 
-`/approve` handles only public data: the passkey's public key, the credential id, and assertions, which are public once submitted. It shows no PRF output. Its Mera check evaluates a check-only salt, `sha256("attest8004.prf-check.v1")`, never P7's inbox salt. It shows the first 8 bytes of `sha256(output)`, so two devices can be compared, and zeroes the output at once.
+`/approve` handles only public data: the passkey's public key, the credential id, assertions (public once submitted) and, in section 4, the X25519 inbox public key; the inbox key's PRF output and private key are zeroed inside `inboxPublicKeyFromPrf` before it returns. It shows no PRF output. `/inbox` holds the inbox private key only inside `withInboxKey`, for the decryption itself (§5.4). Its Mera check evaluates a check-only salt, `sha256("attest8004.prf-check.v1")`, never P7's inbox salt. It shows the first 8 bytes of `sha256(output)`, so two devices can be compared, and zeroes the output at once.
 
 ---
 
@@ -744,7 +749,7 @@ attest8004/
   packages/cli/     @attest8004/cli (`pnpm attest8004 verify`: re-checks mandate-v1 and risk-v1 verdicts)
   validators/       mandate/ (mandate-v1: the service and verifyRequest), risk/ (risk-v1, P5: the validator and verifyRiskRequest)
   indexer/          Envio HyperIndex
-  web/              /approve (P6: src/approve/, headers in vercel.json), /inbox, /dashboard
+  web/              /approve (P6: src/approve/, headers in vercel.json; P7 adds the inbox key), /inbox (P7: src/inbox/), /dashboard
   cre/              (stretch) Chainlink CRE workflow
   scripts/          @attest8004/scripts: operational scripts (round trip, hot keys, demo agents, set-passkey, submit-approval, end to end)
   docs/             quickstart, API ref, threat model, deployments, spec-notes.md, nansen.md, mera.md, security-review.md

@@ -1,14 +1,16 @@
 import { ApprovePage } from "./approve/ApprovePage.tsx";
+import { InboxPage } from "./inbox/InboxPage.tsx";
 
-// The routes: /approve is live (P6); /inbox (P7) and /dashboard (P8) are still to come.
+// The routes: /approve (P6) and /inbox (P7) are live; /dashboard (P8) is still to come.
 const PAGES = [
   { path: "/approve", title: "Approve", body: "Create the agent's passkey and approve a mandate change.", live: true },
-  { path: "/inbox", title: "Inbox", body: "Decrypt private validator findings with your passkey.", live: false },
+  { path: "/inbox", title: "Inbox", body: "Decrypt validators' private operator reports with your passkey.", live: true },
   { path: "/dashboard", title: "Dashboard", body: "Requests, verdicts, validator stats and agent trust.", live: false },
 ];
 
 export function App() {
   if (window.location.pathname === "/approve") return <ApprovePage />;
+  if (window.location.pathname === "/inbox") return <InboxPage />;
   return (
     <main>
       <h1>Attest8004</h1>

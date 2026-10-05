@@ -5,6 +5,7 @@ import {
   REGISTRATION_SCHEMA_V1,
   RP_ID,
   authenticatorFlags,
+  base64UrlDecode,
   bufferOf,
   clientDataIndices,
   p256PublicKeyFromSpki,
@@ -63,15 +64,19 @@ export async function createPasskey(userName: string): Promise<CreatedPasskey> {
 }
 
 /**
- * `navigator.credentials.get` over `challenge` (its 32 raw bytes), user verification required, any discoverable
- * passkey for the rpId (the contract stores only the public key, not a credential id). Returns the assertion in the
+ * `navigator.credentials.get` over `challenge` (its 32 raw bytes), user verification required: any discoverable
+ * passkey for the rpId (the contract stores only the public key, not a credential id), or only `credentialId` when
+ * given (the inbox key's approval must come from the passkey that derived the key). Returns the assertion in the
  * contract's shape: `s` low, indices found by search in the exact `clientDataJSON` the browser returned.
  */
-export async function approveWithPasskey(challenge: Hex): Promise<{ auth: WebAuthnAuthJson; credentialId: string }> {
+export async function approveWithPasskey(challenge: Hex, o: { credentialId?: string } = {}): Promise<{ auth: WebAuthnAuthJson; credentialId: string }> {
+  const allowCredentials =
+    o.credentialId === undefined ? undefined : [{ type: "public-key" as const, id: bufferOf(bytesToHex(base64UrlDecode(o.credentialId))) }];
   const credential = (await navigator.credentials.get({
-    publicKey: { challenge: bufferOf(challenge), rpId: RP_ID, userVerification: "required", timeout: 120_000 },
+    publicKey: { challenge: bufferOf(challenge), rpId: RP_ID, userVerification: "required", timeout: 120_000, ...(allowCredentials ? { allowCredentials } : {}) },
   })) as PublicKeyCredential | null;
   if (!credential) throw new Error("the browser returned no assertion");
+  if (o.credentialId !== undefined && credential.id !== o.credentialId) throw new Error("the browser answered with another passkey than the one asked for");
   const response = credential.response as AuthenticatorAssertionResponse;
   const clientDataJSON = new TextDecoder().decode(response.clientDataJSON);
   const { r, s } = signatureFromDer(new Uint8Array(response.signature));

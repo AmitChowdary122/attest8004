@@ -5,7 +5,7 @@ import { hexToBytes, type Hex } from "viem";
 import { errorText } from "./exportJson.ts";
 
 /**
- * Step 2: Mera's PRF works with this passkey. It evaluates a check-only salt (never the inbox salt P7 uses) and shows
+ * Step 2: Mera's PRF works with this passkey. It evaluates a check-only salt (never the inbox salt of step 4) and shows
  * an 8-byte fingerprint of the output, then zeroes the output. The same passkey on another device must show the
  * same fingerprint.
  */
@@ -33,7 +33,7 @@ export function PrfCheck({ enabled }: { enabled: boolean }) {
     <section>
       <h2>2 · Check the passkey with Mera's PRF</h2>
       <p className="muted">
-        The Mera inbox (P7) derives keys from this passkey's PRF. Run this on each device: the fingerprints must match.
+        The Mera inbox (step 4, /inbox) derives keys from this passkey's PRF. Run this on each device: the fingerprints must match.
       </p>
       <button type="button" disabled={!enabled || busy} onClick={check}>
         {busy ? "Waiting for the passkey…" : "Mera PRF check"}
