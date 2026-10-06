@@ -24,6 +24,7 @@ import {
   type IndexedVerdict,
   type TrustApiOptions,
   type ValidatorStats,
+  knownValidatorsOf,
 } from "@attest8004/sdk";
 import { assertChain, publicClient } from "./common.ts";
 import { compareAgent, compareValidator, type ChainStatus, type ChainValidatorView, type Mismatch } from "./indexer-compare.ts";
@@ -71,7 +72,7 @@ async function checkAgent(api: TrustApiOptions, agentId: bigint, at: bigint): Pr
   const chainReports =
     board === null
       ? []
-      : (await findInboxEntries(viemInboxReader({ publicClient, deployment }), { agentId, findingsBoard: board, maxResponses: 1_000 })).flatMap((e) =>
+      : (await findInboxEntries(viemInboxReader({ publicClient, deployment }), { agentId, findingsBoard: board, knownValidators: knownValidatorsOf(deployment), maxResponses: 1_000 })).flatMap((e) =>
           e.posts.filter((p) => p.blockNumber <= at),
         );
   // Each request's own validator's posts, 50 requests a query; an answer that hit its limit can't be compared.

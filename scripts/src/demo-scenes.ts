@@ -22,6 +22,7 @@ import {
   type Outcome,
   type RequestedValidation,
   type Verdict,
+  knownValidatorsOf,
 } from "@attest8004/sdk";
 import {
   MANDATE_V1,
@@ -658,7 +659,7 @@ export async function scene5(ctx: SceneContext): Promise<void> {
   } else {
     const wanted = ctx.take.requests.map((r) => r.requestHash.toLowerCase());
     const discover = () =>
-      findInboxEntries(viemInboxReader({ publicClient, deployment }), { agentId: AGENT_ID, findingsBoard: board, maxResponses: Math.max(4, wanted.length) });
+      findInboxEntries(viemInboxReader({ publicClient, deployment }), { agentId: AGENT_ID, findingsBoard: board, knownValidators: knownValidatorsOf(deployment), maxResponses: Math.max(4, wanted.length) });
     const complete = (found: Awaited<ReturnType<typeof discover>>) =>
       wanted.every((hash) => found.find((e) => e.status.requestHash.toLowerCase() === hash)?.posts.length === 1);
     const entries = await retryUntil(discover, complete, { attempts: 4, delayMs: 5_000 });

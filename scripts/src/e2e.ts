@@ -115,6 +115,7 @@ import {
   type RequestedValidation,
   type ValidatorBase,
   type Verdict,
+  knownValidatorsOf,
 } from "@attest8004/sdk";
 import {
   MANDATE_V1,
@@ -664,7 +665,7 @@ async function main(): Promise<void> {
     console.log(`\n${heading}`);
     const board = (deployment as Deployment).findingsBoard;
     const discover = async () =>
-      board === null ? [] : await findInboxEntries(viemInboxReader({ publicClient, deployment }), { agentId, findingsBoard: board, maxResponses: 6 });
+      board === null ? [] : await findInboxEntries(viemInboxReader({ publicClient, deployment }), { agentId, findingsBoard: board, knownValidators: knownValidatorsOf(deployment as Deployment), maxResponses: 6 });
     // The last report lands moments before this runs: a node a block or two behind would answer short, so a missing
     // report is looked for again (up to 4 tries, 5 s apart) before it fails the run.
     const complete = (found: Awaited<ReturnType<typeof discover>>) =>

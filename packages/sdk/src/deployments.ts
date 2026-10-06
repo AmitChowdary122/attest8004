@@ -154,6 +154,15 @@ export const DEPLOYMENTS = {
 export const CRE_VALIDATOR_LABEL = "CRE workflow (simulation forwarder, not a trust root)";
 
 /** `DEPLOYMENTS[chainId]`, or throws (`verify` and the validators share this check: SPEC §4.5). */
+/**
+ * Attest8004's own validators on a chain: A (`mandate-v1`), B (`risk-v1`) and C (the CRE simulation). Inbox discovery
+ * lists their verdicts first and every other validator's apart (P12, AUD-03): an agent's hot key can name any address
+ * as a validator.
+ */
+export function knownValidatorsOf(deployment: Pick<Deployment, "validators">): Address[] {
+  return [deployment.validators.mandateV1, deployment.validators.riskV1, deployment.validators.creMandateV1];
+}
+
 export function deploymentsFor(chainId: number): Deployment {
   const deployment = (DEPLOYMENTS as Record<number, Deployment>)[chainId];
   if (!deployment) throw new Error(`no Attest8004 deployment recorded for chain ${chainId}`);

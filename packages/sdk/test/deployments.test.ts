@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import {
   currentMandateRegistry,
   DEPLOYMENTS,
+  knownValidatorsOf,
   MandateRegistryNotDeployedError,
   mandateRegistryAt,
   type Deployment,
@@ -98,5 +99,12 @@ describe("validator C (P11)", () => {
 
   it("records the forwarder C trusts: CRE's MockKeystoneForwarder on Monad testnet (Forwarder Directory)", () => {
     expect(testnet.creForwarder).toBe("0xB9F79d863261869B234c481D1f9A7af84AeAd192");
+  });
+});
+
+describe("knownValidatorsOf (P12 AUD-03)", () => {
+  it("is validators A, B and C, the ones /inbox and the scripts list first", () => {
+    const d = DEPLOYMENTS[10143];
+    expect(knownValidatorsOf(d)).toEqual([d.validators.mandateV1, d.validators.riskV1, d.validators.creMandateV1]);
   });
 });

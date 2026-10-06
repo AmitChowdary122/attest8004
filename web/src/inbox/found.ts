@@ -1,12 +1,12 @@
 // /inbox's "Found" line: how the reports were found, and, when the indexer is behind, how many verdicts were searched
 // on chain instead (plan Review Focus 1). Pure, so it is tested without a DOM.
-import { CRE_VALIDATOR_LABEL, DEPLOYMENTS, displayText, REPORT_SEARCH_BLOCKS, type InboxEntry } from "@attest8004/sdk/browser";
+import { CRE_VALIDATOR_LABEL, DEPLOYMENTS, displayText, knownValidatorsOf, REPORT_SEARCH_BLOCKS, type InboxEntry } from "@attest8004/sdk/browser";
 import { getAddress, type Address } from "viem";
 
 const testnet = DEPLOYMENTS[10143];
 
 /** The validators /inbox trusts to have written a report: Attest8004's A, B and C (P12, AUD-03). */
-export const KNOWN_VALIDATORS: readonly Address[] = [testnet.validators.mandateV1, testnet.validators.riskV1, testnet.validators.creMandateV1];
+export const KNOWN_VALIDATORS: readonly Address[] = knownValidatorsOf(testnet);
 
 const LABELS: Record<string, string> = {
   [getAddress(testnet.validators.mandateV1)]: "validator A (mandate-v1)",
