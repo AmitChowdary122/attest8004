@@ -8,9 +8,10 @@ import {Action} from "../../src/ActionHash.sol";
 import {IValidationRegistry} from "../../src/interfaces/IValidationRegistry.sol";
 import {IERC8004IdentityRegistry} from "./ValidationRegistry.fork.t.sol";
 
-// The three interfaces below copy only function, event and error signatures from AgentPassport's
-// IJobEscrow and IAgentPassport (by agentfromzero, MIT; the source is verified on Sourcify for the
-// addresses used here, docs/integrations.md). Their contracts are called on a fork, never changed.
+// Of the four interfaces below, IJobEscrowLike and IAgentPassportLike copy only function, event and error signatures
+// from AgentPassport's IJobEscrow and IAgentPassport (by agentfromzero, MIT; the source is verified on Sourcify for the
+// addresses used here, docs/integrations.md). IFiatTokenLike is Circle's USDC (FiatToken) and IAgentWalletLike the
+// canonical ERC-8004 Identity Registry: not theirs. Every contract is called on a fork, never changed.
 
 /// @notice AgentPassport's JobEscrow v2 (IJobEscrow), the parts these tests drive.
 interface IJobEscrowLike {
@@ -75,6 +76,7 @@ interface IAgentPassportLike {
 interface IFiatTokenLike {
     function approve(address spender, uint256 amount) external returns (bool);
     function balanceOf(address account) external view returns (uint256);
+    function isBlacklisted(address account) external view returns (bool);
 }
 
 /// @notice The canonical Identity Registry's payment-wallet read, which JobEscrow pays.
@@ -153,6 +155,9 @@ contract AgentPassportIntegrationForkTest is Test {
         Action memory a = _release(jobId, "release");
         _verdicts(a, 100, 100);
         address payee = _payee();
+        // Circle's USDC can freeze an address; neither party is, so the payout is the escrow's to make.
+        assertFalse(USDC.isBlacklisted(hirer), "the hirer isn't blacklisted by Circle");
+        assertFalse(USDC.isBlacklisted(payee), "the payee isn't blacklisted by Circle");
         uint256 payeeBefore = USDC.balanceOf(payee);
         uint256 escrowBefore = USDC.balanceOf(address(ESCROW));
         uint64 settledBefore = PASSPORT.passportOf(workerAgent).jobsSettled;
@@ -264,9 +269,10 @@ contract AgentPassportIntegrationForkTest is Test {
     }
 
     /// The action's own call (what mandate-v1 simulates from the vault) fits its gas cap, on an
-    /// agent's first settlement (its passport record and first feedback are new storage, the
-    /// costliest case). Logs that gas and a whole execute's on another first settlement, for
-    /// docs/integrations.md.
+    /// agent's first settlement (its passport record and first feedback are new storage). Measured
+    /// within one test transaction, so part of the state is already warm: an indication, not a bound
+    /// (size live limits from eth_estimateGas). Logs that gas and a whole execute's on another first
+    /// settlement, for docs/integrations.md.
     function testFork_ReleaseFitsMandateV1SimulationCap() public {
         uint256 direct = _openAndDeliver();
         vm.prank(address(VAULT));
