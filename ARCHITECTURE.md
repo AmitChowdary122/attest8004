@@ -716,7 +716,10 @@ Encodings are `mandate-v1`'s: every `bigint` (block numbers, timestamps, wei, ga
   - `{"status":"declined","code","detail"}`, where `code` is one of `PIN_BEFORE_FIRST_REGISTRY`, `REQUEST_NOT_FOUND`,
     `NOT_THIS_VALIDATOR`, `PIN_NOT_REQUEST_BLOCK`, `REQUEST_INVALID`, `GATE_NOT_SERVED`, `GATE_NOT_FOR_AGENT` or
     `EVIDENCE_TOO_LARGE`;
-  - or 503 `{"status":"unavailable"}` (a failed read, never a verdict) or `{"status":"busy"}`.
+  - or 503 `{"status":"unavailable"}` (a failed read, never a verdict; also, at once and without a queue slot, a pin
+    more than 600 blocks above the finalized head, which couldn't finalize within the job's wait) or `{"status":"busy"}`;
+  - 421 `{"status":"misdirected"}` for any `Host` other than `127.0.0.1:<port>` or `localhost:<port>`, so a web page
+    that rebinds its own name to 127.0.0.1 can't reach it (P12, AUD-11).
 
   `GET /health` answers `{"ok":true,"tag":"mandate-v1","validator":<C>}`.
 - **The report** CreValidator decodes: `abi.encode(bytes32 requestHash, uint8 response, string responseURI, bytes32

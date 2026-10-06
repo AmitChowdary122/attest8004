@@ -26,6 +26,11 @@ export interface EvaluateJobsOptions {
   pollMs?: number;
   /** Evaluations running or waiting at once; a new key beyond this is `busy`. Default 4. */
   maxQueued?: number;
+  /**
+   * How far above the finalized head a pin may be (default 600 blocks, about 3 minutes, well past the finality wait):
+   * a higher one is unavailable at once, without a queue slot (P12, AUD-11).
+   */
+  maxPinAheadBlocks?: number;
   /** Final outcomes remembered, least recently used first out. Default 32. */
   maxCached?: number;
   log?: (entry: Record<string, unknown>) => void;
@@ -45,6 +50,7 @@ export class EvaluateJobs {
   private readonly finalityTimeoutMs: number;
   private readonly pollMs: number;
   private readonly maxQueued: number;
+  private readonly maxPinAheadBlocks: bigint;
   private readonly maxCached: number;
   private readonly log: (entry: Record<string, unknown>) => void;
   private readonly jobs = new Map<string, Promise<JobView>>();
@@ -58,6 +64,7 @@ export class EvaluateJobs {
     this.finalityTimeoutMs = o.finalityTimeoutMs ?? 60_000;
     this.pollMs = o.pollMs ?? 500;
     this.maxQueued = o.maxQueued ?? 4;
+    this.maxPinAheadBlocks = BigInt(o.maxPinAheadBlocks ?? 600);
     this.maxCached = o.maxCached ?? 32;
     this.log = o.log ?? (() => {});
   }
@@ -74,6 +81,8 @@ export class EvaluateJobs {
     }
     let job = this.jobs.get(key);
     if (job === undefined) {
+      // A pin that can't finalize within the job's wait would only hold a queue slot (P12, AUD-11): refused at once.
+      if (pinnedBlock > (await this.finalized()) + this.maxPinAheadBlocks) return UNAVAILABLE;
       if (this.jobs.size >= this.maxQueued) return BUSY;
       job = this.start(key, hash, pinnedBlock);
     }

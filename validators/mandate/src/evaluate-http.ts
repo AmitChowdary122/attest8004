@@ -45,6 +45,13 @@ export async function startEvaluateServer(o: {
   const holdMs = o.holdMs ?? HOLD_MS;
   const log = o.log ?? (() => {});
   const server = createServer((req, res) => {
+    // DNS rebinding (P12, AUD-11): a page whose name resolves to 127.0.0.1 is same-origin to its own host name, not
+    // to ours, so only a request naming this exact loopback address and port is served.
+    const port = (server.address() as AddressInfo).port;
+    if (req.headers.host !== `${EVALUATE_HOST}:${port}` && req.headers.host !== `localhost:${port}`) {
+      reply(res, 421, { status: "misdirected" });
+      return;
+    }
     handle(req, res, o.jobs, o.validator, holdMs, log).catch((error: unknown) => {
       log({ level: "error", msg: "request failed", error: error instanceof Error ? error.message : String(error) });
       if (!res.headersSent) reply(res, 500, { status: "error" });

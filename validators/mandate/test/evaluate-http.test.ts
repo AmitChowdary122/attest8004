@@ -47,9 +47,11 @@ function send(o: {
   body?: string;
   contentType?: string | null;
   chunked?: boolean;
+  host?: string;
 }): Promise<{ status: number; body: string; contentType: string | undefined }> {
   return new Promise((resolve, reject) => {
     const headers: Record<string, string> = {};
+    if (o.host !== undefined) headers.host = o.host;
     if (o.contentType !== null) headers["content-type"] = o.contentType ?? "application/json";
     if (o.body !== undefined && !o.chunked) headers["content-length"] = String(Buffer.byteLength(o.body));
     const req = request({ host: "127.0.0.1", port: o.port, method: o.method ?? "POST", path: o.path ?? "/evaluate", headers }, (res) => {
@@ -141,9 +143,23 @@ describe("/evaluate over HTTP", () => {
     expect(evaluations).toBe(0);
   });
 
-  it("accepts the largest uint64 pin", async () => {
+  it("parses the largest uint64 pin, and refuses it as one that can't finalize in time (503, P12 AUD-11)", async () => {
     const port = await start();
-    expect((await ask(port, { requestHash: H, pinnedBlock: "18446744073709551615" })).status).toBe(200);
+    const r = await ask(port, { requestHash: H, pinnedBlock: "18446744073709551615" });
+    expect(r.status).toBe(503);
+    expect(JSON.parse(r.body)).toEqual({ status: "unavailable" });
+    expect(evaluations).toBe(0);
+  });
+
+  it("P12 AUD-11: a Host other than the loopback address and port is 421, before any evaluation (DNS rebinding)", async () => {
+    const port = await start();
+    const body = JSON.stringify({ requestHash: H, pinnedBlock: "7" });
+    expect((await send({ port, body, host: `evil.example:${port}` })).status).toBe(421);
+    expect((await send({ port, body, host: "127.0.0.1:1" })).status).toBe(421);
+    expect((await send({ port, path: "/health", method: "GET", host: `rebind.example:${port}` })).status).toBe(421);
+    expect(evaluations).toBe(0);
+    expect((await send({ port, body, host: `localhost:${port}` })).status).toBe(200);
+    expect((await send({ port, body, host: `127.0.0.1:${port}` })).status).toBe(200);
   });
 
   it("http_rejectsWrongContentType: 415", async () => {

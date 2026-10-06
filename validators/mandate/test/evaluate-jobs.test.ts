@@ -104,6 +104,15 @@ describe("EvaluateJobs: a long-poll over one memoized job per (requestHash, pin)
     expect(most).toBe(1);
   });
 
+  it("P12 AUD-11: a pin too far above the finalized head is unavailable at once and takes no queue slot", async () => {
+    let evaluated = 0;
+    const j = jobs({ maxQueued: 1, evaluate: async () => (evaluated++, DONE) });
+    expect(await j.view(H1, P + 1_000_000n, 50)).toEqual({ status: "unavailable" });
+    expect(await j.view(H2, 2n ** 64n - 1n, 50)).toEqual({ status: "unavailable" });
+    expect(await j.view(H3, P, 500)).toEqual(DONE);
+    expect(evaluated).toBe(1);
+  });
+
   it("jobs_busyWhenQueueFull: a third distinct request waits for room", async () => {
     const j = jobs({ maxQueued: 2, evaluate: () => new Promise<EvaluateOutcome>(() => {}) });
     expect(await j.view(H1, P, 0)).toEqual({ status: "pending" });
