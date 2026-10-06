@@ -23,6 +23,7 @@ import {
   computeRequestHash,
   parseRequestUri,
   requestHashOfJson,
+  RequestSquattedError,
   validationRegistryAbi,
   validationResponseEvent,
 } from "../src/index.ts";
@@ -106,6 +107,82 @@ describe("Attest8004Client.requestValidation", () => {
         blockNumber: rpc.blockNumber,
       });
     });
+  });
+
+  it("P12 AUD-01: broadcasts every request on consecutive nonces before awaiting any receipt", async () => {
+    rpc.onCall(FORWARDER, agentRequestForwarderAbi, "request", () => undefined);
+    const { publicClient, walletClient } = rpc.clients(account);
+    const client = new Attest8004Client({ publicClient, walletClient, validationRegistry: REGISTRY, forwarder: FORWARDER });
+
+    await client.requestValidation({ gate: GATE, validators: [VALIDATOR_A, VALIDATOR_B, VALIDATOR_C], action });
+
+    expect(rpc.sent.map((tx) => tx.nonce)).toEqual([0, 1, 2]);
+    const methods = rpc.methods();
+    const lastSend = methods.lastIndexOf("eth_sendRawTransaction");
+    const firstReceipt = methods.indexOf("eth_getTransactionReceipt");
+    expect(firstReceipt).toBeGreaterThan(lastSend);
+    expect(methods.filter((m) => m === "eth_getTransactionCount")).toHaveLength(1);
+  });
+
+  it("P12 AUD-01: a local account's requests are signed first and sent together: nothing else between the sends", async () => {
+    rpc.onCall(FORWARDER, agentRequestForwarderAbi, "request", () => undefined);
+    rpc.delayMs = 100;
+    const sentAt: number[] = [];
+    rpc.intercept = (method) => {
+      if (method === "eth_sendRawTransaction") sentAt.push(Date.now());
+      return undefined;
+    };
+    const { publicClient, walletClient } = rpc.clients(account);
+    const client = new Attest8004Client({ publicClient, walletClient, validationRegistry: REGISTRY, forwarder: FORWARDER, broadcastSettleMs: 0 });
+
+    await client.requestValidation({ gate: GATE, validators: [VALIDATOR_A, VALIDATOR_B], action });
+
+    const methods = rpc.methods();
+    const first = methods.indexOf("eth_sendRawTransaction");
+    expect(methods.slice(first, first + 2)).toEqual(["eth_sendRawTransaction", "eth_sendRawTransaction"]);
+    expect(sentAt).toHaveLength(2);
+    expect((sentAt[1] ?? 0) - (sentAt[0] ?? 0)).toBeLessThan(60); // sequential sends would be >= 100 ms apart
+    expect(rpc.sent.map((tx) => tx.nonce)).toEqual([0, 1]);
+  });
+
+  it("P12 AUD-01: a requestHash another agent already claimed is RequestSquattedError, and nothing is sent", async () => {
+    rpc.onCall(FORWARDER, agentRequestForwarderAbi, "request", (args) =>
+      args[3] === rhB ? revert(validationRegistryAbi, "RequestExists", [rhB]) : undefined,
+    );
+    rpc.onCall(REGISTRY, validationRegistryAbi, "getValidationStatus", (args) =>
+      args[0] === rhB ? [VALIDATOR_B, 666n, 0, zeroHash, "", 0n] : revert(validationRegistryAbi, "UnknownRequest", [args[0]]),
+    );
+    const { publicClient, walletClient } = rpc.clients(account);
+    const client = new Attest8004Client({ publicClient, walletClient, validationRegistry: REGISTRY, forwarder: FORWARDER });
+
+    const failed = client.requestValidation({ gate: GATE, validators: [VALIDATOR_A, VALIDATOR_B], action });
+
+    await expect(failed).rejects.toBeInstanceOf(RequestSquattedError);
+    await expect(failed).rejects.toMatchObject({ requestHash: rhB, validator: VALIDATOR_B, claimedBy: 666n });
+    await expect(failed).rejects.toThrow(/possibly squatted.*re-salt the action and retry/);
+    expect(rpc.sent).toHaveLength(0);
+  });
+
+  it("P12 AUD-01: a request that reverts after broadcast because its hash was claimed in between is RequestSquattedError", async () => {
+    rpc.onCall(FORWARDER, agentRequestForwarderAbi, "request", () => undefined);
+    rpc.onCall(REGISTRY, validationRegistryAbi, "getValidationStatus", (args) =>
+      args[0] === rhB ? [VALIDATOR_B, 666n, 0, zeroHash, "", 0n] : [VALIDATOR_A, 7n, 0, zeroHash, "", 0n],
+    );
+    rpc.receiptLogs = () => [];
+    rpc.intercept = (method, params) => {
+      if (method !== "eth_getTransactionReceipt") return undefined;
+      const tx = rpc.sent.find((t) => t.hash === params[0]);
+      return tx?.nonce === 1 ? { ...receiptOf(tx.hash), status: "0x0" } : undefined;
+    };
+    const { publicClient, walletClient } = rpc.clients(account);
+    const client = new Attest8004Client({ publicClient, walletClient, validationRegistry: REGISTRY, forwarder: FORWARDER });
+
+    await expect(client.requestValidation({ gate: GATE, validators: [VALIDATOR_A, VALIDATOR_B], action })).rejects.toMatchObject({
+      name: "RequestSquattedError",
+      requestHash: rhB,
+      claimedBy: 666n,
+    });
+    expect(rpc.sent).toHaveLength(2);
   });
 
   it("calls validationRequest on the registry when no forwarder is set", async () => {
@@ -323,3 +400,23 @@ describe("Attest8004Client.isValidated (mirrors AttestGate)", () => {
     }
   });
 });
+
+/** A minimal successful receipt for `hash`, in the fake's current block. */
+function receiptOf(hash: Hex) {
+  return {
+    transactionHash: hash,
+    transactionIndex: "0x0",
+    blockHash: keccak256(toHex(rpc.blockNumber)),
+    blockNumber: toHex(rpc.blockNumber),
+    from: account.address,
+    to: FORWARDER,
+    cumulativeGasUsed: "0x0",
+    gasUsed: "0x0",
+    effectiveGasPrice: toHex(102_000_000_000n),
+    contractAddress: null,
+    logs: [],
+    logsBloom: `0x${"00".repeat(256)}`,
+    status: "0x1",
+    type: "0x2",
+  };
+}

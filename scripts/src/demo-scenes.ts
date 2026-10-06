@@ -313,15 +313,17 @@ async function showMandate(ctx: SceneContext, setMandateTx: Hash) {
   out.tx("the transaction (its trace shows the STATICCALL)", setMandateTx);
 }
 
-/** One request per validator, A then B, from `account` through the forwarder. */
+/**
+ * One request per validator, A and B, from `account` through the forwarder, broadcast together on consecutive nonces
+ * (P12, AUD-01: a landed request reveals the other validator's requestHash, so they shouldn't land a block apart).
+ */
 async function requestBoth(ctx: SceneContext, account: Account, action: Action, who: string) {
   const client = new Attest8004Client({ publicClient, walletClient: walletFor(account), validationRegistry: REGISTRY, forwarder: FORWARDER });
+  const sides = ["mandate-v1", "risk-v1"] as const;
+  const both = await client.requestValidation({ gate: VAULT, validators: [ctx.env.validatorA.address, ctx.env.validatorB.address], action });
   const requested: RequestedValidation[] = [];
-  for (const [side, validator] of [
-    ["mandate-v1", ctx.env.validatorA.address],
-    ["risk-v1", ctx.env.validatorB.address],
-  ] as const) {
-    const [one] = await client.requestValidation({ gate: VAULT, validators: [validator], action });
+  for (const [i, side] of sides.entries()) {
+    const one = both[i];
     if (!one) throw new Error(`requestValidation returned nothing for ${side}`);
     requested.push(one);
     ctx.out.tx(`${who} asks ${side}`, one.txHash);

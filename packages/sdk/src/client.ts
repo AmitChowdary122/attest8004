@@ -12,7 +12,7 @@ import {
 } from "viem";
 import { agentRequestForwarderAbi, attestGateAbi, validationRegistryAbi, validationResponseEvent } from "./abi.ts";
 import { computeActionHash, computeRequestHash, type Action } from "./action.ts";
-import { writeWithGasGuard } from "./gas.ts";
+import { broadcastPrepared, feesAndNonce, prepareGuardedWrite, signPrepared, successfulReceipt, type PreparedWrite } from "./gas.ts";
 import { blockWindows } from "./logs.ts";
 import { buildRequestJson, encodeJsonDataUri, requestHashOfJson, type RequestJsonV1 } from "./request.ts";
 
@@ -27,6 +27,29 @@ export const DEFAULT_GAS = {
   forwarderRequest: 315_000n,
   validationRequest: 244_000n,
 } as const;
+
+/**
+ * A request's `requestHash` is already in the registry under another agent or validator (P12, AUD-01). The registry
+ * keys requests by hash alone, and a landed request reveals every other validator's hash for the same action, so
+ * anyone who owns an agent can claim one first. Nothing can be done for this action: re-salt it and request again.
+ */
+export class RequestSquattedError extends Error {
+  readonly requestHash: Hex;
+  readonly validator: Address;
+  /** The agent the registry records for the hash. */
+  readonly claimedBy: bigint;
+
+  constructor(requestHash: Hex, validator: Address, claimedBy: bigint) {
+    super(
+      `requestHash ${requestHash} for validator ${validator} is already claimed by agent ${claimedBy}: possibly squatted; ` +
+        "re-salt the action and retry",
+    );
+    this.name = "RequestSquattedError";
+    this.requestHash = requestHash;
+    this.validator = validator;
+    this.claimedBy = claimedBy;
+  }
+}
 
 export interface RequestedValidation {
   validator: Address;
@@ -72,7 +95,15 @@ export interface Attest8004ClientOptions {
   /** When set, requests go through `AgentRequestForwarder.request` instead of the registry. */
   forwarder?: Address;
   gas?: Partial<Record<keyof typeof DEFAULT_GAS, bigint>>;
+  /**
+   * How long `requestValidation` waits between preparing an action's requests and sending them (default 1,000 ms), so
+   * a rate-limited transport's window (the scripts' 10 a second) has room to send them back to back (P12, AUD-01).
+   */
+  broadcastSettleMs?: number;
 }
+
+/** Between two of an action's raw request transactions: enough for nonce n to reach the node first, well under a block. */
+const BROADCAST_STAGGER_MS = 20;
 
 /** SPEC §4.4: request validations for an action, wait for verdicts, and check the gate would pass. */
 export class Attest8004Client {
@@ -85,10 +116,16 @@ export class Attest8004Client {
   }
 
   /**
-   * One `validationRequest` per validator, each with its own request JSON v1 (as a data: URI) and
-   * requestHash, sent in order with an explicit gas limit. Through the forwarder when one is set
-   * (the wallet is then the agent's registered hot key), else straight to the registry (the wallet
-   * is then the agent's owner or operator).
+   * One `validationRequest` per validator, each with its own request JSON v1 (as a data: URI) and requestHash, with an
+   * explicit gas limit. Through the forwarder when one is set (the wallet is then the agent's registered hot key), else
+   * straight to the registry (the wallet is then the agent's owner or operator).
+   *
+   * **All at once (P12, AUD-01).** A landed request carries the whole action, so every other validator's requestHash
+   * for it can be computed from that log and claimed first by anyone who owns an agent. So every request is simulated
+   * and estimated first (nothing is sent if one would revert), then all are broadcast back to back on consecutive
+   * nonces before any receipt is awaited: in practice they land in one block. A hash that someone else already holds,
+   * found before sending or after a request reverted, is {@link RequestSquattedError}: re-salt the action and retry.
+   * Requests that still land in different blocks are fine as long as each succeeded (`blockNumber` per request).
    */
   async requestValidation(args: {
     gate: Address;
@@ -98,31 +135,86 @@ export class Attest8004Client {
     const { publicClient, walletClient, forwarder, validationRegistry } = this.options;
     if (!walletClient?.account) throw new Error("requestValidation needs a walletClient with an account");
     const chainId = await publicClient.getChainId();
-    const requested: RequestedValidation[] = [];
-    for (const validator of args.validators) {
+    const requests = args.validators.map((validator) => {
       const request = buildRequestJson({ chainId, gate: args.gate, validator, action: args.action });
-      const requestHash = requestHashOfJson(request);
-      const { uri } = encodeJsonDataUri(request);
-      const sent = await writeWithGasGuard({
-        publicClient,
-        walletClient,
-        ...(forwarder
-          ? { address: forwarder, abi: agentRequestForwarderAbi, functionName: "request" }
-          : { address: validationRegistry, abi: validationRegistryAbi, functionName: "validationRequest" }),
-        args: [request.validator, args.action.agentId, uri, requestHash],
-        gasLimit: forwarder ? this.gas.forwarderRequest : this.gas.validationRequest,
-        label: forwarder ? "forwarder.request" : "validationRequest",
-      });
+      return { request, requestHash: requestHashOfJson(request), uri: encodeJsonDataUri(request).uri };
+    });
+
+    const prepared: PreparedWrite[] = [];
+    for (const r of requests) {
+      try {
+        prepared.push(
+          await prepareGuardedWrite({
+            publicClient,
+            walletClient,
+            ...(forwarder
+              ? { address: forwarder, abi: agentRequestForwarderAbi, functionName: "request" }
+              : { address: validationRegistry, abi: validationRegistryAbi, functionName: "validationRequest" }),
+            args: [r.request.validator, args.action.agentId, r.uri, r.requestHash],
+            gasLimit: forwarder ? this.gas.forwarderRequest : this.gas.validationRequest,
+            label: forwarder ? "forwarder.request" : "validationRequest",
+          }),
+        );
+      } catch (error) {
+        throw (await this.squatted(r.requestHash, r.request.validator, args.action.agentId)) ?? error;
+      }
+    }
+
+    const { nonce, ...fees } = await feesAndNonce(publicClient, walletClient.account.address);
+    const signed = await Promise.all(prepared.map((p, i) => signPrepared(walletClient, p, { ...fees, nonce: nonce + i })));
+    let hashes: Hash[];
+    if (signed.every((raw): raw is Hex => raw !== null)) {
+      // Signed locally: after the settle, each raw transaction goes out BROADCAST_STAGGER_MS after the one before,
+      // without waiting for the node's answer, so they reach it in nonce order within a few tens of milliseconds.
+      const settle = this.options.broadcastSettleMs ?? 1_000;
+      if (settle > 0) await new Promise((resolve) => setTimeout(resolve, settle));
+      hashes = await Promise.all(
+        signed.map(async (raw, i) => {
+          if (i > 0) await new Promise((resolve) => setTimeout(resolve, i * BROADCAST_STAGGER_MS));
+          return publicClient.sendRawTransaction({ serializedTransaction: raw });
+        }),
+      );
+    } else {
+      hashes = [];
+      for (const [i, p] of prepared.entries()) hashes.push(await broadcastPrepared(walletClient, p, { ...fees, nonce: nonce + i }));
+    }
+    const receipts = await Promise.allSettled(hashes.map((hash, i) => successfulReceipt(publicClient, hash, prepared[i]?.label ?? "request")));
+
+    const requested: RequestedValidation[] = [];
+    for (const [i, outcome] of receipts.entries()) {
+      const r = requests[i];
+      const hash = hashes[i];
+      if (r === undefined || hash === undefined) continue;
+      if (outcome.status === "rejected") {
+        throw (await this.squatted(r.requestHash, r.request.validator, args.action.agentId)) ?? outcome.reason;
+      }
       requested.push({
-        validator: request.validator,
-        requestHash,
-        requestURI: uri,
-        request,
-        txHash: sent.hash,
-        blockNumber: sent.receipt.blockNumber,
+        validator: r.request.validator,
+        requestHash: r.requestHash,
+        requestURI: r.uri,
+        request: r.request,
+        txHash: hash,
+        blockNumber: outcome.value.blockNumber,
       });
     }
     return requested;
+  }
+
+  /** {@link RequestSquattedError} when the registry holds `requestHash` for another agent or validator; else null. */
+  private async squatted(requestHash: Hex, validator: Address, agentId: bigint): Promise<RequestSquattedError | null> {
+    let held: readonly [Address, bigint, ...unknown[]];
+    try {
+      held = (await this.options.publicClient.readContract({
+        address: this.options.validationRegistry,
+        abi: validationRegistryAbi,
+        functionName: "getValidationStatus",
+        args: [requestHash],
+      })) as unknown as readonly [Address, bigint, ...unknown[]];
+    } catch {
+      return null;
+    }
+    const [heldValidator, heldAgent] = held;
+    return heldAgent !== agentId || getAddress(heldValidator) !== getAddress(validator) ? new RequestSquattedError(requestHash, validator, heldAgent) : null;
   }
 
   /**

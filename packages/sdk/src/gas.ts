@@ -1,4 +1,4 @@
-import type { Abi, Address, Hash, PublicClient, TransactionReceipt, WalletClient } from "viem";
+import { encodeFunctionData, type Abi, type Address, type Hash, type Hex, type PublicClient, type TransactionReceipt, type WalletClient } from "viem";
 
 /** The node's current estimate is above the explicit limit, so nothing was sent. */
 export class GasLimitTooLowError extends Error {
@@ -56,6 +56,27 @@ export async function writeWithGasGuard(write: GasGuardedWrite): Promise<{
   estimate: bigint;
   gasLimit: bigint;
 }> {
+  const prepared = await prepareGuardedWrite(write);
+  const fees = await feesAndNonce(write.publicClient, prepared.from);
+  const hash = await broadcastPrepared(write.walletClient, prepared, fees, write.signal);
+  return { hash, receipt: await successfulReceipt(write.publicClient, hash, write.label), estimate: prepared.estimate, gasLimit: prepared.gasLimit };
+}
+
+/** A write that passed its simulation and estimate, with its resolved limit: ready to broadcast at any nonce. */
+export interface PreparedWrite {
+  call: { address: Address; abi: Abi; functionName: string; args: readonly unknown[] };
+  from: Address;
+  estimate: bigint;
+  gasLimit: bigint;
+  label: string;
+}
+
+/**
+ * The checks `writeWithGasGuard` makes before sending: simulate (a revert surfaces by name, nothing is sent), estimate,
+ * resolve the limit. Split out so a caller can prepare several writes, then broadcast them back to back on consecutive
+ * nonces before awaiting any receipt (P12, AUD-01: `Attest8004Client.requestValidation`).
+ */
+export async function prepareGuardedWrite(write: Omit<GasGuardedWrite, "signal">): Promise<PreparedWrite> {
   const { publicClient, walletClient, address, abi, functionName, args, gasLimit, label } = write;
   const account = walletClient.account;
   if (!account) throw new Error(`${label}: the wallet client has no account`);
@@ -63,21 +84,28 @@ export async function writeWithGasGuard(write: GasGuardedWrite): Promise<{
   // here. The simulation and estimate use the bare address: given a local account, viem would
   // prepare a whole transaction for them, asking the node to fill it.
   const call = { address, abi, functionName, args };
-
   await publicClient.simulateContract({ ...call, account: account.address } as never);
   const estimate = await publicClient.estimateContractGas({ ...call, account: account.address } as never);
-  const limit = resolveGasLimit(gasLimit, estimate, label);
+  return { call, from: account.address, estimate, gasLimit: resolveGasLimit(gasLimit, estimate, label), label };
+}
 
-  const fees = await feesAndNonce(publicClient, account.address);
-  if (write.signal?.aborted) throw new Error(`${label}: aborted before sending`);
-  const hash = await walletClient.writeContract({
-    ...call,
+/** Broadcasts a prepared write with explicit fees and nonce (so viem fills nothing from the node); returns its hash. */
+export async function broadcastPrepared(
+  walletClient: WalletClient,
+  prepared: PreparedWrite,
+  fees: { chainId: number; maxFeePerGas: bigint; maxPriorityFeePerGas: bigint; nonce: number },
+  signal?: AbortSignal,
+): Promise<Hash> {
+  const account = walletClient.account;
+  if (!account) throw new Error(`${prepared.label}: the wallet client has no account`);
+  if (signal?.aborted) throw new Error(`${prepared.label}: aborted before sending`);
+  return walletClient.writeContract({
+    ...prepared.call,
     account,
     chain: walletClient.chain,
-    gas: limit,
+    gas: prepared.gasLimit,
     ...fees,
   } as never);
-  return { hash, receipt: await successfulReceipt(publicClient, hash, label), estimate, gasLimit: limit };
 }
 
 /**
@@ -125,8 +153,33 @@ export async function sendWithGasGuard(send: {
   return { hash, receipt: await successfulReceipt(publicClient, hash, label), estimate, gasLimit };
 }
 
+/**
+ * Signs a prepared write locally, with explicit fees and nonce, when the wallet's account is a local one (a private
+ * key): no RPC call at all, so several can be signed first and sent back to back. Null for any other account (a
+ * JSON-RPC wallet signs only as it sends).
+ */
+export async function signPrepared(
+  walletClient: WalletClient,
+  prepared: PreparedWrite,
+  fees: { chainId: number; maxFeePerGas: bigint; maxPriorityFeePerGas: bigint; nonce: number },
+): Promise<Hex | null> {
+  const account = walletClient.account;
+  if (account?.type !== "local" || account.signTransaction === undefined) return null;
+  return account.signTransaction({
+    type: "eip1559",
+    chainId: fees.chainId,
+    nonce: fees.nonce,
+    to: prepared.call.address,
+    data: encodeFunctionData(prepared.call as never),
+    value: 0n,
+    gas: prepared.gasLimit,
+    maxFeePerGas: fees.maxFeePerGas,
+    maxPriorityFeePerGas: fees.maxPriorityFeePerGas,
+  });
+}
+
 // With the chain id, nonce, fees and gas all set, viem fills nothing from the node.
-async function feesAndNonce(publicClient: PublicClient, address: Address) {
+export async function feesAndNonce(publicClient: PublicClient, address: Address) {
   const [chainId, { maxFeePerGas, maxPriorityFeePerGas }, nonce] = await Promise.all([
     publicClient.getChainId(),
     publicClient.estimateFeesPerGas(),
@@ -140,7 +193,7 @@ async function feesAndNonce(publicClient: PublicClient, address: Address) {
  * then returns the replacement's receipt) is a failed send unless it was only repriced: otherwise another
  * transaction's success, such as a late send from the same key, would be taken for this one's.
  */
-async function successfulReceipt(publicClient: PublicClient, hash: Hash, label: string) {
+export async function successfulReceipt(publicClient: PublicClient, hash: Hash, label: string) {
   let replaced: { reason: string; by: Hash } | undefined;
   const receipt = await publicClient.waitForTransactionReceipt({
     hash,

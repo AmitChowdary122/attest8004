@@ -261,10 +261,11 @@ sequenceDiagram
   participant VA as mandate-v1
   participant VB as risk-v1
   participant G as DemoAgentVault (AttestGate)
-  A->>A: build Action; rhA = requestHash(VA), rhB = requestHash(VB)
+  A->>A: build Action; rhA = requestHash(VA), rhB = requestHash(VB); simulate both
+  Note over A,F: both signed first, then sent on nonces n and n+1 before any receipt (P12, AUD-01)
   A->>F: request(VA, agentId, requestURI_A, rhA)
-  F->>VR: validationRequest(VA, agentId, requestURI_A, rhA)
   A->>F: request(VB, agentId, requestURI_B, rhB)
+  F->>VR: validationRequest(VA, agentId, requestURI_A, rhA)
   F->>VR: validationRequest(VB, agentId, requestURI_B, rhB)
   VR-->>VA: ValidationRequest event (rhA)
   VR-->>VB: ValidationRequest event (rhB)

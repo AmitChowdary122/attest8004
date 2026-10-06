@@ -584,6 +584,7 @@ async function main(): Promise<void> {
   const validatorOf: Record<Side, Address> = { A: validatorA.address, B: validatorB.address };
   const requests = new Map<string, RequestedValidation & { estimate: bigint }>();
   for (const label of LABELS) {
+    const estimates: Record<Side, bigint> = { A: 0n, B: 0n };
     for (const side of ["A", "B"] as const) {
       const estimate = await estimateRequest(actions[label], validatorOf[side]);
       check(
@@ -591,7 +592,13 @@ async function main(): Promise<void> {
         estimate <= DEFAULT_GAS.forwarderRequest,
         `${estimate} > ${DEFAULT_GAS.forwarderRequest}`,
       );
-      const [requested] = await client.requestValidation({ gate: vault, validators: [validatorOf[side]], action: actions[label] });
+      estimates[side] = estimate;
+    }
+    // A and B together, on consecutive nonces (P12, AUD-01: a landed request reveals the other one's requestHash).
+    const both = await client.requestValidation({ gate: vault, validators: [validatorOf.A, validatorOf.B], action: actions[label] });
+    for (const [i, side] of (["A", "B"] as const).entries()) {
+      const requested = both[i];
+      const estimate = estimates[side];
       if (!requested) throw new Error(`requestValidation returned nothing for ${label} -> ${side}`);
       requests.set(`${label}${side}`, { ...requested, estimate });
       txs[`request${label}${side}`] = requested.txHash;
