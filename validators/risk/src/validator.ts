@@ -21,7 +21,8 @@ import { RISK_V1 } from "./params.ts";
 import { riskAddressesAt, type RiskContracts, type RiskReader } from "./reader.ts";
 import { riskReport } from "./report.ts";
 import { readPrerequisite, runRiskV1 } from "./run.ts";
-import type { Prerequisite } from "./types.ts";
+import { postingGate } from "./posting-gate.ts";
+import type { Prerequisite, RecordedFinding, ToolCallRecord } from "./types.ts";
 
 /** How long `check()` waits for validator A's verdict at a pinned block before it throws (and the base retries). */
 export const DEFAULT_RISK_PIN_TIMEOUT_MS = 120_000;
@@ -216,9 +217,14 @@ export class RiskValidator extends ValidatorBase {
       pinned,
       prerequisite,
     });
-    if (!("decline" in result)) {
-      this.logLine("info", "verdict ready", { requestHash, pin: pinned.number, prerequisiteScore: prerequisite.score, score: result.score, reasons: result.reasons });
-    }
+    if ("decline" in result) return result;
+    // P12 AUD-04 (route A+): a model output that breaks risk-v1's own rubric is declined here, never posted, so every
+    // verdict B posts still means what risk-v1 means; runRiskV1, the evidence and `verify` are unchanged.
+    const recorded = result.evidence as { toolCalls: ToolCallRecord[]; findings: RecordedFinding[] };
+    const mandate = await this.reader.mandate(request.event.agentId, pinned.number);
+    const refusal = postingGate({ findings: recorded.findings, toolCalls: recorded.toolCalls, request: { gate: request.gate, target: request.action.target }, mandate });
+    if (refusal !== null) return { decline: refusal };
+    this.logLine("info", "verdict ready", { requestHash, pin: pinned.number, prerequisiteScore: prerequisite.score, score: result.score, reasons: result.reasons });
     return result;
   }
 

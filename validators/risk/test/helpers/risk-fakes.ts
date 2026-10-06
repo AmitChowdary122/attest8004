@@ -178,6 +178,11 @@ export function passThroughTrace(from: Address = GATE, to: Address = PASS_THROUG
   return { ok: true, frame };
 }
 
+/** A direct transfer's trace: the gate sends `value` to the target, which keeps it. */
+export function directTransferTrace(from: Address = GATE, to: Address = PASS_THROUGH, value = 1_000_000_000_000_000n): TraceResult {
+  return { ok: true, frame: { type: "CALL", from, to, value: toHex(value), input: "0x" } };
+}
+
 /**
  * A `RiskReader` over a {@link FakeChain}, reading state at the block it is given. Every method call
  * is logged in `calls` (so a test can assert that nothing was read), and `onFinalized` runs before

@@ -15,6 +15,7 @@ import {
   FakeChain,
   fakeAction,
   fakeGuard,
+  directTransferTrace,
   FakeRiskReader,
   findingsJson,
   GATE,
@@ -436,6 +437,41 @@ describe("RiskValidator: the pin", () => {
   });
 });
 
+describe("RiskValidator: the posting gate (P12 AUD-04, route A+)", () => {
+  it("a model that never calls simulate_action gets no response: DECLINED SIMULATION_NOT_RUN, the reservation released", async () => {
+    const pair = addAction();
+    answerA(pair);
+    chain.finalized = pair.block + 1n + PIN_LAG_BLOCKS;
+    const admission = new Admission({ maxRequestsPerAgent: 20, agentWindowSeconds: 3_600n, dailyGasBudget: 10_000_000n, maxGasPerResponse: 1_000_000n });
+    const release = vi.spyOn(admission, "release");
+    const llm = scriptedLlm([chatResponse({ content: "Enough." }), chatResponse({ content: findingsJson([]) })]);
+    const { validator } = makeValidator({ llm, admission });
+
+    const { outcomes } = await validator.pollOnce();
+
+    expect(declined(outcomes)).toEqual(["DECLINED: SIMULATION_NOT_RUN: the model never called simulate_action"]);
+    expect(chain.sent).toHaveLength(0);
+    expect(release).toHaveBeenCalledWith(pair.rhB);
+  });
+
+  it("FUNDS_FORWARDED graded low over a simulation that forwards to the sink: DECLINED FORWARDING_NOT_FLAGGED_HIGH", async () => {
+    const pair = addAction();
+    answerA(pair);
+    chain.finalized = pair.block + 1n + PIN_LAG_BLOCKS;
+    const llm = scriptedLlm([
+      chatResponse({ toolCalls: [toolCall("simulate_action")] }),
+      chatResponse({ content: "Enough." }),
+      chatResponse({ content: findingsJson([{ code: "FUNDS_FORWARDED", severity: "low", explanation: "It forwards to the sink.", sources: ["simulate_action"] }]) }),
+    ]);
+    const { validator } = makeValidator({ llm });
+
+    const { outcomes } = await validator.pollOnce();
+
+    expect(declined(outcomes)).toEqual([expect.stringMatching(/^DECLINED: FORWARDING_NOT_FLAGGED_HIGH: the simulation sends value to 0x/)]);
+    expect(chain.sent).toHaveLength(0);
+  });
+});
+
 describe("RiskValidator: failures", () => {
   it("provider 429 throughout: never responds, gives up", async () => {
     const pair = addAction();
@@ -501,10 +537,11 @@ describe("RiskValidator: failures", () => {
     expect(text).not.toMatch(/https?:\/\//);
   });
 
-  it("a clean action scores 100 with no findings", async () => {
+  it("a clean action scores 100 with no findings (its simulation shows value reaching only the target)", async () => {
     const pair = addAction();
     answerA(pair);
-    const llm = scriptedLlm([chatResponse({ content: "Fine." }), chatResponse({ content: NO_FINDINGS })]);
+    reader.traceResult = directTransferTrace();
+    const llm = scriptedLlm([chatResponse({ toolCalls: [toolCall("simulate_action")] }), chatResponse({ content: "Fine." }), chatResponse({ content: NO_FINDINGS })]);
     await makeValidator({ llm }).validator.pollOnce();
     expect(chain.sent[0]?.response).toBe(100);
     expect(sentEvidence().doc.findings).toEqual([]);
