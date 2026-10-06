@@ -51,6 +51,28 @@ export class RequestSquattedError extends Error {
   }
 }
 
+/**
+ * A send at nonce n was rejected after the requests at later nonces had already gone out (P12 re-check, N1): they may
+ * still land, unpaired, once nonce n is filled. The action is spent: re-salt it before requesting again.
+ */
+export class RequestSendError extends Error {
+  readonly rejected: { validator: Address; requestHash: Hex; nonce: number };
+  readonly alreadySent: { validator: Address; requestHash: Hex; nonce: number; txHash: Hash }[];
+
+  constructor(cause: unknown, rejected: RequestSendError["rejected"], alreadySent: RequestSendError["alreadySent"]) {
+    const why = cause instanceof BaseError ? cause.shortMessage : cause instanceof Error ? cause.message.split("\n")[0] : String(cause);
+    super(
+      `the request to ${rejected.validator} (nonce ${rejected.nonce}) was rejected (${why}); the request(s) to ` +
+        `${alreadySent.map((s) => `${s.validator} (nonce ${s.nonce})`).join(", ")} were already sent and may still land unpaired: ` +
+        "re-salt the action before requesting again",
+      { cause },
+    );
+    this.name = "RequestSendError";
+    this.rejected = rejected;
+    this.alreadySent = alreadySent;
+  }
+}
+
 export interface RequestedValidation {
   validator: Address;
   requestHash: Hex;
@@ -168,12 +190,22 @@ export class Attest8004Client {
       // without waiting for the node's answer, so they reach it in nonce order within a few tens of milliseconds.
       const settle = this.options.broadcastSettleMs ?? 1_000;
       if (settle > 0) await new Promise((resolve) => setTimeout(resolve, settle));
-      hashes = await Promise.all(
+      const sends = await Promise.allSettled(
         signed.map(async (raw, i) => {
           if (i > 0) await new Promise((resolve) => setTimeout(resolve, i * BROADCAST_STAGGER_MS));
           return publicClient.sendRawTransaction({ serializedTransaction: raw });
         }),
       );
+      const firstRejected = sends.findIndex((s) => s.status === "rejected");
+      if (firstRejected !== -1) {
+        const rejection = sends[firstRejected] as PromiseRejectedResult;
+        const at = (i: number) => ({ validator: requests[i]?.request.validator as Address, requestHash: requests[i]?.requestHash as Hex, nonce: nonce + i });
+        const alreadySent = sends.flatMap((s, i) => (i > firstRejected && s.status === "fulfilled" ? [{ ...at(i), txHash: s.value }] : []));
+        // Nothing went out after the rejected one: an ordinary failure, as before.
+        if (alreadySent.length === 0) throw rejection.reason;
+        throw new RequestSendError(rejection.reason, at(firstRejected), alreadySent);
+      }
+      hashes = sends.map((s) => (s as PromiseFulfilledResult<Hash>).value);
     } else {
       hashes = [];
       for (const [i, p] of prepared.entries()) hashes.push(await broadcastPrepared(walletClient, p, { ...fees, nonce: nonce + i }));

@@ -6,6 +6,7 @@ import {
   getAddress,
   keccak256,
   parseAbi,
+  parseTransaction,
   toHex,
   zeroHash,
   type Address,
@@ -23,6 +24,7 @@ import {
   computeRequestHash,
   parseRequestUri,
   requestHashOfJson,
+  RequestSendError,
   RequestSquattedError,
   validationRegistryAbi,
   validationResponseEvent,
@@ -143,6 +145,22 @@ describe("Attest8004Client.requestValidation", () => {
     expect(sentAt).toHaveLength(2);
     expect((sentAt[1] ?? 0) - (sentAt[0] ?? 0)).toBeLessThan(60); // sequential sends would be >= 100 ms apart
     expect(rpc.sent.map((tx) => tx.nonce)).toEqual([0, 1]);
+  });
+
+  it("P12 re-check N1: a rejected send at nonce n names the later requests already sent, which may still land unpaired", async () => {
+    rpc.onCall(FORWARDER, agentRequestForwarderAbi, "request", () => undefined);
+    rpc.intercept = (method, params) => {
+      if (method === "eth_sendRawTransaction" && parseTransaction(params[0] as Hex).nonce === 0) throw new Error("insufficient funds for gas * price + value");
+      return undefined;
+    };
+    const { publicClient, walletClient } = rpc.clients(account, { retryCount: 0 });
+    const client = new Attest8004Client({ publicClient, walletClient, validationRegistry: REGISTRY, forwarder: FORWARDER, broadcastSettleMs: 0 });
+
+    const failed = client.requestValidation({ gate: GATE, validators: [VALIDATOR_A, VALIDATOR_B], action });
+
+    await expect(failed).rejects.toBeInstanceOf(RequestSendError);
+    await expect(failed).rejects.toMatchObject({ rejected: { validator: VALIDATOR_A, nonce: 0 }, alreadySent: [{ validator: VALIDATOR_B, requestHash: rhB, nonce: 1 }] });
+    await expect(failed).rejects.toThrow(/may still land unpaired.*re-salt the action/);
   });
 
   it("P12 AUD-01: a requestHash another agent already claimed is RequestSquattedError, and nothing is sent", async () => {
