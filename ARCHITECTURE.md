@@ -514,7 +514,7 @@ sequenceDiagram
 5. **The write.** `runtime.report(abi.encode(requestHash, score, responseURI, responseHash))` goes to `writeReport`
    through CRE's mock forwarder, with an explicit gas limit (Monad charges it):
    `max(eth_estimateGas(CreValidator.onReport as the forwarder) + 60,000, 49,000 + 40 × raw bytes) × 1.2`, at most
-   1,130,000. The simulator's reply isn't proof (the forwarder swallows a receiver's revert), so the workflow reads C's
+   1,160,000 (P12: the inner estimate is floor-bound at the evidence cap). The simulator's reply isn't proof (the forwarder swallows a receiver's revert), so the workflow reads C's
    verdict back.
 6. **The re-check.** `pnpm attest8004 verify <requestHash>` re-executes a C verdict exactly as an A verdict (§5.5): the
    evidence format and the tag are `mandate-v1`'s.

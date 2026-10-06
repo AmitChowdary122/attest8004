@@ -10,5 +10,5 @@
   "maxEvidenceBytes": 16384,
   "pollAttempts": 10,
   "httpTimeout": "9s",
-  "gas": { "outerBase": 49000, "outerPerByte": 40, "routing": 60000, "headroomPercent": 20, "max": 1130000 }
+  "gas": { "outerBase": 49000, "outerPerByte": 40, "routing": 60000, "headroomPercent": 20, "max": 1160000 }
 }

@@ -189,8 +189,13 @@ no upgrade path; `test_abiIsMinimal` pins its ABI.
   - `onReport estimate` is `eth_estimateGas` of `CreValidator.onReport`, called as the forwarder, on the live request;
   - the second term is the floor line, fitted from read-only probes (`pnpm --filter @attest8004/scripts
     cre-gas-probe`).
-- **Refusal.** It refuses (no write) above 1,130,000 gas, or when the estimate reverts, for example on a request
+- **Refusal.** It refuses (no write) above 1,160,000 gas, or when the estimate reverts, for example on a request
   answered in the meantime.
+- **Why 1,160,000 (P12).** At the 16,384-byte evidence cap the onReport estimate is floor-bound too (EIP-7623 covers
+  the estimated call: 903,950 for an all-non-zero document), so `estimate + 60,000` beats the outer floor (935,280)
+  and the limit is 1,156,740. P11's 1,130,000 was sized from the outer floor alone and would have refused evidence of
+  about 16.0-16.4 kB. Pinned by `gas_maxCoversTheEvidenceCap`. A floor-bound report still pays the 20 % headroom on a
+  floor that is exact; trimming it needs a formula change and another live take, so it stays (P12, accepted).
 - **On the first live report** the limit was 236,051. The trace's inner frames put the real use at about 201k.
 
 ## 7. Trust model
@@ -249,7 +254,7 @@ no upgrade path; `test_abiIsMinimal` pins its ABI.
 | Consensus observation | 25 kB | evidence capped at 16,384 bytes (≈ 20 kB as a JSON string); live 1,651 and 1,928 bytes |
 | EVM report size | 50 kB | live 2,509 and 2,893 bytes; ≤ ~22 kB at the evidence cap |
 | Chain reads per run | 15 | 6 |
-| Gas per write | 10,000,000 | capped at 1,130,000 |
+| Gas per write | 10,000,000 | capped at 1,160,000 |
 | Execution | 5 min | ~16–19 s per live run |
 
 - **The evidence format stays frozen.** C posts under `mandate-v1` with the same evidence as validator A, so `verify`
