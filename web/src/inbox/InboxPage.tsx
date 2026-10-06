@@ -15,20 +15,15 @@ import {
   type RejectedPost,
 } from "@attest8004/sdk/browser";
 import { useState } from "react";
-import { getAddress, hexToBytes, type Hex } from "viem";
+import { hexToBytes, type Hex } from "viem";
 import { chainId, client, deployment, readInboxKey } from "../approve/chain.ts";
 import { errorText } from "../approve/exportJson.ts";
 import { currentHostname, stripLinkParameters } from "../approve/url.ts";
 import { explorerTx } from "../explorer.ts";
-import { foundSummary } from "./found.ts";
+import { foundSummary, KNOWN_VALIDATORS, splitEntries, tagText, validatorLabel } from "./found.ts";
 import { trustApiOptions } from "../trust-api-url.ts";
 import { ReportCard } from "./ReportCard.tsx";
 
-/** Our validators by address, so a report says whose it is; any other validator is shown by address. */
-const VALIDATOR_LABELS: Record<string, string> = {
-  [getAddress(deployment.validators.mandateV1)]: "validator A (mandate-v1)",
-  [getAddress(deployment.validators.riskV1)]: "validator B (risk-v1)",
-};
 
 interface Found {
   agentId: bigint;
@@ -68,6 +63,7 @@ export function InboxPage() {
   const agentId = /^(0|[1-9]\d{0,76})$/.test(agentText) ? BigInt(agentText) : null;
   const current = found !== null && found.agentId === agentId ? found : null;
   const postCount = current?.entries.reduce((n, e) => n + e.posts.length, 0) ?? 0;
+  const split = splitEntries(current?.entries ?? []);
 
   function changeAgent(text: string) {
     setAgentText(text);
@@ -88,6 +84,7 @@ export function InboxPage() {
       const result = await discoverInbox(reader, {
         agentId,
         findingsBoard: board,
+        knownValidators: KNOWN_VALIDATORS,
         trustApi: trustApiOptions(),
         onProgress: (done, total) => setProgress(`Reading verdicts… ${done}/${total}`),
       });
@@ -199,10 +196,10 @@ export function InboxPage() {
                 </p>
               )}
               <ul className="entries">
-                {current.entries.map((entry) => (
+                {split.known.map((entry) => (
                   <li key={entry.status.requestHash}>
                     <p>
-                      <strong>{VALIDATOR_LABELS[getAddress(entry.status.validator)] ?? entry.status.validator}</strong>: {entry.status.tag || "no tag"}, score{" "}
+                      <strong>{validatorLabel(entry.status.validator) ?? entry.status.validator}</strong>: {tagText(entry.status.tag)}, score{" "}
                       {entry.status.response}
                     </p>
                     <p className="muted">
@@ -236,6 +233,56 @@ export function InboxPage() {
                   </li>
                 ))}
               </ul>
+              {split.others.length > 0 && (
+                <details className="other-validators">
+                  <summary>
+                    {split.others.length} verdict(s) from validators Attest8004 doesn't run (not validators A, B or C)
+                  </summary>
+                  <p className="notice">
+                    Anyone holding this agent's hot key can name any address as its validator, answer as it, and post a
+                    report this page can decrypt. These are shown apart and capped; don't act on them unless you know
+                    who runs that validator.
+                  </p>
+                  <ul className="entries">
+                    {split.others.map((entry) => (
+                          <li key={entry.status.requestHash}>
+                            <p>
+                              <strong>{validatorLabel(entry.status.validator) ?? entry.status.validator}</strong>: {tagText(entry.status.tag)}, score{" "}
+                          {entry.status.response}
+                            </p>
+                            <p className="muted">
+                          Request{" "}
+                          {explorerTx(entry.responseTx) ? (
+                                <a href={explorerTx(entry.responseTx) ?? undefined} target="_blank" rel="noopener noreferrer">
+                                  <code>{entry.status.requestHash}</code>
+                                </a>
+                          ) : (
+                                <code>{entry.status.requestHash}</code>
+                          )}{" "}
+                          (public evidence; re-check it with <code>pnpm attest8004 verify {entry.status.requestHash}</code>)
+                            </p>
+                        {entry.posts.length === 0 && (
+                              <p className="muted">
+                            {entry.source === "indexer"
+                              ? `No report indexed for this verdict (indexed to block ${entry.searchedTo.toString()}).`
+                              : `No report found on chain up to block ${entry.searchedTo.toString()} (within ${REPORT_SEARCH_BLOCKS.toString()} blocks of this verdict).`}
+                              </p>
+                        )}
+                        {entry.posts.map((post) => {
+                          const report = opened(post);
+                          return report ? (
+                                <ReportCard key={`${post.txHash}-${post.logIndex}`} post={post} status={entry.status} opened={report.opened} />
+                          ) : (
+                                <p key={`${post.txHash}-${post.logIndex}`} className="muted">
+                              Encrypted report found ({(post.envelope.length - 2) / 2} bytes, block {post.blockNumber.toString()}).
+                                </p>
+                          );
+                        })}
+                          </li>
+                    ))}
+                      </ul>
+                </details>
+              )}
             </>
           )}
         </section>

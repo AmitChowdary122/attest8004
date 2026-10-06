@@ -23,8 +23,14 @@ import { TrustApiError, findIndexedReports, postMatchesReceipt, type ReceiptLog,
 
 /** How far after its verdict a report is searched for: 600 blocks, about 3 minutes. */
 export const REPORT_SEARCH_BLOCKS = 600n;
-/** The most recent responses `findInboxEntries` looks at by default. */
+/** The most recent responses `findInboxEntries` looks at by default, per known validator. */
 export const MAX_INBOX_RESPONSES = 20;
+/**
+ * The most recent responses from validators the reader doesn't know that discovery keeps (P12, AUD-03). Anyone holding
+ * the agent's hot key can name any address as validator, answer as it, and post a report the trust rule accepts, so
+ * such verdicts are listed apart and capped: they can never push a known validator's verdict out.
+ */
+export const MAX_OTHER_VALIDATOR_RESPONSES = 5;
 
 /** `getValidationStatus(requestHash)`, with the hash it was read for. */
 export interface InboxStatus {
@@ -83,6 +89,8 @@ export interface InboxEntry {
   searchedTo: bigint;
   /** How this entry's posts were found. */
   source: "indexer" | "chain";
+  /** Whether the verdict's validator is one of the reader's `knownValidators` (P12, AUD-03). */
+  validatorKnown: boolean;
 }
 
 /** A post the indexer listed that the chain doesn't carry as listed: dropped, and shown as a warning. */
@@ -96,12 +104,18 @@ const answered = (s: InboxStatus) => s.responseHash !== zeroHash || s.tag !== ""
 interface DiscoveryOptions {
   agentId: bigint;
   findingsBoard: FindingsBoardDeployment;
+  /**
+   * The validators the reader trusts to have written a report (for /inbox, `DEPLOYMENTS`' A, B and C). Each keeps its
+   * own newest `maxResponses`; every other validator's verdicts share {@link MAX_OTHER_VALIDATOR_RESPONSES}, after them.
+   */
+  knownValidators: readonly Address[];
   maxResponses?: number;
   onProgress?: (done: number, total: number) => void;
 }
 
 /**
- * The agent's answered responses since the board was deployed (at most `maxResponses`, newest first), from the chain.
+ * The agent's answered responses since the board was deployed, from the chain: each known validator's newest
+ * `maxResponses`, newest first, then every other validator's newest {@link MAX_OTHER_VALIDATOR_RESPONSES}.
  * A status naming another agent (a squatted hash) is skipped.
  */
 async function answeredCandidates(reader: InboxReader, o: DiscoveryOptions): Promise<{ candidates: InboxStatus[]; head: bigint }> {
@@ -110,11 +124,43 @@ async function answeredCandidates(reader: InboxReader, o: DiscoveryOptions): Pro
   if (hashes.length === 0) return { candidates: [], head: 0n };
   const [statuses, head] = await Promise.all([reader.statuses(hashes), reader.head()]);
   const boardTime = await reader.blockTimestamp(findingsBoard.fromBlock);
-  const candidates = statuses
+  const newestFirst = statuses
     .filter((s) => answered(s) && s.agentId === agentId && s.lastUpdate >= boardTime)
-    .sort((a, b) => (a.lastUpdate === b.lastUpdate ? 0 : a.lastUpdate > b.lastUpdate ? -1 : 1))
-    .slice(0, o.maxResponses ?? MAX_INBOX_RESPONSES);
-  return { candidates, head };
+    .sort((a, b) => (a.lastUpdate === b.lastUpdate ? 0 : a.lastUpdate > b.lastUpdate ? -1 : 1));
+  const perKnown = o.maxResponses ?? MAX_INBOX_RESPONSES;
+  const taken = new Map<string, number>();
+  const ours: InboxStatus[] = [];
+  const others: InboxStatus[] = [];
+  for (const s of newestFirst) {
+    if (!isKnown(o, s.validator)) {
+      if (others.length < MAX_OTHER_VALIDATOR_RESPONSES) others.push(s);
+      continue;
+    }
+    const validator = getAddress(s.validator);
+    const count = taken.get(validator) ?? 0;
+    if (count < perKnown) {
+      ours.push(s);
+      taken.set(validator, count + 1);
+    }
+  }
+  return { candidates: [...ours, ...others], head };
+}
+
+/** Whether `validator` is one the reader named as known. */
+function isKnown(o: Pick<DiscoveryOptions, "knownValidators">, validator: Address): boolean {
+  return o.knownValidators.some((v) => getAddress(v) === getAddress(validator));
+}
+
+/**
+ * A decrypted report's string as plain text (P12, AUD-03): tabs, newlines and carriage returns become spaces; other
+ * C0 and C1 controls, bidi controls (U+061C, U+200E, U+200F, U+202A-U+202E, U+2066-U+2069) and invisible characters
+ * (U+200B-U+200D, U+2060-U+2064, U+FEFF) become "?", so a report can't reorder or hide what the page shows. Other
+ * Unicode is kept: a model's explanation may use it.
+ */
+export function reportText(text: string): string {
+  return text
+    .replace(/[\t\n\r]/g, " ")
+    .replace(/[\u0000-\u001f\u007f-\u009f\u061c\u200b-\u200f\u202a-\u202e\u2060-\u2064\u2066-\u2069\ufeff]/g, "?");
 }
 
 /** The response's transaction, from the blocks carrying its `lastUpdate`, or null. */
@@ -127,7 +173,13 @@ async function responseTxOf(reader: InboxReader, status: InboxStatus, head: bigi
  * One verdict's reports on chain alone: from the first block carrying its `lastUpdate`, over
  * {@link REPORT_SEARCH_BLOCKS}, never past the head, stopping at the first 100-block window that finds a trusted post.
  */
-async function chainEntry(reader: InboxReader, status: InboxStatus, agentId: bigint, head: bigint, findingsBoard: FindingsBoardDeployment): Promise<InboxEntry> {
+async function chainEntry(
+  reader: InboxReader,
+  status: InboxStatus,
+  agentId: bigint,
+  head: bigint,
+  findingsBoard: FindingsBoardDeployment,
+): Promise<Omit<InboxEntry, "validatorKnown">> {
   let start: bigint;
   try {
     start = await firstBlockAtOrAfter((n) => reader.blockTimestamp(n), status.lastUpdate, head, findingsBoard.fromBlock);
@@ -150,7 +202,7 @@ async function chainEntries(reader: InboxReader, o: DiscoveryOptions, candidates
   const entries: InboxEntry[] = [];
   o.onProgress?.(0, candidates.length);
   for (const status of candidates) {
-    entries.push(await chainEntry(reader, status, o.agentId, head, o.findingsBoard));
+    entries.push({ ...(await chainEntry(reader, status, o.agentId, head, o.findingsBoard)), validatorKnown: isKnown(o, status.validator) });
     o.onProgress?.(entries.length, candidates.length);
   }
   return entries;
@@ -191,7 +243,7 @@ async function indexedEntries(
   o.onProgress?.(0, candidates.length);
   for (const status of candidates) {
     if (status.lastUpdate > cutoffTime) {
-      entries.push(await chainEntry(reader, status, o.agentId, head, o.findingsBoard));
+      entries.push({ ...(await chainEntry(reader, status, o.agentId, head, o.findingsBoard)), validatorKnown: isKnown(o, status.validator) });
     } else {
       const posts: FindingsPost[] = [];
       for (const indexed of reports.filter((r) => r.requestHash === status.requestHash.toLowerCase())) {
@@ -210,7 +262,7 @@ async function indexedEntries(
         if (logs !== null && postMatchesReceipt(post, logs, o.findingsBoard.address)) posts.push(post);
         else rejected.push({ post, problem: "NOT_ON_CHAIN" });
       }
-      entries.push({ status, responseTx: await responseTxOf(reader, status, head), posts, searchedTo: indexedTo, source: "indexer" });
+      entries.push({ status, responseTx: await responseTxOf(reader, status, head), posts, searchedTo: indexedTo, source: "indexer", validatorKnown: isKnown(o, status.validator) });
     }
     o.onProgress?.(entries.length, candidates.length);
   }

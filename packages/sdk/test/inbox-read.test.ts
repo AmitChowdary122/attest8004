@@ -9,7 +9,9 @@ import {
   findInboxEntriesViaIndexer,
   findingsPostedEvent,
   isTrustedPost,
+  MAX_OTHER_VALIDATOR_RESPONSES,
   openInbox,
+  reportText,
   sealEnvelope,
   x25519PublicKey,
   type FindingsPost,
@@ -113,6 +115,49 @@ function receiptLog(p: FindingsPost): ReceiptLog {
 
 const board = { address: BOARD, fromBlock: FIRST };
 
+describe("P12 AUD-03: a validator the reader doesn't know can't crowd out the known ones", () => {
+  const VALIDATOR_B = getAddress("0x780df855b48aec7a3907433b0b5984a2fe5dca5e");
+
+  it("a flood of newer verdicts from an unknown validator: the known validator's verdicts come first, the others are capped and marked", async () => {
+    const reader = new FakeReader();
+    for (let i = 0; i < 3; i++) reader.statusList.push(status(`a${i}`, 5_000n + BigInt(i) * 100n));
+    for (let i = 0; i < 25; i++) reader.statusList.push(status(`rogue${i}`, 9_000n + BigInt(i) * 100n, { validator: STRANGER }));
+
+    const entries = await findInboxEntries(reader, { agentId: AGENT, findingsBoard: board, knownValidators: [VALIDATOR] });
+
+    expect(entries.slice(0, 3).map((e) => [e.status.requestHash, e.validatorKnown])).toEqual([
+      [hashOf("a2"), true],
+      [hashOf("a1"), true],
+      [hashOf("a0"), true],
+    ]);
+    const others = entries.slice(3);
+    expect(others).toHaveLength(MAX_OTHER_VALIDATOR_RESPONSES);
+    expect(others.every((e) => !e.validatorKnown && e.status.validator === STRANGER)).toBe(true);
+    expect(others[0]?.status.requestHash).toBe(hashOf("rogue24"));
+  });
+
+  it("each known validator keeps its own newest 20", async () => {
+    const reader = new FakeReader();
+    for (let i = 0; i < 25; i++) reader.statusList.push(status(`a${i}`, 5_000n + BigInt(i) * 100n));
+    for (let i = 0; i < 2; i++) reader.statusList.push(status(`b${i}`, 1_100n + BigInt(i) * 100n, { validator: VALIDATOR_B, tag: "risk-v1" }));
+
+    const entries = await findInboxEntries(reader, { agentId: AGENT, findingsBoard: board, knownValidators: [VALIDATOR, VALIDATOR_B] });
+
+    expect(entries.filter((e) => e.status.validator === VALIDATOR)).toHaveLength(20);
+    expect(entries.filter((e) => e.status.validator === VALIDATOR_B)).toHaveLength(2);
+    expect(entries.every((e) => e.validatorKnown)).toBe(true);
+  });
+});
+
+describe("reportText: a decrypted report's strings as plain text (P12 AUD-03)", () => {
+  it("replaces bidi controls, zero-width characters and C0/C1 controls, keeping ordinary Unicode", () => {
+    const hostile = "pay \u202Eevil\u202C now\u200B\u2066x\u2069 \u0007\u009b — 0.002\u202FMON";
+    expect(reportText(hostile)).toBe("pay ?evil? now??x? ?? — 0.002\u202FMON");
+    expect(reportText("line one\nline two\ttab")).toBe("line one line two tab");
+    expect(reportText("plain ascii, ünïcödé and 日本")).toBe("plain ascii, ünïcödé and 日本");
+  });
+});
+
 describe("findInboxEntries", () => {
   it("finds one trusted post per answered response since the board's block, newest first, at most 20", async () => {
     const reader = new FakeReader();
@@ -122,7 +167,7 @@ describe("findInboxEntries", () => {
       reader.posts.push(post(`r${i}`, block + 3n));
     }
 
-    const entries = await findInboxEntries(reader, { agentId: AGENT, findingsBoard: board });
+    const entries = await findInboxEntries(reader, { agentId: AGENT, findingsBoard: board, knownValidators: [VALIDATOR] });
 
     expect(entries).toHaveLength(20);
     expect(entries.map((e) => e.status.requestHash)).toEqual(Array.from({ length: 20 }, (_, k) => hashOf(`r${24 - k}`)));
@@ -137,7 +182,7 @@ describe("findInboxEntries", () => {
     reader.statusList.push(status("r", 5_000n));
     reader.posts.push(post("r", 5_001n, { validator: STRANGER, txHash: hashOf("stranger") }), post("r", 5_002n));
 
-    const [entry] = await findInboxEntries(reader, { agentId: AGENT, findingsBoard: board });
+    const [entry] = await findInboxEntries(reader, { agentId: AGENT, findingsBoard: board, knownValidators: [VALIDATOR] });
 
     expect(entry?.posts.map((p) => p.validator)).toEqual([VALIDATOR]);
     expect(entry?.posts.map((p) => p.blockNumber)).toEqual([5_002n]);
@@ -148,7 +193,7 @@ describe("findInboxEntries", () => {
     reader.statusList.push(status("r", 5_000n));
     reader.posts.push(post("r", 5_001n, { agentId: 1985n }));
 
-    const [entry] = await findInboxEntries(reader, { agentId: AGENT, findingsBoard: board });
+    const [entry] = await findInboxEntries(reader, { agentId: AGENT, findingsBoard: board, knownValidators: [VALIDATOR] });
 
     expect(entry?.posts).toEqual([]);
   });
@@ -157,7 +202,7 @@ describe("findInboxEntries", () => {
     const reader = new FakeReader();
     reader.statusList.push(status("squatted", 5_000n, { agentId: 1985n }), status("ours", 6_000n));
 
-    const entries = await findInboxEntries(reader, { agentId: AGENT, findingsBoard: board });
+    const entries = await findInboxEntries(reader, { agentId: AGENT, findingsBoard: board, knownValidators: [VALIDATOR] });
 
     expect(entries.map((e) => e.status.requestHash)).toEqual([hashOf("ours")]);
   });
@@ -170,7 +215,7 @@ describe("findInboxEntries", () => {
       status("ours", 6_000n),
     );
 
-    const entries = await findInboxEntries(reader, { agentId: AGENT, findingsBoard: board });
+    const entries = await findInboxEntries(reader, { agentId: AGENT, findingsBoard: board, knownValidators: [VALIDATOR] });
 
     expect(entries.map((e) => e.status.requestHash)).toEqual([hashOf("ours")]);
   });
@@ -181,7 +226,7 @@ describe("findInboxEntries", () => {
     const start = firstAt(20_000n);
     reader.posts.push(post("later", start + 250n));
 
-    const entries = await findInboxEntries(reader, { agentId: AGENT, findingsBoard: board });
+    const entries = await findInboxEntries(reader, { agentId: AGENT, findingsBoard: board, knownValidators: [VALIDATOR] });
 
     const windowsFor = (label: string) => reader.windows.filter((w) => w.requestHash === hashOf(label)).map((w) => [w.fromBlock, w.toBlock]);
     expect(windowsFor("later")).toEqual([
@@ -200,7 +245,7 @@ describe("findInboxEntries", () => {
     const start = firstAt(30_000n);
     reader.posts.push(post("late", start + 700n));
 
-    const [entry] = await findInboxEntries(reader, { agentId: AGENT, findingsBoard: board });
+    const [entry] = await findInboxEntries(reader, { agentId: AGENT, findingsBoard: board, knownValidators: [VALIDATOR] });
 
     expect(entry?.posts).toEqual([]);
     expect(entry?.searchedTo).toBe(start + 599n);
@@ -209,10 +254,10 @@ describe("findInboxEntries", () => {
 
   it("reports progress, and an agent with no validations has no entries", async () => {
     const reader = new FakeReader();
-    expect(await findInboxEntries(reader, { agentId: AGENT, findingsBoard: board })).toEqual([]);
+    expect(await findInboxEntries(reader, { agentId: AGENT, findingsBoard: board, knownValidators: [VALIDATOR] })).toEqual([]);
     reader.statusList.push(status("a", 5_000n), status("b", 6_000n));
     const seen: Array<[number, number]> = [];
-    await findInboxEntries(reader, { agentId: AGENT, findingsBoard: board, onProgress: (done, total) => seen.push([done, total]) });
+    await findInboxEntries(reader, { agentId: AGENT, findingsBoard: board, knownValidators: [VALIDATOR], onProgress: (done, total) => seen.push([done, total]) });
     expect(seen).toEqual([
       [0, 2],
       [1, 2],
@@ -270,7 +315,7 @@ describe("openInbox", () => {
   }
 
   const common = { privateKey, publicKey, chainId: 10143, findingsBoard: BOARD, validationRegistry: REGISTRY };
-  const entry = (s: InboxStatus, posts: FindingsPost[]): InboxEntry => ({ status: s, responseTx: null, posts, searchedTo: 5_100n, source: "chain" });
+  const entry = (s: InboxStatus, posts: FindingsPost[]): InboxEntry => ({ status: s, responseTx: null, posts, searchedTo: 5_100n, source: "chain", validatorKnown: true });
 
   it("KEY_MISMATCH when publicKey ≠ onchainInboxKey, and no envelope is opened", () => {
     const s = status("r", 5_000n);
@@ -362,7 +407,7 @@ describe("findInboxEntriesViaIndexer", () => {
     reader.posts.push(p);
     const api = fakeTrustApi([p], 20_000n);
 
-    const { entries, rejected, indexedTo } = await findInboxEntriesViaIndexer(reader, { agentId: AGENT, findingsBoard: board, trustApi: api });
+    const { entries, rejected, indexedTo } = await findInboxEntriesViaIndexer(reader, { agentId: AGENT, findingsBoard: board, knownValidators: [VALIDATOR], trustApi: api });
 
     expect(api.calls).toBe(1);
     expect(indexedTo).toBe(20_000n);
@@ -371,7 +416,7 @@ describe("findInboxEntriesViaIndexer", () => {
     expect(entries[0]).toMatchObject({ source: "indexer", searchedTo: 20_000n, responseTx: hashOf(`response ${hashOf("r")}`) });
     expect(entries[0]?.posts).toEqual([p]);
     expect(reader.windows).toEqual([]);
-    expect((await findInboxEntries(reader, { agentId: AGENT, findingsBoard: board }))[0]?.posts).toEqual([]);
+    expect((await findInboxEntries(reader, { agentId: AGENT, findingsBoard: board, knownValidators: [VALIDATOR] }))[0]?.posts).toEqual([]);
   });
 
   it("keeps only posts the chain's status trusts, whatever the indexer says", async () => {
@@ -379,7 +424,7 @@ describe("findInboxEntriesViaIndexer", () => {
     reader.statusList.push(status("r", 10_000n));
     const stranger = post("r", 10_005n, { validator: STRANGER, txHash: hashOf("stranger post") });
     reader.posts.push(stranger);
-    const { entries, rejected } = await findInboxEntriesViaIndexer(reader, { agentId: AGENT, findingsBoard: board, trustApi: fakeTrustApi([{ ...stranger, trusted: true }], 20_000n) });
+    const { entries, rejected } = await findInboxEntriesViaIndexer(reader, { agentId: AGENT, findingsBoard: board, knownValidators: [VALIDATOR], trustApi: fakeTrustApi([{ ...stranger, trusted: true }], 20_000n) });
     expect(entries[0]?.posts).toEqual([]);
     expect(rejected).toEqual([]);
   });
@@ -390,7 +435,7 @@ describe("findInboxEntriesViaIndexer", () => {
     const forged = post("r", 10_005n, { envelope: "0x01beef", txHash: hashOf("forged") });
     const altered = post("r", 10_006n, { envelope: "0x01cafe", txHash: hashOf("altered"), logIndex: 1 });
     reader.posts.push({ ...altered, envelope: "0x01f00d" });
-    const { entries, rejected } = await findInboxEntriesViaIndexer(reader, { agentId: AGENT, findingsBoard: board, trustApi: fakeTrustApi([forged, altered], 20_000n) });
+    const { entries, rejected } = await findInboxEntriesViaIndexer(reader, { agentId: AGENT, findingsBoard: board, knownValidators: [VALIDATOR], trustApi: fakeTrustApi([forged, altered], 20_000n) });
     expect(entries[0]?.posts).toEqual([]);
     expect(rejected.map((r) => [r.post.txHash, r.problem])).toEqual([
       [hashOf("forged"), "NOT_ON_CHAIN"],
@@ -405,7 +450,7 @@ describe("findInboxEntriesViaIndexer", () => {
     reader.statusList.push(status("old", 5_000n), status("recent", 10_000n));
     const p = post("recent", firstAt(10_000n) + 400n);
     reader.posts.push(p);
-    const { entries } = await findInboxEntriesViaIndexer(reader, { agentId: AGENT, findingsBoard: board, trustApi: fakeTrustApi([], 10_200n) });
+    const { entries } = await findInboxEntriesViaIndexer(reader, { agentId: AGENT, findingsBoard: board, knownValidators: [VALIDATOR], trustApi: fakeTrustApi([], 10_200n) });
     const byLabel = (label: string) => entries.find((e) => e.status.requestHash === hashOf(label));
     expect(byLabel("recent")).toMatchObject({ source: "chain", posts: [p] });
     expect(byLabel("old")).toMatchObject({ source: "indexer", posts: [], searchedTo: 10_200n });
@@ -423,7 +468,7 @@ describe("discoverInbox", () => {
 
   it("uses the indexer when it answers", async () => {
     const reader = setup();
-    const result = await discoverInbox(reader, { agentId: AGENT, findingsBoard: board, trustApi: fakeTrustApi(reader.posts, 50_000n) });
+    const result = await discoverInbox(reader, { agentId: AGENT, findingsBoard: board, knownValidators: [VALIDATOR], trustApi: fakeTrustApi(reader.posts, 50_000n) });
     expect(result).toMatchObject({ via: "indexer", fallbackReason: null, indexedTo: 50_000n });
     expect(result.entries.map((e) => [e.source, e.posts.length])).toEqual([
       ["indexer", 1],
@@ -438,9 +483,9 @@ describe("discoverInbox", () => {
       ["SHAPE", () => new Response(JSON.stringify({ data: { FindingsPost: [{ requestHash: "<script>" }], _meta: [] } }), { status: 200 })],
       ["HTTP", () => new Response("{}", { status: 502 })],
     ];
-    const expected = await findInboxEntries(setup(), { agentId: AGENT, findingsBoard: board });
+    const expected = await findInboxEntries(setup(), { agentId: AGENT, findingsBoard: board, knownValidators: [VALIDATOR] });
     for (const [kind, answer] of answers) {
-      const result = await discoverInbox(setup(), { agentId: AGENT, findingsBoard: board, trustApi: fakeTrustApi([], 50_000n, answer) });
+      const result = await discoverInbox(setup(), { agentId: AGENT, findingsBoard: board, knownValidators: [VALIDATOR], trustApi: fakeTrustApi([], 50_000n, answer) });
       expect(result.via, kind).toBe("chain");
       expect(result.fallbackReason, kind).toContain(kind);
       expect(result.indexedTo).toBeNull();
@@ -456,13 +501,13 @@ describe("discoverInbox", () => {
       fetchImpl: ((_u: string, init: RequestInit) =>
         new Promise((_r, reject) => init.signal?.addEventListener("abort", () => reject(new DOMException("aborted", "AbortError"))))) as unknown as typeof fetch,
     };
-    const result = await discoverInbox(setup(), { agentId: AGENT, findingsBoard: board, trustApi });
+    const result = await discoverInbox(setup(), { agentId: AGENT, findingsBoard: board, knownValidators: [VALIDATOR], trustApi });
     expect(result.via).toBe("chain");
     expect(result.fallbackReason).toContain("TIMEOUT");
   });
 
   it("uses the chain scan when no trust API is recorded", async () => {
-    const result = await discoverInbox(setup(), { agentId: AGENT, findingsBoard: board, trustApi: null });
+    const result = await discoverInbox(setup(), { agentId: AGENT, findingsBoard: board, knownValidators: [VALIDATOR], trustApi: null });
     expect(result).toMatchObject({ via: "chain", fallbackReason: null, indexedTo: null });
     expect(result.entries.every((e) => e.source === "chain" && e.posts.length === 1)).toBe(true);
   });
@@ -475,7 +520,7 @@ describe("strangers' posts on a request (review I3)", () => {
     const junk = Array.from({ length: 200 }, (_, i) => post("r", 10_001n, { validator: STRANGER, txHash: hashOf(`junk ${i}`), logIndex: i }));
     const real = post("r", 10_005n);
     reader.posts.push(...junk, real);
-    const result = await discoverInbox(reader, { agentId: AGENT, findingsBoard: board, trustApi: fakeTrustApi([...junk, real], 20_000n) });
+    const result = await discoverInbox(reader, { agentId: AGENT, findingsBoard: board, knownValidators: [VALIDATOR], trustApi: fakeTrustApi([...junk, real], 20_000n) });
     expect(result.via).toBe("indexer");
     expect(result.entries[0]?.posts).toEqual([real]);
   });
@@ -487,7 +532,7 @@ describe("strangers' posts on a request (review I3)", () => {
     reader.posts.push(real);
     // 200 posts by the requested validator itself: a full page, so the answer may be missing some.
     const full = Array.from({ length: 200 }, (_, i) => post("r", 10_006n, { txHash: hashOf(`more ${i}`), logIndex: i }));
-    const result = await discoverInbox(reader, { agentId: AGENT, findingsBoard: board, trustApi: fakeTrustApi(full, 20_000n) });
+    const result = await discoverInbox(reader, { agentId: AGENT, findingsBoard: board, knownValidators: [VALIDATOR], trustApi: fakeTrustApi(full, 20_000n) });
     expect(result.via).toBe("chain");
     expect(result.fallbackReason).toContain("INCOMPLETE");
     expect(result.entries[0]?.posts).toEqual([real]);

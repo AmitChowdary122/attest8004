@@ -1,4 +1,5 @@
-import type { FindingsPost, InboxStatus, OpenedReport } from "@attest8004/sdk/browser";
+import { reportText, type FindingsPost, type InboxStatus, type OpenedReport } from "@attest8004/sdk/browser";
+import { tagText } from "./found.ts";
 
 const PROBLEMS: Record<Exclude<OpenedReport, { ok: true }>["problem"], string> = {
   MALFORMED: "the envelope isn't a findings envelope",
@@ -14,7 +15,8 @@ const PROBLEMS: Record<Exclude<OpenedReport, { ok: true }>["problem"], string> =
 
 /**
  * One decrypted operator report. Every string in it is the validator's (and, for risk-v1's explanations, the
- * model's): it is shown as plain text only, never as HTML or a link.
+ * model's): it is shown as plain text only, never as HTML or a link, and through `reportText`, so bidi, invisible and
+ * control characters can't reorder or hide what it says (P12, AUD-03).
  */
 export function ReportCard({ post, status, opened }: { post: FindingsPost; status: InboxStatus; opened: OpenedReport }) {
   if (!opened.ok) {
@@ -31,11 +33,11 @@ export function ReportCard({ post, status, opened }: { post: FindingsPost; statu
     <div className="report">
       <p className={matchesOnchain ? "ok" : "notice"}>
         {matchesOnchain
-          ? `Matches the verdict onchain: ${status.tag} scored ${status.response}.`
+          ? `Matches the verdict onchain: ${tagText(status.tag)} scored ${status.response}.`
           : `This report is for an earlier response (score ${report.score}); the verdict onchain now is ${status.response}.`}
       </p>
       <p>
-        <strong>{report.summary}</strong>
+        <strong>{reportText(report.summary)}</strong>
       </p>
       {report.items.length > 0 && (
         <ul className="items">
@@ -46,16 +48,16 @@ export function ReportCard({ post, status, opened }: { post: FindingsPost; statu
                 {item.code}
               </span>
               {" — "}
-              {item.text}
+              {reportText(item.text)}
               <br />
-              <span className="muted">→ {item.action}</span>
+              <span className="muted">→ {reportText(item.action)}</span>
             </li>
           ))}
         </ul>
       )}
       {report.notes.map((note, i) => (
         <p key={i} className="muted">
-          {note}
+          {reportText(note)}
         </p>
       ))}
     </div>
