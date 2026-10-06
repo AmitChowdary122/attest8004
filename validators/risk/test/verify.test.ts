@@ -705,6 +705,24 @@ describe("verifyRiskRequest: tampering is a mismatch", () => {
     expectProblem(await verify(rhB), "PIN_MISMATCH");
   });
 
+  it("P12 AUD-14: a promptHash that doesn't follow from the request, P, A's verdict and Nansen's availability → PROMPT_MISMATCH", async () => {
+    const { rhB, doc } = await honest({ steps: riskyRun() });
+    const edited = clone(doc);
+    (edited.llm as { promptHash: string }).promptHash = `0x${"5a".repeat(32)}`;
+    post(rhB, edited);
+    expectProblem(await verify(rhB), "PROMPT_MISMATCH");
+  });
+
+  it("P12 AUD-14: a recorded prompt version other than the current one isn't re-derived (nothing to compare)", async () => {
+    const { rhB, doc } = await honest({ steps: riskyRun() });
+    const edited = clone(doc);
+    const llm = edited.llm as { promptVersion: string; promptHash: string };
+    llm.promptVersion = "risk-v1/0";
+    llm.promptHash = `0x${"5a".repeat(32)}`;
+    post(rhB, edited);
+    expect((await verify(rhB)).problems).not.toContain("PROMPT_MISMATCH");
+  });
+
   it("an edited params.maxTraceCalls → PARAMS_MISMATCH", async () => {
     const { rhB, doc } = await honest({ steps: riskyRun() });
     const edited = clone(doc);
@@ -866,6 +884,7 @@ describe("verifyRiskRequest: could not verify", () => {
         "FINDINGS_MISMATCH",
         "SCORE_MISMATCH",
         "TOOL_OUTPUT_MISMATCH",
+        "PROMPT_MISMATCH",
       ].sort(),
     );
   });

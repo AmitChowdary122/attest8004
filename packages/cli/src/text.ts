@@ -182,6 +182,9 @@ const RISK_PROBLEM_TEXT: Record<RiskVerifyProblem, string> = {
     "the findings don't follow from the record: an untrusted text the model was shown has no classifier result, the injection rule doesn't hold for the recorded results, or the recorded final answer re-parsed gives other findings",
   SCORE_MISMATCH: "the score doesn't follow from the recorded findings, or the reasons aren't their codes",
   TOOL_OUTPUT_MISMATCH: "an onchain tool call, re-run at the pinned block, gave another answer than the one the model was shown",
+  PROMPT_MISMATCH:
+    "the recorded promptHash isn't the hash of the opening messages the request, the pinned block, validator A's verdict " +
+    "and Nansen's availability give (checked for the current prompt version)",
 };
 
 function riskVerdictLine(report: RiskVerifyReport): string {

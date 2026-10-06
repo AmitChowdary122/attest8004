@@ -31,8 +31,10 @@ import { chunkText, parseGuardScore } from "./guard.ts";
 import type { NansenClient } from "./nansen.ts";
 import { RISK_V1 } from "./params.ts";
 import { riskAddressesAt, type RiskContracts, type RiskReader } from "./reader.ts";
-import { calldataFields, readPrerequisite } from "./run.ts";
-import { collectAddresses, initialScope, runTool, untrustedFromFlows, untrustedFromProfile, type UntrustedField } from "./tools.ts";
+import { promptParams } from "./agent.ts";
+import { initialMessages, PROMPT_VERSION, promptHash } from "./prompt.ts";
+import { calldataFields, initialDataOf, readPrerequisite } from "./run.ts";
+import { collectAddresses, initialScope, runTool, TOOL_DEFINITIONS, untrustedFromFlows, untrustedFromProfile, type UntrustedField } from "./tools.ts";
 import type { GuardResult, JsonValue, RecordedFinding } from "./types.ts";
 
 /**
@@ -52,6 +54,8 @@ import type { GuardResult, JsonValue, RecordedFinding } from "./types.ts";
  * - `PIN_OUT_OF_RANGE`: `P` is before the request's block or the first MandateRegistry in the history,
  *   or after the block the response landed in.
  * - `PIN_MISMATCH`: block `P`'s hash or timestamp on the chain isn't the evidence's `block`.
+ * - `PROMPT_MISMATCH` (P12, AUD-14): for the current prompt version, the recorded `llm.promptHash` isn't the hash of
+ *   the opening messages the request, `P`, A's verdict and Nansen's availability give (`initialDataOf`). A mismatch.
  * - `REQUEST_BLOCK_WRONG`, `REQUEST_INVALID`: as `mandate-v1`'s (`requestAt`): the request wasn't made
  *   in the block the evidence names, or its JSON must not be answered.
  * - `REQUEST_FIELDS_MISMATCH`: the evidence's `request` (or `requestHash`) isn't the request recomputed
@@ -86,7 +90,8 @@ export type RiskVerifyProblem =
   | "PREREQUISITE_MISMATCH"
   | "FINDINGS_MISMATCH"
   | "SCORE_MISMATCH"
-  | "TOOL_OUTPUT_MISMATCH";
+  | "TOOL_OUTPUT_MISMATCH"
+  | "PROMPT_MISMATCH";
 
 /** The problems that prove the validator misbehaved: every problem except the three that leave nothing compared. */
 export const RISK_MISMATCH_PROBLEMS: ReadonlySet<RiskVerifyProblem> = new Set<RiskVerifyProblem>([
@@ -102,6 +107,7 @@ export const RISK_MISMATCH_PROBLEMS: ReadonlySet<RiskVerifyProblem> = new Set<Ri
   "FINDINGS_MISMATCH",
   "SCORE_MISMATCH",
   "TOOL_OUTPUT_MISMATCH",
+  "PROMPT_MISMATCH",
 ]);
 
 /** One tool call by its index in the evidence's `toolCalls`. */
@@ -289,6 +295,16 @@ export async function verifyRiskRequest(o: { reader: RiskReader; requestHash: He
   const prerequisite = await readPrerequisite(reader, { mandateValidator, requestHashA, pinned });
   if (prerequisite === "PENDING" || "invalid" in prerequisite || !sameJson(written.prerequisite, riskEvidence(withRecord(doc, { prerequisite })).prerequisite)) {
     return report(fields, ["PREREQUISITE_MISMATCH"]);
+  }
+
+  // 5b. The opening prompt follows from the request, P, A's verdict and Nansen's availability (P12, AUD-14): the
+  // recorded promptHash is recomputed for the current prompt version (an older version's text isn't in this code).
+  if (doc.llm.promptVersion === PROMPT_VERSION) {
+    const nansen = { available: doc.tools.nansen.available, reason: doc.tools.nansen.reason };
+    const data = initialDataOf({ request: mandateRequest, prerequisite, pinned, nansen });
+    if (promptHash(initialMessages(data), TOOL_DEFINITIONS, promptParams(doc.llm.model)) !== doc.llm.promptHash.toLowerCase()) {
+      return report(fields, ["PROMPT_MISMATCH"]);
+    }
   }
 
   // 6. Every untrusted text shown to the model was screened (the calldata's, and every recorded Nansen

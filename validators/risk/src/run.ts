@@ -148,6 +148,42 @@ function lastOutputError(agent: AgentResult): string {
 }
 
 /**
+ * The data the model's opening messages are built from (`initialMessages`): the request as the model sees it, the
+ * calldata's text, validator A's verdict, the pin and Nansen's availability. `runRiskV1` builds the prompt from it, and
+ * `verify` recomputes the recorded `llm.promptHash` from it (P12, AUD-14).
+ */
+export function initialDataOf(o: {
+  request: MandateInputs["request"];
+  prerequisite: Pick<Prerequisite, "score" | "reasons">;
+  pinned: Pick<PinnedBlock, "number" | "timestamp">;
+  nansen: { available: boolean; reason: string | null };
+}): InitialData {
+  const { request, prerequisite, pinned, nansen } = o;
+  const text = calldataText(request.data);
+  const data: InitialData = {
+    request: {
+      block: request.block,
+      chainId: request.chainId,
+      gate: getAddress(request.gate),
+      agentId: request.agentId,
+      target: getAddress(request.target),
+      value: request.value,
+      valueMon: weiToMon(request.value),
+      selector: selectorOf(request.data),
+      dataLength: size(request.data),
+      dataHead: dataHeadOf(request.data),
+      deadline: request.deadline,
+      salt: request.salt.toLowerCase() as Hex,
+    },
+    calldataText: text,
+    mandateV1: { score: prerequisite.score, reasons: [...prerequisite.reasons] },
+    pinned: { number: pinned.number.toString(), timestamp: pinned.timestamp.toString() },
+    nansen: nansen.available ? null : nansen.reason,
+  };
+  return data;
+}
+
+/**
  * Runs one `risk-v1` check at `pinned` (`P`), once validator A's verdict is answered there
  * (`prerequisite`, from {@link readPrerequisite}):
  *
@@ -184,27 +220,7 @@ export async function runRiskV1(o: {
   const { reader, llm, guard, nansen, model, addresses, mandateValidator, request, pinned, prerequisite } = o;
   const [owner, mandate] = await Promise.all([reader.ownerOf(request.agentId, pinned.number), reader.mandate(request.agentId, pinned.number)]);
 
-  const text = calldataText(request.data);
-  const data: InitialData = {
-    request: {
-      block: request.block,
-      chainId: request.chainId,
-      gate: getAddress(request.gate),
-      agentId: request.agentId,
-      target: getAddress(request.target),
-      value: request.value,
-      valueMon: weiToMon(request.value),
-      selector: selectorOf(request.data),
-      dataLength: size(request.data),
-      dataHead: dataHeadOf(request.data),
-      deadline: request.deadline,
-      salt: request.salt.toLowerCase() as Hex,
-    },
-    calldataText: text,
-    mandateV1: { score: prerequisite.score, reasons: [...prerequisite.reasons] },
-    pinned: { number: pinned.number.toString(), timestamp: pinned.timestamp.toString() },
-    nansen: nansen.available ? null : (nansen.reason ?? NANSEN_NO_KEY_REASON),
-  };
+  const data = initialDataOf({ request, prerequisite, pinned, nansen: { available: nansen.available, reason: nansen.available ? null : (nansen.reason ?? NANSEN_NO_KEY_REASON) } });
 
   // Screened before the model sees any of it (Decision 12).
   const fields = calldataFields(request.data);
