@@ -12,6 +12,8 @@ const RUBRIC_HIGH_CODES: ReadonlySet<string> = new Set(["FUNDS_FORWARDED", "MAND
  * - `SIMULATION_NOT_RUN`: the model never called `simulate_action`, so nothing was checked for value flows;
  * - `FORWARDING_NOT_FLAGGED_HIGH`: a recorded simulation shows value reaching an address that is not the target, the
  *   gate or in the mandate's `allowedTargets`, and there is no `FUNDS_FORWARDED` finding graded high;
+ * - `VALUE_FLOWS_TRUNCATED`: the tool output's cap dropped value flows (largest kept first), and there is no
+ *   `FUNDS_FORWARDED` finding graded high (P12 re-check, N3);
  * - `SEVERITY_BELOW_RUBRIC`: `FUNDS_FORWARDED`, `MANDATE_VIOLATION`, `PERMISSION_CHANGE` or `SIMULATION_FAILED`
  *   graded below high.
  *
@@ -34,9 +36,23 @@ export function postingGate(o: {
   if (outside && !flaggedHigh) {
     return `FORWARDING_NOT_FLAGGED_HIGH: the simulation sends value to ${outside.to}, outside the target and the mandate, with no high FUNDS_FORWARDED`;
   }
+  // The output cap keeps the largest flows first; one it dropped could be a forward nobody saw (P12 re-check, N3).
+  const dropped = simulations.reduce((n, call) => n + droppedFlows(call.output), 0);
+  if (dropped > 0 && !flaggedHigh) {
+    return `VALUE_FLOWS_TRUNCATED: the simulation's output cap dropped ${dropped} value flow(s), so a forward may be hidden`;
+  }
   const below = o.findings.find((f) => RUBRIC_HIGH_CODES.has(f.code) && f.severity !== "high");
   if (below) return `SEVERITY_BELOW_RUBRIC: ${below.code} graded ${below.severity}; risk-v1's rubric makes it high`;
   return null;
+}
+
+/** How many value flows the output cap dropped from a recorded `simulate_action` output (`truncated.valueFlows`). */
+function droppedFlows(output: unknown): number {
+  if (typeof output !== "object" || output === null || !("truncated" in output)) return 0;
+  const truncated = (output as { truncated: unknown }).truncated;
+  if (typeof truncated !== "object" || truncated === null || !("valueFlows" in truncated)) return 0;
+  const n = (truncated as { valueFlows: unknown }).valueFlows;
+  return typeof n === "number" && n > 0 ? n : 0;
 }
 
 /** A recorded `simulate_action` output's value flows (recipients checksummed), or null when it isn't one. */

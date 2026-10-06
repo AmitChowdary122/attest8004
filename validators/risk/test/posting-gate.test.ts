@@ -49,6 +49,13 @@ describe("postingGate", () => {
     expect(gate({ toolCalls, findings: [finding("NEW_CONTRACT", "medium"), finding("FRESH_COUNTERPARTY", "low")] })).toBeNull();
   });
 
+  it("P12 re-check N3: value flows cut by the output cap, with no high FUNDS_FORWARDED: VALUE_FLOWS_TRUNCATED", () => {
+    const capped = simulation([{ from: GATE, to: TARGET, value: "1000" }]);
+    capped.output = { ...(capped.output as Record<string, unknown>), truncated: { valueFlows: 3 } } as ToolCallRecord["output"];
+    expect(gate({ toolCalls: [capped] })).toBe("VALUE_FLOWS_TRUNCATED: the simulation's output cap dropped 3 value flow(s), so a forward may be hidden");
+    expect(gate({ toolCalls: [capped], findings: [finding("FUNDS_FORWARDED", "high")] })).toBeNull();
+  });
+
   it("a failed simulation still counts as run", () => {
     expect(gate({ toolCalls: [simulation([], false)], findings: [finding("SIMULATION_FAILED", "high")] })).toBeNull();
   });
