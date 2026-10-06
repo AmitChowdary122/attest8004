@@ -8,12 +8,12 @@ The docs are part of the product (SPEC §4.10). Each file is added in the phase 
 | [demo.md](./demo.md) | The demo (`pnpm demo`): recording setup, the 3-minute narration script with browser steps, the live run's real durations and where to cut, the reset between takes, what a take costs | done (P9) |
 | [spec-notes.md](./spec-notes.md) | Differences between our ValidationRegistry and the EIP-8004 Draft | done (P1, checked 2 Oct 2026; P2 decisions 3 Oct) |
 | [nansen.md](./nansen.md) | Every Nansen endpoint and data category used | done (P5, Task 9): the two tools are integrated and unused until `NANSEN_API_KEY` is set |
-| `quickstart.md` | A 10-minute integration guide | planned (P11) |
-| `api.md` | SDK and API reference | planned (P11) |
+| `quickstart.md` | A 10-minute integration guide | planned (docs phase, after P12) |
+| `api.md` | SDK and API reference | planned (docs phase, after P12) |
 | `threat-model.md` | Threat model (open items so far: ARCHITECTURE §9, including `risk-v1`'s ERC-20 blind spot) | planned (P12) |
-| `trust-modes.md` | Deterministic vs agentic validation | planned (P11) |
-| `migration.md` | Migrating to the canonical Validation Registry | planned (P11) |
-| `btx.md` | BTX encrypted-mempool design note (**future work, not live**) | planned (P11) |
+| `trust-modes.md` | Deterministic vs agentic validation | planned (docs phase, after P12) |
+| `migration.md` | Migrating to the canonical Validation Registry | planned (docs phase, after P12) |
+| `btx.md` | BTX encrypted-mempool design note (**future work, not live**) | planned (docs phase, after P12) |
 | [mera.md](./mera.md) | The Mera findings inbox: why it is non-account use of Mera, the key lifecycle and zeroing, what's on chain, the cross-device test | done (P7); the cross-device results are added after the live run |
 | [cre.md](./cre.md) | Validator C: Chainlink CRE as the orchestration layer of a `mandate-v1` verdict (the flow, why a deterministic validator fits CRE's consensus, the pin and the long-poll, the cross-checks, `CreValidator`, the trust model — a CRE workflow (simulation forwarder, not a trust root) — the limits, how to run `pnpm cre:demo`, the live runs, the production path, a 2-minute video script) | done (P11) |
 | [integrations.md](./integrations.md) | Plug Attest8004 into any escrow with a verifier hook: the pattern, AgentPassport's JobEscrow v2 as the worked example, the fork tests that prove it against their live bytecode (not adoption by their team), the caveats and credits | done (P10) |

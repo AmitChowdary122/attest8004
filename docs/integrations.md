@@ -43,7 +43,7 @@ would have put self-dealt reputation into the canonical ERC-8004 Reputation Regi
    key going through the `AgentRequestForwarder`.
 5. **The verdicts.**
    - `mandate-v1` checks the target, the selector, the caps, the deadlines and recent permission changes. It also simulates
-     the release from the vault at its pinned block, so a job that isn't deliverable yet scores 0 (`SIMULATION_FAILED`).
+     the release from the vault at its pinned block, so a job that isn't delivered yet scores 0 (`SIMULATION_FAILED`).
    - `risk-v1` reviews it with its tools.
 6. **The execute.** Anyone sends `vault.execute(action)`. The gate recomputes each `requestHash`, checks every verdict
    (validator, agent, score, tag), marks the action consumed, then calls the escrow.
@@ -130,8 +130,9 @@ Agent 1984's live mandate was **not** changed: this mandate is the shape, not a 
 - **`mandate-v1`:** the target and selector are allowlisted and the value is 0, so it scores 100 once the job is
   `Delivered`. Before delivery, its simulation reverts (`InvalidStatus`) and it scores 0. **Its caps count native MON
   only,** so the escrowed USDC is never counted against them.
-- **`risk-v1`:** it sees the release as a value-0 call to the escrow, then a value-0 call to the token with selector
-  `0xa9059cbb`. **Its tools never show the token transfer's recipient or amount** (caveat 4).
+- **`risk-v1`:** it sees the release as a value-0 call to the escrow, then value-0 inner calls: the token's `transfer`
+  (selector `0xa9059cbb`), AgentPassport's settlement record and the ReputationRegistry's feedback, each by selector
+  only. **Its tools never show the token transfer's recipient or amount** (caveat 4).
   - **In theory:** its `FUNDS_FORWARDED` rule ("value reaches an address that is not the target and not in the mandate's
     allowedTargets") would make every release to a third-party worker high.
   - **What it does instead:** it doesn't reach the payout at all.
@@ -143,7 +144,8 @@ Agent 1984's live mandate was **not** changed: this mandate is the shape, not a 
 on a fork of Monad testnet's latest block, in CI's `contracts-fork` job, which is required (a failure turns the build
 red) and retries the whole fork suite up to three times, 60 s apart, for the public RPC's rate limit.
 - **Ours:** the live `DemoAgentVault` (agent 1984, `mandate-v1` 100 and `risk-v1` 80) is the verifier.
-- **Theirs, as deployed:** JobEscrow, AgentPassport, the USDC and the ERC-8004 registries.
+- **Theirs, as deployed:** JobEscrow and AgentPassport.
+- **Live, not theirs:** Circle's testnet USDC and the canonical ERC-8004 Identity and Reputation registries.
 - **Made in the fork:**
   - a hirer and a freshly registered worker agent;
   - the hirer's USDC, funded with forge-std's `deal` (which handles FiatToken's packed balance slot);
@@ -198,7 +200,8 @@ used 374,088 gas in total. Monad charges the gas limit, so size live limits from
 4. **`risk-v1` can't see ERC-20 transfers.** Its simulation reports MON movements, and each inner call's selector without
    its arguments or logs. So a token payout or drain made inside the call shows it no recipient and no amount, and no rule
    of its rubric reads token value ([README, Limitations](../README.md#limitations)).
-   - **Why this integration is safe anyway:** `release` takes no recipient or amount.
+   - **Why this integration is safe anyway:** `release` takes no recipient or amount, so there is no payee for an
+     agent to swap.
    - **For an escrow whose release takes a payee,** that safety would have to come from the mandate (and `mandate-v1`'s
      caps count only native MON).
    - **The fix is roadmap work:** a `risk-v2` that decodes `Transfer` logs from the call trace

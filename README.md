@@ -383,11 +383,12 @@ Known gaps, stated plainly. The full threat model is P12's.
 
 - **`risk-v1` can't see ERC-20 transfers.** Its simulation tool reports MON movements and each inner call's selector,
   never the call's arguments or logs. Tokens moved inside an action, such as an escrow's payout, a router sweeping a
-  balance, or any `transfer` the target makes, show the model no recipient and no amount: **a token drain made that way
-  is invisible to it.** A direct `token.transfer(to, amount)` reaches it only as raw calldata hex, and no rule of its
+  balance, or any `transfer` the target makes, show the model the call's selector but no recipient and no amount: **a
+  token drain made that way passes it unseen in substance.** A direct `token.transfer(to, amount)` reaches it only as raw calldata hex, and no rule of its
   rubric reads token value.
-  - **The fix:** a `risk-v2` that decodes `Transfer` logs from the call trace. Monad's RPC serves `callTracer` with
-    logs, so it is feasible. It needs a new tag, because `risk-v1`'s evidence format is frozen. Roadmap, not built
+  - **The fix:** a `risk-v2` that decodes `Transfer` logs from the call trace. Monad's public RPC serves `callTracer`
+    with `withLog: true` for both `debug_traceTransaction` (checked 5 Oct 2026) and `debug_traceCall`, which the
+    validator uses (checked 7 Oct 2026), so it is feasible. It needs a new tag, because `risk-v1`'s evidence format is frozen. Roadmap, not built
     ([ARCHITECTURE §12](./ARCHITECTURE.md#12-extension-points-and-roadmap)).
 - **`mandate-v1`'s caps count native MON only.** A mandate that allowlists a token-moving selector (`transfer`,
   `approve`, …) doesn't cap the token amount. Together with the previous point, **an action that moves tokens is today
