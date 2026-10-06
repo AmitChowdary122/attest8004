@@ -19,7 +19,7 @@ import type { WorkflowConfig } from "./config.ts";
 import { pollEvaluate } from "./evaluate-client.ts";
 import { checkEvidence } from "./evidence.ts";
 import { gasLimitFor } from "./gas.ts";
-import { metadataOf, onReportCalldata, reportPayload } from "./report.ts";
+import { landedFromReceipt, metadataOf, onReportCalldata, reportPayload } from "./report.ts";
 import { checkLive, checkPinned, checkRequest, type Decline, type OnchainStatus } from "./request.ts";
 import { decodeValidationRequest, validationRequestEventAbi } from "./trigger.ts";
 
@@ -50,14 +50,26 @@ function readStatus(runtime: Runtime<WorkflowConfig>, evm: EVM, requestHash: Hex
   return { validator: getAddress(validator), agentId, response, responseHash: responseHash.toLowerCase() as Hex, tag };
 }
 
+/**
+ * The onReport estimate, or null when onReport reverts (a decline: the call can never land, e.g. answered in the
+ * meantime). Any other failure throws `ESTIMATE_FAILED`, so the run fails and is retried instead of declining (P12).
+ */
 function estimateInner(runtime: Runtime<WorkflowConfig>, evm: EVM, data: Hex): bigint | null {
   const cfg = runtime.config;
   try {
     const reply = evm.estimateGas(runtime, { msg: encodeCallMsg({ from: cfg.forwarder, to: cfg.creValidator, data }) }).result();
     return BigInt(reply.gas);
-  } catch {
-    return null;
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    if (/revert/i.test(message)) return null;
+    throw new Error(`ESTIMATE_FAILED: ${message.split("\n")[0]}`);
   }
+}
+
+/** The write's receipt logs as hex, for `landedFromReceipt`. */
+function receiptLogs(runtime: Runtime<WorkflowConfig>, evm: EVM, txHash: Hex): { address: Hex; topics: Hex[]; data: Hex }[] {
+  const reply = evm.getTransactionReceipt(runtime, { hash: hexToBase64(txHash) }).result();
+  return (reply.receipt?.logs ?? []).map((log) => ({ address: bytesToHex(log.address), topics: log.topics.map((t) => bytesToHex(t)), data: bytesToHex(log.data) }));
 }
 
 const same = (a: Address, b: Address) => a.toLowerCase() === b.toLowerCase();
@@ -136,6 +148,11 @@ export function onValidationRequest(runtime: Runtime<WorkflowConfig>, log: EVMLo
   if (reply.txStatus !== TxStatus.SUCCESS) throw new Error(`WRITE_FAILED: ${reply.errorMessage ?? `status ${reply.txStatus}`}`);
   const txHash = reply.txHash === undefined ? "0x" : bytesToHex(reply.txHash);
   runtime.log(`WRITE tx ${txHash}`);
+
+  // Both forwarders swallow a receiver's revert: only the forwarder's ReportProcessed in this very receipt says whether
+  // onReport succeeded (an identical earlier verdict can't stand in for it), then C's status must read back as ours.
+  const outcome = landedFromReceipt({ logs: receiptLogs(runtime, evm, txHash), forwarder: cfg.forwarder, receiver: cfg.creValidator });
+  if (outcome !== "LANDED") throw new Error(`NOT_LANDED: tx ${txHash}: ${outcome}`);
 
   const after = readStatus(runtime, evm, t.requestHash, LATEST_BLOCK_NUMBER);
   const isOurs =

@@ -25,6 +25,7 @@ import { initWorkflow, onValidationRequest } from "../src/workflow.ts";
 import { REAL, testConfig } from "./helpers.ts";
 
 const MONAD_TESTNET = 2183018362218727504n;
+const reportProcessedAbi = parseAbi(["event ReportProcessed(address indexed receiver, bytes32 indexed workflowExecutionId, bytes2 indexed reportId, bool result)"]);
 const C = "0x6D12F00870cB6edA2d8e389696f6B5d050423B95" as const;
 const FORWARDER = "0xB9F79d863261869B234c481D1f9A7af84AeAd192" as const;
 const P = 68_500_000n;
@@ -92,11 +93,13 @@ function mocks(o: {
   finalizedNumber?: bigint;
   finalizedStatus?: Status;
   landedStatus?: Status;
-  estimate?: bigint | "revert";
+  estimate?: bigint | "revert" | "transport";
   headerHash?: Hex;
+  /** The write's receipt: the forwarder's ReportProcessed for C with result true (default) or false, or no event. */
+  receipt?: "landed" | "reverted" | "none";
 }) {
   const evm = EvmMock.testInstance(MONAD_TESTNET);
-  const seen = { writes: [] as any[], estimates: [] as any[], http: 0 };
+  const seen = { writes: [] as any[], estimates: [] as any[], receipts: [] as Hex[], http: 0 };
   const isTag = (bn: any, abs: number) => bn !== undefined && bn.sign === -1n && bytesToHex(bn.absVal) === numberToHex(abs, { size: 1 });
   evm.headerByNumber = (input) => {
     const finalized = isTag(input.blockNumber, 3);
@@ -119,11 +122,23 @@ function mocks(o: {
   evm.estimateGas = (input) => {
     seen.estimates.push(input);
     if (o.estimate === "revert") throw new Error("execution reverted: AlreadyAnswered");
+    if (o.estimate === "transport") throw new Error("rpc: connection reset by peer");
     return { gas: (o.estimate ?? INNER_GAS).toString() };
   };
   evm.writeReport = (input) => {
     seen.writes.push(input);
     return { txStatus: "TX_STATUS_SUCCESS", txHash: hexToBase64(keccak256(stringToBytes("report tx"))) };
+  };
+  evm.getTransactionReceipt = (input) => {
+    seen.receipts.push(bytesToHex(input.hash));
+    const kind = o.receipt ?? "landed";
+    const topics = encodeEventTopics({
+      abi: reportProcessedAbi,
+      eventName: "ReportProcessed",
+      args: { receiver: C, workflowExecutionId: `0x${"11".repeat(32)}`, reportId: "0x0001" },
+    }) as Hex[];
+    const log = { address: hexToBase64(FORWARDER), topics: topics.map(hexToBase64), data: hexToBase64(encodeAbiParameters([{ type: "bool" }], [kind === "landed"])) };
+    return { receipt: { status: "1", logs: kind === "none" ? [] : [log] } };
   };
   const http = HttpActionsMock.testInstance();
   http.sendRequest = () => {
@@ -234,6 +249,26 @@ test("onRequest_throwsOnAPinHashOtherThanTheTriggers", () => {
   const s = scenario();
   const seen = mocks({ requestHash: s.requestHash, evaluate: [DONE(s)], headerHash: zeroHash });
   expect(() => run(s.log)).toThrow(/PIN_HASH_MISMATCH/);
+  expect(seen.writes).toHaveLength(0);
+});
+
+test("onRequest_throwsWhenReportProcessedSaysReverted (P12): the write's receipt, not the read-back, decides", () => {
+  const s = scenario();
+  const seen = mocks({ requestHash: s.requestHash, evaluate: [DONE(s)], landedStatus: landed(s), receipt: "reverted" });
+  expect(() => run(s.log)).toThrow(/NOT_LANDED: .*RECEIVER_REVERTED/);
+  expect(seen.receipts).toEqual([keccak256(stringToBytes("report tx"))]);
+});
+
+test("onRequest_throwsWhenTheReceiptHasNoReportProcessed (P12)", () => {
+  const s = scenario();
+  mocks({ requestHash: s.requestHash, evaluate: [DONE(s)], landedStatus: landed(s), receipt: "none" });
+  expect(() => run(s.log)).toThrow(/NOT_LANDED: .*NO_REPORT_EVENT/);
+});
+
+test("onRequest_estimateTransportErrorIsARetryNotADecline (P12)", () => {
+  const s = scenario();
+  const seen = mocks({ requestHash: s.requestHash, evaluate: [DONE(s)], estimate: "transport" });
+  expect(() => run(s.log)).toThrow(/ESTIMATE_FAILED/);
   expect(seen.writes).toHaveLength(0);
 });
 

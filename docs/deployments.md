@@ -953,6 +953,30 @@ the live DemoAgentVault still requires A and B only.
   `0x2d9930087362aefc0780b2dcc2d30b8a3e2b33250f114e8740cf297db51f1aa9`) re-executes C's verdict. The full output is
   in `../plans/p11-cre-demo-live.log`, outside the repo.
 
+## P12 live checks (testnet, 2026-10-06/07)
+
+Read-mostly checks for the security review ([security-review.md](./security-review.md)); nothing was deployed.
+
+**AUD-01: an action's two requests in one block.** The SDK now signs all of an action's requests first and sends them on
+consecutive nonces before awaiting any receipt. Checked with agent 1985's hot key (requests at the live vault naming A
+and B, which the validators decline for agent 1985, so nothing else changes), 0.064 MON each:
+- before local signing, the pair split across blocks 68,749,417 and 68,749,418;
+- with it, both landed in block 68,749,841:
+  [`0x82e447cd…9162f8`](https://monad-testnet.socialscan.io/tx/0x82e447cd586de5c27408208d564c5fd1999ef57e2514a63c3135029db49162f8)
+  (to A) and
+  [`0x950a7e8d…63fc9f2`](https://monad-testnet.socialscan.io/tx/0x950a7e8defdfb3e04ca6d24d50848da141fad9687781fd0232823f6a163fc9f2)
+  (to B).
+
+**Validator C after the P12 changes** (`pnpm cre:demo`, 7 Oct 2026): the workflow now confirms each landing from the
+forwarder's `ReportProcessed` in its own write's receipt, and `/evaluate` checks the `Host` header.
+
+| Scene | Request (hot key → forwarder) | Pin `P` | Report tx | Gas limit | C's verdict | `verify` |
+|---|---|---|---|---|---|---|
+| Benign: 0.0005 MON to the owner | [`0x13980a64…f68d502f`](https://monad-testnet.socialscan.io/tx/0x13980a648b5173b85914e2815ae68de5b88689af9358381c5f3a8c06f68d502f) | 68,756,516 | [`0x5ae94ce5…2dc11ce30`](https://monad-testnet.socialscan.io/tx/0x5ae94ce53c605ecff8ba25795ac0f5a3e36a11926e65a2776bb5b2a0dc11ce30) | 257,489 | **100** | match |
+| Violating: 0.001 MON outside the mandate | [`0x57725a3d…05dc5e454`](https://monad-testnet.socialscan.io/tx/0x57725a3d46d3efa4ae91b59519b07fee8424e0369c7369ffb268f0b05dc5e454) | 68,756,656 | [`0x5b427325…d33ab736`](https://monad-testnet.socialscan.io/tx/0x5b427325c4a4cb78749e8f57cfcaba0c20e3c3dede232c16a7aff499d33ab736) | 270,016 | **0** | match |
+
+Each scene took about 43 s end to end. The full output is in `../plans/p12-cre-demo-live.log`, outside the repo.
+
 ## Canonical contracts used (not deployed by us)
 
 | Contract | Monad testnet (10143) | Monad mainnet (143) |

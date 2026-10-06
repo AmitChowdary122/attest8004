@@ -50,7 +50,7 @@ export function checkRequest(t: TriggerRequest, cfg: WorkflowConfig): { json: Re
 export function checkPinned(o: {
   t: TriggerRequest;
   header: { hash: Hex; timestamp: bigint };
-  status: OnchainStatus | null;
+  status: OnchainStatus;
   deadline: bigint;
   cfg: WorkflowConfig;
 }): { pinTime: bigint } | Decline {
@@ -58,7 +58,7 @@ export function checkPinned(o: {
   if (!same(header.hash, t.blockHash)) {
     throw new Error(`PIN_HASH_MISMATCH: block ${t.block} reads as ${header.hash}, the trigger's log was in ${t.blockHash}`);
   }
-  if (status === null || !same(status.validator, cfg.creValidator) || status.agentId !== t.agentId) {
+  if (!same(status.validator, cfg.creValidator) || status.agentId !== t.agentId) {
     return { decline: "REQUEST_NOT_AT_PIN", detail: `request ${t.requestHash} for C and agent ${t.agentId} isn't at block ${t.block}` };
   }
   if (deadline > header.timestamp + MANDATE_V1.maxDeadlineAheadSeconds) {

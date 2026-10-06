@@ -41,7 +41,7 @@ describe("gas.max admits a report at the evidence cap (the live config)", () => 
     const payload = reportPayload({ requestHash: `0x${"ab".repeat(32)}`, score: 100, responseURI: uri, responseHash: hash });
     const calldata = onReportCalldata(`0x${"aa".repeat(64)}`, payload);
     const bytes = Buffer.from(calldata.slice(2), "hex");
-    const zeros = bytes.filter((b) => b === 0).length;
+    const zeros = bytes.filter((b: number) => b === 0).length;
     const innerFloor = 21_000n + 10n * BigInt(zeros + 4 * (bytes.length - zeros));
     const rawReportBytes = RAW_REPORT_HEADER_BYTES + (payload.length - 2) / 2;
     expect(gasLimitFor({ innerGas: innerFloor, rawReportBytes, gas: cfg.gas })).toHaveProperty("limit");

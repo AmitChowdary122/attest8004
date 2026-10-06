@@ -63,8 +63,9 @@ describe("checkPinned: the workflow's own reads at P, the request's block", () =
     );
   });
 
-  test("REQUEST_NOT_AT_PIN: no status at P, or one naming another validator or agent", () => {
-    for (const status of [null, { ...pending, validator: C }, { ...pending, agentId: 1985n }]) {
+  test("REQUEST_NOT_AT_PIN: a status at P naming another validator or agent", () => {
+    // A status read at P throws on a revert (the request isn't there), so checkPinned only ever sees a status (P12).
+    for (const status of [{ ...pending, validator: C }, { ...pending, agentId: 1985n }]) {
       expect(checkPinned({ t: real(), header, status, deadline: REAL.deadline, cfg: testConfig() })).toMatchObject({ decline: "REQUEST_NOT_AT_PIN" });
     }
   });

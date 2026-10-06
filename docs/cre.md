@@ -232,7 +232,10 @@ no upgrade path; `test_abiIsMinimal` pins its ABI.
 - **A successful write isn't a landed verdict.** Both forwarders swallow a receiver's revert: the transaction succeeds,
   and only `ReportProcessed(…, result)` says whether `onReport` did. The simulator reports success from the receipt
   alone, and even without `--broadcast`.
-  - So the workflow reads C's verdict back after writing, and fails if it isn't there.
+  - So the workflow decodes the forwarder's `ReportProcessed` for C from its own write's receipt (`landedFromReceipt`,
+    P12: an identical earlier verdict can't stand in for it, and only the forwarder's event naming C counts), then reads
+    C's verdict back; it fails `NOT_LANDED` unless both hold. An `eth_estimateGas` that fails for any reason but a
+    revert now fails the run (`ESTIMATE_FAILED`, retried) instead of declining.
   - The demo also checks `ReportProcessed.result`.
   - `testFork_mockSwallowsReceiverRevert` pins it.
 - **Keys.**
