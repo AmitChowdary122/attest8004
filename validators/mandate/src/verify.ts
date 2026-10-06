@@ -11,6 +11,7 @@ import {
 } from "@attest8004/sdk";
 import { decodeErrorResult, keccak256, stringToBytes, zeroAddress, zeroHash, type Address, type Hex } from "viem";
 import { MAX_EVIDENCE_URI_BYTES, type PreimageCache } from "./collect.ts";
+import { mapWithConcurrency } from "./concurrency.ts";
 import { MANDATE_V1 } from "./params.ts";
 import { firstMandateRegistryBlock, mandateAddressesAt, mandateContractsFor, type MandateContracts, type VerifyReader } from "./reader.ts";
 import { mandateRequestOf, runMandateV1 } from "./run.ts";
@@ -46,6 +47,12 @@ import type { PermissionEvent, PinnedBlock, SpendEntry } from "./types.ts";
  *   the response landed in, or before the first MandateRegistry in the history. A mismatch: an honest
  *   validator pins between the first two, and can't pin before the third (it reads the mandate there).
  * - `SCORE_MISMATCH`: the onchain score isn't the recomputed one. A mismatch.
+ * - `PIN_SKIPS_APPROVAL` (P12, AUD-02): one of this validator's own `mandate-v1` approvals (score 100) of the same
+ *   agent became answered after `P` and no later than the block the response landed in, so the re-run at `P`
+ *   couldn't count it toward the daily spend, although the validator had already given it. An honest validator pins
+ *   after its own last approval of the agent landed ({@link approvalsAfterPin}); one that pins earlier under-counts
+ *   spend while its verdict still re-runs to the same bytes. A mismatch. Validators whose documented pin rule is the
+ *   request's own block (validator C, docs/cre.md) are exempt: {@link VerifyContext.pinAtRequestBlock}.
  * - `RESPONSE_HASH_MISMATCH`: the onchain `responseHash` isn't the hash of the recomputed evidence,
  *   or it commits to evidence that isn't a `mandate-v1` document at all (no pinned block or request
  *   block to re-run at), which no `mandate-v1` run produces. A mismatch.
@@ -60,7 +67,8 @@ export type VerifyProblem =
   | "REQUEST_INVALID"
   | "PIN_OUT_OF_RANGE"
   | "SCORE_MISMATCH"
-  | "RESPONSE_HASH_MISMATCH";
+  | "RESPONSE_HASH_MISMATCH"
+  | "PIN_SKIPS_APPROVAL";
 
 /** The problems that prove the validator misbehaved. Every other problem means the verdict couldn't be re-run. */
 export const MISMATCH_PROBLEMS: ReadonlySet<VerifyProblem> = new Set([
@@ -70,6 +78,7 @@ export const MISMATCH_PROBLEMS: ReadonlySet<VerifyProblem> = new Set([
   "PIN_OUT_OF_RANGE",
   "SCORE_MISMATCH",
   "RESPONSE_HASH_MISMATCH",
+  "PIN_SKIPS_APPROVAL",
 ]);
 
 /**
@@ -103,6 +112,8 @@ export interface VerifyReport {
   spendEntries: SpendEntry[];
   /** The re-run's permission events in `(P − N, P]`, as its evidence records them. */
   permissionEvents: PermissionEvent[];
+  /** This validator's approvals of the agent answered after `P` and by the response's block (`PIN_SKIPS_APPROVAL`). */
+  skippedApprovals: Hex[];
 }
 
 /**
@@ -114,12 +125,17 @@ export interface VerifyReport {
 export interface VerifyContext {
   contracts: MandateContracts;
   validationRegistryDeployBlock: bigint;
+  /**
+   * Validators whose documented pin is the request's own block (validator C: its stateless CRE workflow judges each
+   * request against its spend as of that block, docs/cre.md), so `PIN_SKIPS_APPROVAL` doesn't apply to them.
+   */
+  pinAtRequestBlock?: readonly Address[];
 }
 
 /** The {@link VerifyContext} for `chainId` from the SDK's recorded deployment (`DEPLOYMENTS`). Throws for a chain with none. */
 export function verifyContextFor(chainId: number): VerifyContext {
-  const { validationRegistryDeployBlock } = deploymentsFor(chainId);
-  return { contracts: mandateContractsFor(chainId), validationRegistryDeployBlock };
+  const { validationRegistryDeployBlock, validators } = deploymentsFor(chainId);
+  return { contracts: mandateContractsFor(chainId), validationRegistryDeployBlock, pinAtRequestBlock: [validators.creMandateV1] };
 }
 
 const DECIMAL = /^(0|[1-9]\d*)$/;
@@ -151,6 +167,9 @@ const UINT64_LIMIT = 2n ** 64n;
  *    canonical JSON.
  * 6. Compares the score (→ `SCORE_MISMATCH`) and the `responseHash` (→ `RESPONSE_HASH_MISMATCH`),
  *    listing the top-level evidence keys that differ.
+ * 7. Unless the validator pins at the request's block by design (`pinAtRequestBlock`: validator C), checks that
+ *    none of its own approvals of the agent became answered after `P` and by the response's block
+ *    ({@link approvalsAfterPin} → `PIN_SKIPS_APPROVAL`).
  *
  * Rejects, rather than report, when a read fails: an RPC error (including history the node no longer
  * serves, and any revert other than the registry's `UnknownRequest`), or an input log the re-run
@@ -207,6 +226,11 @@ export async function verifyRequest(o: { reader: VerifyReader; requestHash: Hex 
   const problems: VerifyProblem[] = [];
   if (recomputed.score !== base.posted.score) problems.push("SCORE_MISMATCH");
   if (recomputed.responseHash !== base.posted.responseHash) problems.push("RESPONSE_HASH_MISMATCH");
+  const exempt = (o.pinAtRequestBlock ?? []).some((v) => v.toLowerCase() === status.validator.toLowerCase());
+  const skippedApprovals = exempt
+    ? []
+    : await approvalsAfterPin({ reader, validator: status.validator, agentId: status.agentId, pin: pinnedBlock, upTo: response.block, exclude: requestHash });
+  if (skippedApprovals.length > 0) problems.push("PIN_SKIPS_APPROVAL");
   return report(
     {
       ...base,
@@ -217,9 +241,39 @@ export async function verifyRequest(o: { reader: VerifyReader; requestHash: Hex 
       // Built by mandateEvidence() field for field from the collected SpendEntry and PermissionEvent values.
       spendEntries: (rebuilt.spend as { entries?: SpendEntry[] } | null)?.entries ?? [],
       permissionEvents: (rebuilt.permissions as { events: PermissionEvent[] }).events,
+      skippedApprovals,
     },
     problems,
   );
+}
+
+/**
+ * `validator`'s `mandate-v1` approvals (score 100) of `agentId` that are answered at block `upTo` but weren't at
+ * `pin` (unknown there, or answered differently), leaving out `exclude`: approvals a verdict pinned at `pin` couldn't
+ * count toward the daily spend (P12, AUD-02). State only: the agent's list and each status, at both blocks. `verify`
+ * runs it up to the response's block (`PIN_SKIPS_APPROVAL`); validator A's pin waits until it is empty up to the
+ * finalized head, so even a restarted process never pins before its own last approval of the agent.
+ */
+export async function approvalsAfterPin(o: {
+  reader: Pick<VerifyReader, "agentValidations" | "status">;
+  validator: Address;
+  agentId: bigint;
+  pin: bigint;
+  upTo: bigint;
+  exclude: Hex;
+}): Promise<Hex[]> {
+  const { reader, validator, agentId, pin, upTo } = o;
+  const excluded = o.exclude.toLowerCase();
+  const hashes = (await reader.agentValidations(agentId, upTo)).filter((hash) => hash.toLowerCase() !== excluded);
+  const skipped = await mapWithConcurrency(hashes, 8, async (requestHash): Promise<Hex | null> => {
+    const now = await reader.status(requestHash, upTo);
+    const isApproval = now.validator.toLowerCase() === validator.toLowerCase() && now.agentId === agentId && now.tag === MANDATE_V1.tag && now.response === 100;
+    if (!isApproval) return null;
+    const then = await statusOrUnknown(reader, requestHash, pin);
+    const alreadyThere = then !== null && then.response === 100 && then.tag === MANDATE_V1.tag && then.responseHash.toLowerCase() === now.responseHash.toLowerCase();
+    return alreadyThere ? null : requestHash;
+  });
+  return skipped.filter((hash): hash is Hex => hash !== null);
 }
 
 function report(
@@ -241,6 +295,7 @@ function report(
     differingKeys: fields.differingKeys ?? [],
     spendEntries: fields.spendEntries ?? [],
     permissionEvents: fields.permissionEvents ?? [],
+    skippedApprovals: fields.skippedApprovals ?? [],
   };
 }
 
@@ -249,7 +304,7 @@ function report(
  * yet). Exported so `risk-v1`'s prerequisite check (P5) can read validator A's status at its own
  * pinned block the same way `verify` does.
  */
-export async function statusOrUnknown(reader: VerifyReader, requestHash: Hex, at: bigint): Promise<ValidationStatus | null> {
+export async function statusOrUnknown(reader: Pick<VerifyReader, "status">, requestHash: Hex, at: bigint): Promise<ValidationStatus | null> {
   try {
     return await reader.status(requestHash, at);
   } catch (error) {

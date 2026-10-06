@@ -147,7 +147,11 @@ export function chainVerifiers(o: {
 }): Verifiers {
   const { reader, chainId } = o;
   const mandateContext = verifyContextFor(chainId);
-  const riskContext = { ...mandateContext, contracts: riskContractsFor(chainId), mandateValidator: deploymentsFor(chainId).validators.mandateV1 };
+  const riskContext = {
+    contracts: riskContractsFor(chainId),
+    validationRegistryDeployBlock: mandateContext.validationRegistryDeployBlock,
+    mandateValidator: deploymentsFor(chainId).validators.mandateV1,
+  };
   const verifyMandate = o.verifyMandate ?? verifyRequest;
   const verifyRisk = o.verifyRisk ?? verifyRiskRequest;
   return {

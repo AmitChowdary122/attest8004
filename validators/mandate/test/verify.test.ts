@@ -175,6 +175,7 @@ describe("verifyRequest: an honest verdict reproduces", () => {
       permissionEvents: [
         { block: 500n, logIndex: 0, txHash: keccak256(toHex("MandateSet tx")), emitter: "MandateRegistry", event: "MandateSet", afterMandate: false },
       ],
+      skippedApprovals: [],
     });
   });
 
@@ -272,10 +273,11 @@ describe("verifyRequest: an honest verdict reproduces", () => {
     await expect(verify(e.requestHash)).resolves.toMatchObject({ verdict: "match", pinnedBlock: 1_004n });
   });
 
-  it("verifyContextFor reads the SDK's recorded deployment: the contracts and both registries' deployment blocks", () => {
+  it("verifyContextFor reads the SDK's recorded deployment: the contracts, both registries' deployment blocks, and C pinning at the request", () => {
     expect(verifyContextFor(CHAIN_ID)).toEqual({
       contracts: mandateContractsFor(CHAIN_ID),
       validationRegistryDeployBlock: 67_604_893n,
+      pinAtRequestBlock: ["0x6D12F00870cB6edA2d8e389696f6B5d050423B95"],
     });
     expect(verifyContextFor(CHAIN_ID).contracts.mandateRegistries[0]).toEqual({ address: P4_REGISTRY, fromBlock: 67_842_487n });
     expect(() => verifyContextFor(1)).toThrow(/no Attest8004 deployment/);

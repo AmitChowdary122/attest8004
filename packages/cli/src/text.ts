@@ -97,6 +97,9 @@ const PROBLEM_TEXT: Record<VerifyProblem, string> = {
   PIN_OUT_OF_RANGE: "the evidence's pinned block isn't between the request's block and the response's block",
   SCORE_MISMATCH: "the onchain score isn't the recomputed score",
   RESPONSE_HASH_MISMATCH: "the onchain responseHash isn't the hash of the recomputed evidence",
+  PIN_SKIPS_APPROVAL:
+    "the evidence's pin leaves out an approval this validator had already given the agent (answered after the pin, " +
+    "before the response), so the daily spend was under-counted",
 };
 
 function mandateVerdictLine(report: VerifyReport): string {
@@ -144,6 +147,10 @@ export function mandateText(report: VerifyReport): string {
       more(`${entry.requestHash}  ${entry.value} wei (${formatEther(entry.value)} MON)  ${entry.counted ? "counted" : "not counted"}`);
     }
     row("permission events", `${report.permissionEvents.length} in the window`);
+  }
+  if (report.skippedApprovals.length > 0) {
+    row("skipped approvals", `${report.skippedApprovals.length} answered after the pin, before the response`);
+    for (const hash of report.skippedApprovals) more(hash);
   }
   if (report.problems.length === 0) {
     row("problems", "none");

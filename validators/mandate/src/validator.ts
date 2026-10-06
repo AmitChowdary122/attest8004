@@ -21,6 +21,7 @@ import { servedGateDecline, servedGateMap } from "./gates.ts";
 import { mandateReport } from "./report.ts";
 import { mandateRequestOf, runMandateV1 } from "./run.ts";
 import type { PinnedBlock } from "./types.ts";
+import { approvalsAfterPin } from "./verify.ts";
 
 /** How long `check()` waits for the finalized head to reach its floor before it fails (and the base retries). */
 export const DEFAULT_PIN_TIMEOUT_MS = 30_000;
@@ -207,7 +208,7 @@ export class MandateValidator extends ValidatorBase {
 
   protected override async check(request: VerifiedRequest): Promise<CheckResult> {
     const { requestHash, blockNumber } = request.event;
-    const pinned = await this.pin(requestHash, blockNumber, request.action.deadline);
+    const pinned = await this.pin(requestHash, blockNumber, request.action.deadline, request.event.agentId);
     if (pinned.timestamp > this.lastPinTimestamp) this.lastPinTimestamp = pinned.timestamp;
 
     const mandateRequest = mandateRequestOf(request.json, requestHash, blockNumber);
@@ -280,7 +281,7 @@ export class MandateValidator extends ValidatorBase {
    * `P` for one check (see the class doc): {@link PIN_LAG_BLOCKS} below the finalized head, once that
    * is high enough and complete.
    */
-  private async pin(requestHash: Hex, requestBlock: bigint, deadline: bigint): Promise<PinnedBlock> {
+  private async pin(requestHash: Hex, requestBlock: bigint, deadline: bigint, agentId: bigint): Promise<PinnedBlock> {
     let floor = requestBlock;
     if (this.lastResponseBlock !== undefined && this.lastResponseBlock > floor) floor = this.lastResponseBlock;
     if (this.firstRegistryBlock > floor) floor = this.firstRegistryBlock;
@@ -295,7 +296,13 @@ export class MandateValidator extends ValidatorBase {
     for (;;) {
       const head = await this.reader.finalized();
       const at = head.number - PIN_LAG_BLOCKS;
-      if (at >= floor && (mustSee === undefined || answered(await this.reader.status(mustSee, at)))) {
+      // P12 AUD-02: the floor is also read from the chain, so a restarted process (whose memory is empty) still
+      // never pins before its own last approval of this agent that the finalized head shows: `verify` would report it.
+      if (
+        at >= floor &&
+        (mustSee === undefined || answered(await this.reader.status(mustSee, at))) &&
+        (await approvalsAfterPin({ reader: this.reader, validator: this.chain.address, agentId, pin: at, upTo: head.number, exclude: requestHash })).length === 0
+      ) {
         const pinned = await this.reader.block(at);
         if (pinned.timestamp >= earliestTime) {
           if (mustSee !== undefined && this.pendingApproval === mustSee) this.pendingApproval = undefined;

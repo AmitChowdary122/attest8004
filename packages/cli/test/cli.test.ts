@@ -51,6 +51,7 @@ const matchReport: VerifyReport = {
       afterMandate: false,
     },
   ],
+  skippedApprovals: [],
 };
 
 const mismatchReport: VerifyReport = {
@@ -249,6 +250,17 @@ describe("attest8004 CLI: exit codes and output", () => {
     expect(text).toContain("RESPONSE_HASH_MISMATCH");
     expect(text).toContain("block, permissions");
     expect(text).toContain(OTHER_RESPONSE_HASH);
+  });
+
+  it("a pin that skipped the validator's own approval names the problem and lists the approval (P12 AUD-02)", async () => {
+    const skipped: VerifyReport = { ...matchReport, match: false, verdict: "mismatch", problems: ["PIN_SKIPS_APPROVAL"], skippedApprovals: [SPENT_REQUEST] };
+    const h = harness({ report: skipped });
+    await expect(h.run(["verify", HASH])).resolves.toBe(1);
+    const text = h.out.join("\n");
+    expect(text).toMatch(/^MISMATCH\b/);
+    expect(text).toContain("PIN_SKIPS_APPROVAL: the evidence's pin leaves out an approval this validator had already given the agent");
+    expect(text).toMatch(new RegExp(`skipped approvals\\s+1\\b`));
+    expect(text).toContain(SPENT_REQUEST);
   });
 
   it("--json prints the report as one JSON line, bigints as decimal strings, and exits by its verdict", async () => {
@@ -757,7 +769,13 @@ describe("chainVerifiers: the real verifiers over one reader", () => {
     await expect(verifiers.mandate(HASH)).resolves.toBe(matchReport);
     await expect(verifiers.risk(HASH)).resolves.toBe(riskMatchReport);
     expect(seen[0]).toEqual({ reader, requestHash: HASH, ...verifyContextFor(10_143) });
-    expect(seen[0]).toEqual({ reader, requestHash: HASH, contracts: mandateContractsFor(10_143), validationRegistryDeployBlock: 67_604_893n });
+    expect(seen[0]).toEqual({
+      reader,
+      requestHash: HASH,
+      contracts: mandateContractsFor(10_143),
+      validationRegistryDeployBlock: 67_604_893n,
+      pinAtRequestBlock: [DEPLOYMENTS[10143].validators.creMandateV1],
+    });
     expect(seen[1]).toEqual({
       reader,
       requestHash: HASH,

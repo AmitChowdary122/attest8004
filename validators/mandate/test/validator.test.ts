@@ -345,7 +345,8 @@ describe("MandateValidator: verdicts", () => {
   });
 
   it("evidence pinned before the switch records the P4 registry, at or after it the v2 one", async () => {
-    const before = addRequest(requestJson());
+    // A refusal: an approval landed after the second pin would make a fresh process wait for it (P12 AUD-02).
+    const before = addRequest(requestJson({ target: UNLISTED }));
     await validator({ contracts: history(1_005n) }).pollOnce(); // pins 1,004: v2 is valid from the next block
     expect(posted(before.requestHash).doc.block.number).toBe("1004");
     expect(posted(before.requestHash).doc.params.mandateRegistry).toBe(ADDRESSES.mandateRegistry);
