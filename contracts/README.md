@@ -175,6 +175,9 @@ BROADCAST=1 ./script/deploy-testnet.sh ValidationRegistry   # deploy
 ./script/deploy-testnet.sh FindingsBoard                    # same, for the encrypted-report board
 ```
 
-The wrapper loads `../.env` into the environment and never prints it. The deployer key reaches forge through
-`--private-key`, never through a cheatcode, so it doesn't appear in script traces. The wrapper also passes
+The wrapper reads only `DEPLOYER_PRIVATE_KEY`, `MONAD_TESTNET_RPC_URL` and `DEPLOYER_ADDRESS` from `../.env` (or
+`ENV_FILE`), never sources it, and never prints them (P12, AUD-07). The deployer key reaches forge only in its
+environment, read by the Deploy scripts' `run()` with `vm.envUint`, never on its command line, where `ps` would show it
+to every local user; the RPC URL goes through foundry.toml's `monad_testnet` alias. A `-vvvv` trace would show the
+value the cheatcode returns, so the wrapper passes no `-v` flag: don't add one. It also passes
 `--skip-simulation`, so that forge keeps the script's literal gas limit instead of replacing it with its own estimate. Record every deployment in [docs/deployments.md](../docs/deployments.md).

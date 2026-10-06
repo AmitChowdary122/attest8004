@@ -36,7 +36,8 @@ contract DeployDemoAgentVault is Script {
     function run() external returns (DemoAgentVault vault) {
         (address registry, uint256 agentId, AttestGate.Requirement[] memory requirements) = configFor(block.chainid);
 
-        vm.startBroadcast();
+        // deploy-testnet.sh passes the key in the environment, never on the command line (P12, AUD-07).
+        vm.startBroadcast(vm.envUint("DEPLOYER_PRIVATE_KEY"));
         vault = deploy(registry, agentId, requirements);
         vm.stopBroadcast();
 

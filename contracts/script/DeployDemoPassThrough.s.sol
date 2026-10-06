@@ -31,7 +31,8 @@ contract DeployDemoPassThrough is Script {
     function run() external returns (DemoPassThrough passThrough) {
         address payable sink = configFor(block.chainid);
 
-        vm.startBroadcast();
+        // deploy-testnet.sh passes the key in the environment, never on the command line (P12, AUD-07).
+        vm.startBroadcast(vm.envUint("DEPLOYER_PRIVATE_KEY"));
         passThrough = deploy(sink);
         vm.stopBroadcast();
 
