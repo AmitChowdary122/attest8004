@@ -99,8 +99,9 @@ for its operator, with recommendations. Its purpose is the channel:
   republishing. A validator must not copy it into public evidence that anyone can download, but it can put it in a
   report that only the agent's operator can decrypt. No recorded run has had a `NANSEN_API_KEY` set: `risk-v1`'s Nansen tools
   answered "unavailable", so no Nansen data is in any public evidence. If Nansen data is ever served, `risk-v1`'s
-  public evidence (which records every tool output) would carry it. Whether that needs a `risk-v2` that keeps Nansen
-  outputs out of public evidence and only in the inbox is a decision recorded for P12, the threat model (STATUS.md).
+  public evidence (which records every tool output) would carry it. The [threat model, §6.12](./threat-model.md#612-nansen-outputs-in-public-evidence)
+  decides it: a `risk-v2` would keep Nansen outputs out of public evidence and in the inbox only, and until then
+  `NANSEN_API_KEY` stays unset for any public deployment.
 
 ## 5. The cross-device test
 

@@ -379,7 +379,8 @@ exact request/response shapes and the per-check credit cost, is in [docs/nansen.
 
 ## Limitations
 
-Known gaps, stated plainly. The full threat model is P12's.
+Known gaps, stated plainly. The full threat model is [docs/threat-model.md](./docs/threat-model.md); the independent
+security review (an AI-assisted self-review, not a professional audit) is [docs/security-review.md](./docs/security-review.md).
 
 - **`risk-v1` can't see ERC-20 transfers.** Its simulation tool reports MON movements and each inner call's selector,
   never the call's arguments or logs. Tokens moved inside an action, such as an escrow's payout, a router sweeping a
