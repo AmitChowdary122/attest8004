@@ -310,9 +310,9 @@ describe("Attest8004Client.isValidated (mirrors AttestGate)", () => {
    * directly, with no decode step).
    */
   it("is false when a verdict's tag carries a leading BOM that naive UTF-8 decoding would strip", async () => {
-    // Raw bytes as posted onchain: EF BB BF ("﻿") + "mandate-v1". Decoding this as a string
+    // Raw bytes as posted onchain: EF BB BF ("\uFEFF") + "mandate-v1". Decoding this as a string
     // and re-encoding it loses the BOM, which would make it hash equal to plain "mandate-v1".
-    statuses.set(rhA, [VALIDATOR_A, 7n, 100, keccak256(toHex("a")), "﻿mandate-v1", 1n]);
+    statuses.set(rhA, [VALIDATOR_A, 7n, 100, keccak256(toHex("a")), "\uFEFFmandate-v1", 1n]);
     expect(await isValidated()).toBe(false);
   });
 

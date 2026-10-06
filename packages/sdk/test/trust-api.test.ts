@@ -216,7 +216,7 @@ describe("getAgentTrust", () => {
   });
 
   it("shows any tag a validator chose, made printable and short", async () => {
-    const { fetchImpl } = fakeFetch(() => json(agentTrustBody({ ValidationRequest: [verdictRow({ tag: "mandate-v1‮<script>" + "x".repeat(80) })] })));
+    const { fetchImpl } = fakeFetch(() => json(agentTrustBody({ ValidationRequest: [verdictRow({ tag: "mandate-v1\u202E<script>" + "x".repeat(80) })] })));
     const tag = (await getAgentTrust(1984n, { url: URL_, fetchImpl }))?.recentVerdicts[0]?.tag ?? "";
     expect(tag.startsWith("mandate-v1?<script>")).toBe(true);
     expect(tag.length).toBeLessThanOrEqual(65);

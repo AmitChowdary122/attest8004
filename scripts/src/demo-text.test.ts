@@ -197,7 +197,7 @@ describe("printableError (review fix: untrusted text never reaches the terminal 
     expect(printableError({ shortMessage: "Execution reverted.", message: "long https://rpc.example/key" })).toBe("Execution reverted.");
   });
   it("keeps the lines, strips escapes, controls and bidi marks from each, and replaces URLs", () => {
-    const error = new Error("first https://rpc.example/abc\nsecond \u001b]52;c;aGV\u0007 ‮evil");
+    const error = new Error("first https://rpc.example/abc\nsecond \u001b]52;c;aGV\u0007 \u202Eevil");
     expect(printableError(error)).toBe("first <url>\nsecond ]52;c;aGV evil");
   });
   it("turns a schema error into its first issue's path and message, never the pretty-printed issue list", () => {
@@ -214,18 +214,18 @@ describe("printableError (review fix: untrusted text never reaches the terminal 
   it("cleans what JSON.parse echoes from a hostile file", () => {
     let caught: unknown;
     try {
-      JSON.parse("\u001b]52;c;aGVsbG8=\u0007‮{");
+      JSON.parse("\u001b]52;c;aGVsbG8=\u0007\u202E{");
     } catch (error) {
       caught = error;
     }
     const line = printableError(caught);
-    expect(line).not.toMatch(/[\u001b\u0007‮]/);
+    expect(line).not.toMatch(/[\u001b\u0007\u202E]/);
   });
 });
 
 describe("toolsLine (review fix: model-chosen tool names are untrusted)", () => {
   it("names each tool once, cleaned, and says whether Nansen was available", () => {
-    expect(toolsLine(["simulate_action", "get_mandate", "simulate_action", "evil\u001b[2J‮x"], { available: false, reason: "NANSEN_API_KEY is not set" })).toBe(
+    expect(toolsLine(["simulate_action", "get_mandate", "simulate_action", "evil\u001b[2J\u202Ex"], { available: false, reason: "NANSEN_API_KEY is not set" })).toBe(
       "tools it called: simulate_action, get_mandate, evilx; Nansen: not configured (NANSEN_API_KEY is not set)",
     );
     expect(toolsLine([], { available: true, reason: null })).toBe("tools it called: none; Nansen: available");
