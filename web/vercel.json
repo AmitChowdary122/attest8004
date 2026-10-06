@@ -12,7 +12,11 @@
         { "key": "X-Frame-Options", "value": "DENY" },
         { "key": "Referrer-Policy", "value": "no-referrer" },
         { "key": "X-Content-Type-Options", "value": "nosniff" },
-        { "key": "Cross-Origin-Opener-Policy", "value": "same-origin" }
+        { "key": "Cross-Origin-Opener-Policy", "value": "same-origin" },
+        {
+          "key": "Permissions-Policy",
+          "value": "publickey-credentials-get=(self), publickey-credentials-create=(self), clipboard-write=(self), camera=(), microphone=(), geolocation=(), payment=(), usb=(), serial=(), hid=(), display-capture=()"
+        }
       ]
     }
   ]

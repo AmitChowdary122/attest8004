@@ -238,14 +238,17 @@ sequenceDiagram
 > - **It never sends a transaction.** The owner's wallet does, through `set-passkey` and `submit-approval`, and both re-check everything first. Both are dry runs by default: `submit-approval` prints the new mandate next to the current one in plain words (the owner's own check of what the passkey signed, since a WebAuthn prompt shows no content), and each sends only with `--confirm <first 8 hex digits>` of the value it binds (the changeHash, or the passkey's qx). Neither factor alone can change a mandate.
 > - **Ceremonies run only on `attest8004.vercel.app`** (`isApproveHost`). Anywhere else the buttons are disabled, so a passkey is never created on a preview URL or on localhost.
 > - **Security headers** come from `web/vercel.json`, and `vite preview` serves the same ones:
->   - a CSP of `default-src 'self'; connect-src 'self' https://testnet-rpc.monad.xyz; frame-ancestors 'none'; object-src 'none'; base-uri 'none'; form-action 'none'`, so the page loads no third-party code, talks only to the testnet RPC, submits no form and can't be framed (clickjacking);
+>   - a CSP of `default-src 'self'; connect-src 'self' https://testnet-rpc.monad.xyz <the hosted indexer's GraphQL URL, since P8>; frame-ancestors 'none'; object-src 'none'; base-uri 'none'; form-action 'none'`, so the page loads no third-party code, talks only to the testnet RPC and the indexer, submits no form and can't be framed (clickjacking);
 >   - `X-Frame-Options: DENY`;
 >   - `Referrer-Policy: no-referrer`;
 >   - `X-Content-Type-Options: nosniff`;
->   - `Cross-Origin-Opener-Policy: same-origin`.
+>   - `Cross-Origin-Opener-Policy: same-origin`;
+>   - `Permissions-Policy` (P12, AUD-12): passkeys (`publickey-credentials-get`/`-create`) and clipboard writes for this origin only, and camera, microphone, geolocation, payment, USB, serial, HID and display capture denied.
+>
+>   The live site serves exactly these (checked with `curl -sI` on `/`, `/approve`, `/inbox`, `/dashboard` in P12; docs/security-review.md). **What they don't do:** `'self'` is the only barrier between an injected script and the passkey, so the source tests below matter; Trusted Types is on the roadmap.
 >
 >   zod runs `jitless`, so its `new Function` probe doesn't trip the CSP.
-> - **No URL input.** The page never reads a value from the query string or the fragment. The agent, the mandate and everything else come from presets, typed input or the chain, so a phishing link can't pre-fill a malicious mandate. A query or fragment is stripped unread, with a notice, and `web/test/no-url-input.test.ts` enforces this on the source.
+> - **No URL input.** The page never reads a value from the query string or the fragment. The agent, the mandate and everything else come from presets, typed input or the chain, so a phishing link can't pre-fill a malicious mandate. A query or fragment is stripped unread, with a notice, and `web/test/no-url-input.test.ts` checks the source for it. Like `no-storage.test.ts` and `no-html.test.ts`, it is a **lexical** check (P12, AUD-12): it catches the direct forms (`location.search`, `localStorage`, `innerHTML`, …), not a computed property name such as `window["local" + "Storage"]`; code review covers those, and an AST-based lint is on the roadmap.
 > - **The build's commit is in the footer** (`VERCEL_GIT_COMMIT_SHA`), so production can be matched to a commit before anyone uses a passkey on it.
 >
 > **Per-token approval in the demo.** The diagram's `approve(forwarder, agentId)` is a per-token ERC-721 approval, scoped to one agent, which is what the demo uses for both demo agents (§7 has the trade-off against the alternative, a blanket `setApprovalForAll`). An owner with many agents can still choose the blanket approval instead; either way the forwarder only ever calls `validationRequest`.

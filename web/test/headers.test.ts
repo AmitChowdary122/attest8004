@@ -57,6 +57,28 @@ describe("security headers (web/vercel.json)", () => {
   });
 });
 
+describe("Permissions-Policy (P12 AUD-12)", () => {
+  const policy = new Map(
+    (header("Permissions-Policy") ?? "")
+      .split(",")
+      .map((d) => d.trim().split("="))
+      .filter((parts) => parts[0])
+      .map(([name, allow]) => [name as string, allow ?? ""]),
+  );
+
+  it("keeps passkeys and clipboard writes to this origin, the only powerful features the pages use", () => {
+    expect(policy.get("publickey-credentials-get")).toBe("(self)");
+    expect(policy.get("publickey-credentials-create")).toBe("(self)");
+    expect(policy.get("clipboard-write")).toBe("(self)");
+  });
+
+  it("denies every other powerful feature outright", () => {
+    for (const feature of ["camera", "microphone", "geolocation", "payment", "usb", "serial", "hid", "display-capture"]) {
+      expect(policy.get(feature), feature).toBe("()");
+    }
+  });
+});
+
 describe("the indexer's URL", () => {
   it("is https and a full GraphQL path when recorded, so connect-src allows exactly it", () => {
     if (trustApi === null) return;
