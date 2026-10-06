@@ -525,6 +525,15 @@ describe("MandateValidator: accepts()", () => {
     expect(outcomes).toEqual([expect.objectContaining({ kind: "responded", requestHash: e.requestHash })]);
   });
 
+  it("P12 AUD-05: an unlisted gate or a listed gate named for another agent costs no chain read either (no status read)", async () => {
+    const status = vi.spyOn(chain, "status");
+    addRequest(requestJson({ gate: OTHER_GATE }));
+    addRequest(requestJson({ agentId: 7n }));
+    const { outcomes } = await validator().pollOnce();
+    expect(outcomes.map((o) => (o.kind === "skipped" ? o.detail?.split(":")[0] : o.kind))).toEqual(["GATE_NOT_SERVED", "GATE_NOT_FOR_AGENT"]);
+    expect(status).not.toHaveBeenCalled();
+  });
+
   it("checks the gate before reading anything", async () => {
     reader.mandateRecord = null;
     addRequest(requestJson({ gate: OTHER_GATE }));

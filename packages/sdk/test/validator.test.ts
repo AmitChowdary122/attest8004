@@ -74,7 +74,9 @@ class FakeChain implements ValidatorChain {
     this.logRanges.push([fromBlock, toBlock]);
     return this.events.filter((e) => e.blockNumber >= fromBlock && e.blockNumber <= toBlock);
   }
+  readonly statusReads: Hex[] = [];
   async status(requestHash: Hex): Promise<ValidationStatus> {
+    this.statusReads.push(requestHash);
     const stored = this.statuses.get(requestHash);
     if (stored) return stored;
     const event = this.events.find((e) => e.requestHash === requestHash);
@@ -113,6 +115,10 @@ class TestValidator extends ValidatorBase {
   readonly responded: RespondedInfo[] = [];
   result: () => CheckResult | { decline: string } = () => ({ score: 100, reasons: ["OK"] });
   accept: (request: VerifiedRequest) => boolean | { decline: string } = () => true;
+  serves: (request: VerifiedRequest) => true | { decline: string } = () => true;
+  protected override servesLocally(request: VerifiedRequest): true | { decline: string } {
+    return this.serves(request);
+  }
   onRespondedImpl: (info: RespondedInfo) => void | Promise<void> = () => {};
   readonly gaveUp: Hex[] = [];
   onGaveUpImpl: (requestHash: Hex) => void = () => {};
@@ -193,6 +199,20 @@ const skipped = (outcomes: Outcome[]) =>
   outcomes.map((o) => (o.kind === "skipped" ? o.reason : o.kind));
 
 describe("ValidatorBase", () => {
+  it("P12 AUD-05: servesLocally() turns a request away before any status read, and its decline is logged", async () => {
+    const e = event();
+    chain.events.push(e);
+    const v = validator();
+    v.serves = () => ({ decline: "GATE_NOT_SERVED: not ours" });
+
+    const { outcomes } = await v.pollOnce();
+
+    expect(skipped(outcomes)).toEqual(["DECLINED"]);
+    expect(chain.statusReads).toEqual([]);
+    expect(v.checked).toHaveLength(0);
+    expect(logs).toContainEqual(expect.objectContaining({ level: "warn", requestHash: e.requestHash, reason: "DECLINED", detail: "GATE_NOT_SERVED: not ours" }));
+  });
+
   it("throws on an empty tag", () => {
     expect(() => validator({ tag: "" })).toThrow(/tag/);
   });

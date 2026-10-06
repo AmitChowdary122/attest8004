@@ -170,7 +170,8 @@ export class RiskValidator extends ValidatorBase {
     return result;
   }
 
-  protected override async accepts(request: VerifiedRequest): Promise<boolean | { decline: string }> {
+  /** The (gate, agent) allowlist, before any read (P12, AUD-05): `GATE_NOT_SERVED` / `GATE_NOT_FOR_AGENT`. */
+  protected override servesLocally(request: VerifiedRequest): true | { decline: string } {
     const agentId = request.action.agentId;
     const agents = this.gates.get(request.gate.toLowerCase());
     if (agents === undefined) {
@@ -181,6 +182,13 @@ export class RiskValidator extends ValidatorBase {
       const served = listed.length === 1 ? `agent ${listed[0]}` : `agents ${listed.join(", ")}`;
       return { decline: `GATE_NOT_FOR_AGENT: gate ${request.gate} serves ${served}, not ${agentId}` };
     }
+    return true;
+  }
+
+  protected override async accepts(request: VerifiedRequest): Promise<boolean | { decline: string }> {
+    const agentId = request.action.agentId;
+    const served = this.servesLocally(request);
+    if (served !== true) return served;
     const admitted = this.admission.admit({ requestHash: request.event.requestHash, agentId, now: request.headTimestamp });
     return admitted.ok ? true : { decline: admitted.detail };
   }

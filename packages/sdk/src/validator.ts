@@ -198,6 +198,16 @@ export abstract class ValidatorBase {
   protected abstract check(request: VerifiedRequest): Promise<CheckResult | { decline: string }>;
 
   /**
+   * A check that needs no RPC (P12, AUD-05), run on a request that passed the base's own local checks and before any
+   * read: `{ decline: "<reason>" }` turns it away with no response and no retries, logged once at `warn`. Use it for a
+   * validator's allowlist (the (gate, agent) pairs it serves), so a request anyone can make naming this validator costs
+   * it nothing. Default: serve every request.
+   */
+  protected servesLocally(_request: VerifiedRequest): true | { decline: string } {
+    return true;
+  }
+
+  /**
    * Whether to answer a request that passed the base checks. Return `false` to turn it away with no
    * response and no retries (logged as DECLINED with no detail), e.g. a request outside this
    * validator's scope. Return `{ decline: "<reason>" }` to do the same but carry a reason, logged
@@ -309,7 +319,8 @@ export abstract class ValidatorBase {
       return { kind: "skipped", requestHash, reason, ...(detail ? { detail } : {}) };
     };
 
-    if (answered(await chain.status(requestHash))) return skip("ALREADY_RESPONDED");
+    // Everything that needs no RPC comes first (P12, AUD-05): anyone can name this validator, so a request it doesn't
+    // serve must cost it no read at all.
     if (event.validator !== chain.address) return skip("WRONG_VALIDATOR", `the event names ${event.validator}`);
 
     const parsed = parseRequestUri(event.requestURI, maxRequestBytes);
@@ -336,6 +347,9 @@ export abstract class ValidatorBase {
       chainId: json.chainId,
       headTimestamp,
     };
+    const served = this.servesLocally(verified);
+    if (served !== true) return skip("DECLINED", served.decline);
+    if (answered(await chain.status(requestHash))) return skip("ALREADY_RESPONDED");
     const accepted = await this.accepts(verified);
     if (accepted !== true) return skip("DECLINED", typeof accepted === "object" ? accepted.decline : undefined);
     const result = await this.check(verified);

@@ -178,6 +178,12 @@ export class MandateValidator extends ValidatorBase {
     return result;
   }
 
+  /** The (gate, agent) allowlist, before any read (P12, AUD-05): `GATE_NOT_SERVED` / `GATE_NOT_FOR_AGENT`. */
+  protected override servesLocally(request: VerifiedRequest): true | { decline: string } {
+    const notServed = servedGateDecline(this.gates, request.gate, request.action.agentId);
+    return notServed === null ? true : { decline: notServed };
+  }
+
   protected override async accepts(request: VerifiedRequest): Promise<boolean | { decline: string }> {
     const agentId = request.action.agentId;
     const notServed = servedGateDecline(this.gates, request.gate, agentId);

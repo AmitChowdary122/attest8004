@@ -180,6 +180,15 @@ describe("RiskValidator: caught up", () => {
 });
 
 describe("RiskValidator: accepts()", () => {
+  it("P12 AUD-05: an unlisted gate costs no chain read either (no status read)", async () => {
+    const status = vi.spyOn(chain, "status");
+    addAction({ gate: OTHER_GATE });
+    const { validator } = makeValidator();
+    const { outcomes } = await validator.pollOnce();
+    expect(declined(outcomes)).toEqual([expect.stringMatching(/^DECLINED: GATE_NOT_SERVED: /)]);
+    expect(status).not.toHaveBeenCalled();
+  });
+
   it("GATE_NOT_SERVED: declined before any read or model call, and before admission", async () => {
     addAction({ gate: OTHER_GATE });
     const admission = new Admission({ maxRequestsPerAgent: 20, agentWindowSeconds: 3_600n, dailyGasBudget: 10_000_000n, maxGasPerResponse: 1_000_000n });
