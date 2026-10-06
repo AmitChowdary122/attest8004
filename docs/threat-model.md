@@ -277,7 +277,8 @@ No validator, CLI or CRE source reads the indexer. Every indexed verdict and pos
 The registry keys requests by hash alone ([spec-notes row 12](./spec-notes.md#differences-and-decisions)). Since P12
 the SDK sends an action's requests together (AUD-01).
 - **Residual risk:** a repeatable denial of service, by a front-runner reading pending transactions or on a pair that
-  still splits across blocks.
+  still splits across blocks. If the first send is rejected after the second has gone out, the second may still land unpaired;
+  `RequestSendError` names it, and the action must be re-salted (the auditor's re-check, N1).
 - **Status:** roadmap: one transaction for all of an action's requests, through an EIP-7702 batch from the hot key
   (Monad testnet accepts EIP-7702 transactions).
 
