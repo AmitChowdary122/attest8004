@@ -355,6 +355,17 @@ Run on the final tree before the push (`915a83c` plus these documents). The full
 | gitleaks over every commit on every ref (234) | no leaks |
 | Frozen formats (`mandate-v1` and `risk-v1` evidence, the `risk-v1` prompt, inbox envelope v1, their vectors and fixtures) and `contracts/src`, since `32b55a1` | unchanged |
 
+**After the push of `8e2f00e`:**
+- **CI** ([run 37514273458](https://github.com/AmitChowdary122/attest8004/actions/runs/37514273458)): all six jobs green
+  on `ubuntu-24.04`. That includes the now-required `contracts-fork` and the new `Hidden Unicode` job.
+- **The keep-alive workflow** ([run 37514531096](https://github.com/AmitChowdary122/attest8004/actions/runs/37514531096)):
+  green on `ubuntu-24.04`.
+- **Vercel** serves `8e2f00e`.
+- **The live headers,** with `curl -sI` on `/`, `/approve`, `/inbox`, `/dashboard` and the JavaScript asset at
+  18:50 UTC on 6 Oct: all six headers in `web/vercel.json` are served exactly, the new `Permissions-Policy` included.
+- **In the browser,** on the real host, the page still allows `publickey-credentials-get`/`-create` and
+  `clipboard-write`, and denies camera and geolocation. The console is clean.
+
 **What P12 spent on testnet:** two request pairs from agent 1985's hot key (0.064 MON each) and one `pnpm cre:demo` take
 (about 0.05 MON of the CRE key and 0.064 MON of agent 1984's hot key). Nothing was deployed, and no Groq or Nansen
 call was made.

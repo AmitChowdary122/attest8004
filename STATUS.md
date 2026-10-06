@@ -4,6 +4,135 @@ Running log, updated at the end of every session (CLAUDE.md, rule 10). Newest se
 
 ---
 
+## Wed 7 Oct 2026 · P12 independent security review + threat model
+
+### Done
+- **The audit** (plan `../plans/2026-10-06-p12-security-review.md`; ledger `../plans/p12-ledger.md`; every artifact in
+  `../plans/p12-audit/`):
+  - **The tools ran first,** on the untouched `32b55a1`:
+    - Slither 0.11.6: 11 results, all false positives or informational.
+    - Aderyn 0.6.8, from Cyfrin's npm package (crates.io only has a broken 0.1.9): 26 instances, all false positives or
+      style.
+    - `forge coverage --ir-minimum`: `src/` at 100 % of lines; the only miss is one unreachable branch.
+    - gitleaks: clean.
+    - `pnpm audit --prod`: 14 advisories, all under `indexer > envio`, none reachable. `bun audit`: clean.
+    - The live headers match `vercel.json` exactly.
+  - **Then one fresh Opus 5.5 auditor.** It was withheld STATUS, the plans, the ledgers and commit messages, and never
+    opened `.env`.
+    - **Result:** 0 Critical, 0 High, 4 Medium, 8 Low, 3 Info. Its PoCs reproduced: 6 forge (3 of them on a fork of
+      the live contracts) and 1 TypeScript.
+    - **Deployed code:** it compared all seven live contracts' bytecode with a fresh build of `32b55a1`.
+- **Your decisions:** AUD-04 → **A+**, a no-tag decline gate in B; AUD-01 → **A**, the interim fix, with the EIP-7702
+  batch on the roadmap. The auditor agreed to every Medium route, both before and after the fixes (U2).
+- **The fixes,** each behind a test that failed first:
+  - **AUD-01** (`6d0a823`): an action's requests are signed first and sent together.
+    - **Live:** with local signing, the pair landed in one block, 68,749,841. A first attempt without it split across
+      two blocks.
+    - **The re-check's N1** (`fb586d9`): `RequestSendError` names a later request already sent.
+  - **AUD-02** (`1435f1b`): `verify`'s `PIN_SKIPS_APPROVAL`, and A's pin floor read from chain. N2 caching in
+    `33772ff`. All 19 recorded A verdicts still match.
+  - **AUD-03** (`b730cd1`, `0fe0967`): `/inbox` lists A, B and C first and other validators apart; `reportText`
+    sanitises decrypted text.
+  - **AUD-04** (`662c748`): B's posting gate. N3's `VALUE_FLOWS_TRUNCATED` in `915a83c`. Replayed over all 12 posted B
+    verdicts: all would still post.
+  - **The Lows:**
+    - AUD-05 `99c26a1`: the allowlist runs before any read.
+    - AUD-07 `c937e29`: the deploy script never sources `.env` and never puts the key on argv.
+    - AUD-11 `29794cb`: `/evaluate` checks `Host`, and refuses far-future pins.
+    - AUD-12 `178053d`: a `Permissions-Policy` header.
+  - **The Infos:** AUD-14 `ff821ed` (`verify` recomputes the prompt hash; 12/12 B verdicts match) and AUD-15 `0881ff2`
+    (log and CLI hygiene, https for the LLM).
+  - **Doc corrections:** AUD-06, 08, 09 and 10 in `2a014bc`. AUD-13 accepted.
+- **Coverage gaps** (`afa0696`):
+  - stateful invariants on the gate and vault, mutation-checked;
+  - the auditor's PoCs kept as known-limitation tests (unit and fork);
+  - a `crossOrigin` test.
+- **Known items:**
+  - **Hidden Unicode:** rewritten as escapes, with a checker and a required CI job (`fe9fd3a`, `6e30b64`).
+  - **CI:** `ubuntu-24.04` and timeouts everywhere. `contracts-fork` is **required**, retrying the whole fork suite up
+    to 3 times, 60 s apart (`6e30b64`).
+  - **CRE:** `gas.max` raised to 1,160,000 (`5861588`); `ReportProcessed` decoded from the write's receipt, estimate
+    errors retried, the unreachable branch removed (`933953c`).
+  - **`cre:demo`:** the result-line parse and the `NOT_LANDED` output (`0a26a07`).
+  - **P10's wordings:** `cc94049`, `3d6de12`. `debug_traceCall` with `withLog` is now checked live.
+- **Docs:**
+  - `docs/threat-model.md` (`dde5f2b`): assets, 12 actors, the trust boundaries, threats → mitigations → residual risk,
+    and 16 open items with their status.
+  - `docs/security-review.md` (`8e2f00e`), stated as an AI-assisted self-review, not a professional audit.
+  - Both are linked from the README, ARCHITECTURE §9, SPEC §6 and docs/README; the P12 labels are done (`4e9f3b9`).
+- **Live, read-mostly checks:**
+  - two request pairs from agent 1985's hot key (0.064 MON each);
+  - one `pnpm cre:demo` take, after the receipt and `Host` changes: C scored 100 and 0, both landed through the
+    receipt check, and `verify` matched (about 0.05 MON of the CRE key and 0.064 MON of the hot key);
+  - one `debug_traceCall`;
+  - one EIP-7702 estimate, from a throwaway unfunded key.
+
+  No deploy, and no Groq or Nansen call.
+- **Checks on the final tree** (`../plans/p12-checks-final.log`):
+  - **forge:** `fmt`, the build, 250 unit, fuzz and invariant tests (CI profile), and 36 fork tests;
+  - **the vectors;**
+  - **TypeScript:** `typecheck`, and `pnpm test` with 1,659 passing;
+  - **the web build;**
+  - **cre:** 70 tests, typecheck, compile;
+  - **hidden Unicode:** none;
+  - **gitleaks:** 234 commits, no leaks;
+  - **frozen formats and `contracts/src`:** unchanged.
+
+  After the push: CI **green**, all six jobs ([run 37514273458](https://github.com/AmitChowdary122/attest8004/actions/runs/37514273458)), and the keep-alive workflow is green on `ubuntu-24.04`. Vercel serves `8e2f00e`, with all six headers in `vercel.json`, including the new
+  `Permissions-Policy`. The passkey features stay allowed for this origin.
+
+### Next
+- **Record the videos.** The demo flows changed: A and B are requested in one call, and B can decline. A demo take is
+  the first live run of the posting gate with the model.
+- **Roadmap, from the review:**
+  - an EIP-7702 batch for an action's requests (AUD-01);
+  - `risk-v2` (AUD-04's target half, AUD-08, AUD-09, the ERC-20 blind spot, Nansen outputs out of public evidence);
+  - a gate-side live-mandate check (AUD-06);
+  - Trusted Types and an AST lint (AUD-12);
+  - a forwarder that forwards only to allowlisted validators (AUD-03).
+- **The docs phase:** quickstart, api, trust-modes, migration, btx; then the submission texts.
+
+### Blockers or decisions needed
+- **None blocking.**
+- **One local key exposure, contained.** AUD-07's first RED test run executed the unmodified deploy script, which
+  ignored the test's env file and sourced the real `.env`. The test's stub `forge` wrote the **testnet deployer key**
+  to two files under `/tmp`.
+  - **Contained:** they were shredded within a minute, and the key was never printed or sent anywhere. The test now
+    runs a copy of the script in a throwaway tree.
+  - **Your call:** rotating the deployer key isn't required, since it's testnet-only and wasn't exposed beyond this
+    machine's `/tmp`. If you'd rather rotate it, it also owns agents 1984 and 1985.
+- **Rulings I made during P12:**
+1. The ledger was kept in the skill's workspace and copied to `../plans/p12-ledger.md`. **Cost if wrong:** none.
+2. Aderyn came from npm 0.6.8, because the crates.io version is abandoned. **Cost if wrong:** none.
+3. `forge coverage --ir-minimum`; the 19 `Deploy*` tests that pin CREATE2 addresses fail only under coverage.
+   **Cost if wrong:** none.
+4. I asked the auditor about the Medium routes before stopping for your decision. **Cost if wrong:** one auditor turn.
+5. The PoCs became passing known-limitation tests, because the contracts are immutable. **Cost if wrong:** none.
+6. Invariant runs are 64×64 by default and 256×64 in CI; a mutation check proved them. **Cost if wrong:** a rarer
+   break could need more runs.
+7. AUD-02's check compares the statuses at two blocks, and exempts C. **Cost if wrong:** about 2 extra reads per
+   validation in `verify`.
+8. AUD-03's scripts follow-up (`0fe0967`) is its own commit, not an amend. **Cost if wrong:** one intermediate commit
+   doesn't typecheck.
+9. AUD-01 sends locally signed transactions 20 ms apart after a 1 s settle. Sending all at once might reach the node out
+   of nonce order; awaiting each send adds a round trip. **Cost if wrong:** about 1 s more per pair, and a pair can
+   still split.
+10. The live AUD-01 checks used agent 1985's hot key. **Cost if wrong:** four unanswered requests for agent 1985 on
+    chain.
+11. AUD-04's gate runs in `RiskValidator`, not inside `runRiskV1`. **Cost if wrong:** another caller of `runRiskV1`
+    isn't gated (none posts).
+12. The gate checks forwarding before severity. **Cost if wrong:** none.
+13. `validation-roundtrip` uses the existing, tested `printableError`, with no new test. **Cost if wrong:** none.
+14. The harness turns a backslash-u escape into the literal character in any tool input, so such files are written
+    from code points. **Cost if wrong:** none.
+15. The CRE landing, estimate and unreachable-branch changes are one commit, amended before the push to include
+    `request.ts`, which its message already described. **Cost if wrong:** none.
+16. The auditor's re-check ran before the docs, so the review could quote it. **Cost if wrong:** none.
+17. For N1, the staggered sends stay rather than the auditor's "await each send". A round trip is about 0.4 s, roughly a
+    Monad block. **Cost if wrong:** a rejected first send can still leave B's request queued (Low).
+
+---
+
 ## Tue 6 Oct 2026 · P11 Chainlink CRE: validator C, a DON-orchestrated `mandate-v1` verdict (simulation, live on testnet)
 
 ### Done
