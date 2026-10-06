@@ -372,6 +372,39 @@ contract MandateRegistryTest is WebAuthnFixture {
         assertEq(registry.nonceOf(agent1), 1);
     }
 
+    /// Known limitation (P12 coverage gap 5): `"crossOrigin":true` isn't checked on chain (OpenZeppelin's
+    /// `WebAuthn.verify` doesn't read it). Only the page's `frame-ancestors 'none'` and `X-Frame-Options: DENY`
+    /// keep the approval page out of another site's frame (docs/threat-model.md).
+    function test_SetMandate_AcceptsCrossOriginClientData() public {
+        _setPasskey(agent1, passkey);
+        MandateRegistry.Mandate memory mandate = _validMandate();
+        bytes32 hash = registry.mandateHashOf(mandate);
+        bytes32 challenge = _challenge(block.chainid, address(registry), agent1, hash, 0);
+        string memory clientDataJSON = string.concat(
+            '{"type":"webauthn.get","challenge":"',
+            Base64.encodeURL(abi.encodePacked(challenge)),
+            '","origin":"',
+            ORIGIN,
+            '","crossOrigin":true}'
+        );
+        bytes memory authenticatorData = abi.encodePacked(RP_ID_HASH, FLAGS_SYNCED_UV, bytes4(0));
+        (bytes32 r, bytes32 s) = vm.signP256(passkey.pk, _digest(authenticatorData, clientDataJSON));
+        if (uint256(s) > P256.N / 2) s = bytes32(P256.N - uint256(s));
+        WebAuthn.WebAuthnAuth memory auth = WebAuthn.WebAuthnAuth({
+            r: r,
+            s: s,
+            challengeIndex: _indexOf(bytes(clientDataJSON), bytes('"challenge":"')),
+            typeIndex: _indexOf(bytes(clientDataJSON), bytes('"type":"')),
+            authenticatorData: authenticatorData,
+            clientDataJSON: clientDataJSON
+        });
+
+        vm.prank(owner);
+        registry.setMandate(agent1, mandate, auth);
+        (, bytes32 storedHash,,) = registry.getMandate(agent1);
+        assertEq(storedHash, hash);
+    }
+
     // ----------------------------------------------------------- setMandate: the assertion
 
     function test_SetMandate_RevertWhen_WrongChallenge() public {
