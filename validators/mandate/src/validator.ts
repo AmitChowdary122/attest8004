@@ -137,6 +137,8 @@ export class MandateValidator extends ValidatorBase {
   private lastResponseBlock: bigint | undefined;
   /** This process's most recent approval (score 100), until it is seen answered at a pinned block. */
   private pendingApproval: Hex | undefined;
+  /** Requests the pin's chain check has seen naming another validator or agent (they never change; P12 re-check, N2). */
+  private readonly notOurs = new Set<string>();
   /** The latest `P`'s timestamp: the clock `admission.settle` runs on. */
   private lastPinTimestamp = 0n;
   private caughtUp = false;
@@ -307,7 +309,7 @@ export class MandateValidator extends ValidatorBase {
       if (
         at >= floor &&
         (mustSee === undefined || answered(await this.reader.status(mustSee, at))) &&
-        (await approvalsAfterPin({ reader: this.reader, validator: this.chain.address, agentId, pin: at, upTo: head.number, exclude: requestHash })).length === 0
+        (await approvalsAfterPin({ reader: this.reader, validator: this.chain.address, agentId, pin: at, upTo: head.number, exclude: requestHash, notOurs: this.notOurs })).length === 0
       ) {
         const pinned = await this.reader.block(at);
         if (pinned.timestamp >= earliestTime) {

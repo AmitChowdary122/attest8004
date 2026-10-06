@@ -261,13 +261,22 @@ export async function approvalsAfterPin(o: {
   pin: bigint;
   upTo: bigint;
   exclude: Hex;
+  /**
+   * Requests seen naming another validator or agent: a request's validator and agent never change, so a caller that
+   * checks repeatedly (validator A's pin, while it waits) passes one set and they are read only once (P12 re-check, N2).
+   */
+  notOurs?: Set<string>;
 }): Promise<Hex[]> {
-  const { reader, validator, agentId, pin, upTo } = o;
+  const { reader, validator, agentId, pin, upTo, notOurs } = o;
   const excluded = o.exclude.toLowerCase();
-  const hashes = (await reader.agentValidations(agentId, upTo)).filter((hash) => hash.toLowerCase() !== excluded);
+  const hashes = (await reader.agentValidations(agentId, upTo)).filter((hash) => hash.toLowerCase() !== excluded && !notOurs?.has(hash.toLowerCase()));
   const skipped = await mapWithConcurrency(hashes, 8, async (requestHash): Promise<Hex | null> => {
     const now = await reader.status(requestHash, upTo);
-    const isApproval = now.validator.toLowerCase() === validator.toLowerCase() && now.agentId === agentId && now.tag === MANDATE_V1.tag && now.response === 100;
+    if (now.validator.toLowerCase() !== validator.toLowerCase() || now.agentId !== agentId) {
+      notOurs?.add(requestHash.toLowerCase());
+      return null;
+    }
+    const isApproval = now.tag === MANDATE_V1.tag && now.response === 100;
     if (!isApproval) return null;
     const then = await statusOrUnknown(reader, requestHash, pin);
     const alreadyThere = then !== null && then.response === 100 && then.tag === MANDATE_V1.tag && then.responseHash.toLowerCase() === now.responseHash.toLowerCase();

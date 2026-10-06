@@ -112,6 +112,29 @@ describe("approvalsAfterPin", () => {
   });
 });
 
+describe("approvalsAfterPin's cache (P12 re-check, N2)", () => {
+  it("skips, on later calls, every request it has seen naming another validator or agent: they never change", async () => {
+    const { r1Block } = await overCapPair();
+    const other = addRequest({ ...requestJson({ value: 7n }), validator: OTHER_VALIDATOR }, 1_002n);
+    chain.landed.set(other.requestHash.toLowerCase() as Hex, {
+      block: r1Block,
+      logIndex: 1,
+      uri: "data:,",
+      status: { validator: OTHER_VALIDATOR, agentId: AGENT, response: 100, responseHash: keccak256(toHex("x")), tag: "mandate-v1", lastUpdate: tsOf(r1Block) },
+    });
+    const reader = new FakeReader(chain);
+    const reads: Hex[] = [];
+    const counting = { agentValidations: reader.agentValidations.bind(reader), status: (h: Hex, at: bigint) => (reads.push(h), reader.status(h, at)) };
+    const notOurs = new Set<string>();
+    const check = () => approvalsAfterPin({ reader: counting, validator: VALIDATOR, agentId: AGENT, pin: r1Block, upTo: chain.finalized, exclude: keccak256(toHex("none")), notOurs });
+
+    await check();
+    expect(reads.filter((h) => h === other.requestHash)).toHaveLength(1);
+    await check();
+    expect(reads.filter((h) => h === other.requestHash)).toHaveLength(1);
+  });
+});
+
 describe("verify: a pin that skips the validator's own approval (P12 AUD-02)", () => {
   it("an early-pinned approval that leaves out an earlier approval of the agent: PIN_SKIPS_APPROVAL, a mismatch", async () => {
     const { r1, r1Block, r2, r2json } = await overCapPair();
