@@ -140,7 +140,8 @@ Agent 1984's live mandate was **not** changed: this mandate is the shape, not a 
 ## The proof: fork tests
 
 [`contracts/test/fork/AgentPassportIntegration.fork.t.sol`](../contracts/test/fork/AgentPassportIntegration.fork.t.sol) runs
-on a fork of Monad testnet's latest block, in CI's `contracts-fork` job.
+on a fork of Monad testnet's latest block, in CI's `contracts-fork` job, which is required (a failure turns the build
+red) and retries the whole fork suite up to three times, 60 s apart, for the public RPC's rate limit.
 - **Ours:** the live `DemoAgentVault` (agent 1984, `mandate-v1` 100 and `risk-v1` 80) is the verifier.
 - **Theirs, as deployed:** JobEscrow, AgentPassport, the USDC and the ERC-8004 registries.
 - **Made in the fork:**
@@ -203,7 +204,8 @@ used 374,088 gas in total. Monad charges the gas limit, so size live limits from
    - **The fix is roadmap work:** a `risk-v2` that decodes `Transfer` logs from the call trace
      ([ARCHITECTURE §12](../ARCHITECTURE.md#12-extension-points-and-roadmap)).
 5. **Their maintainer is unreachable through GitHub.** The repository and its account return 404 as of 5 Oct 2026.
-   Their contracts are immutable, so nothing here depends on them; the fork test fails loudly if the wiring above changes.
+   Their contracts are immutable, so nothing here depends on them; the fork test fails loudly if the wiring above changes
+   (`testFork_LiveWiring`, in the required `contracts-fork` job).
 
 ## Doing the same for another escrow
 

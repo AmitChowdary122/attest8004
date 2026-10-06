@@ -154,7 +154,9 @@ Fork tests fork the latest testnet block (Monad RPC nodes don't reliably serve o
 MONAD_TESTNET_RPC_URL=https://testnet-rpc.monad.xyz forge test --match-path 'test/fork/*'
 ```
 
-CI runs them in a separate `contracts-fork` job that may fail without turning the build red (public RPC rate limits).
+CI runs them in a separate `contracts-fork` job, **required** since P12: a failure turns the build red. Its only flake is
+the public RPC's rate limit (15 requests a second per IP), so the step runs the whole fork suite through
+`.github/scripts/retry.sh 3 60`: up to three attempts, 60 s apart. A real failure fails all three.
 
 ## Deploying
 
