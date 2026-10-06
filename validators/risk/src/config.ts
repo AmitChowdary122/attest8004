@@ -55,6 +55,12 @@ const DECIMAL = /^(0|[1-9][0-9]*)$/;
 const UINT256_LIMIT = 2n ** 256n;
 const POSITIVE_DECIMAL = /^[1-9][0-9]*$/;
 
+/** Whether an http(s) URL's host is this machine (127.0.0.0/8, localhost, ::1): plain http stays on the box. */
+function isLoopbackHost(value: string): boolean {
+  const host = URL.parse(value)?.hostname ?? "";
+  return host === "localhost" || host === "[::1]" || /^127\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(host);
+}
+
 /** The URL's host when it is an http(s) URL with one, else `null`. Never echoes the input. */
 function httpHost(value: string): string | null {
   const url = URL.parse(value);
@@ -97,7 +103,10 @@ export function parseRiskServiceConfig(env: Record<string, string | undefined>, 
   if (llmBaseUrl !== undefined) {
     const host = httpHost(llmBaseUrl);
     if (host === null) problems.push("LLM_BASE_URL must be an http(s) URL");
-    else llmHost = host;
+    else if (URL.parse(llmBaseUrl)?.protocol === "http:" && !isLoopbackHost(llmBaseUrl)) {
+      // P12, AUD-15: the Bearer LLM_API_KEY rides on every request.
+      problems.push("LLM_BASE_URL must be https (plain http only for a loopback host)");
+    } else llmHost = host;
   }
   const llmApiKey = required("LLM_API_KEY");
   const llmModel = required("LLM_MODEL");

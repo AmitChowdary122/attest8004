@@ -528,6 +528,16 @@ describe("ValidatorBase", () => {
       jsonLineLog({ a: 2n ** 70n, nested: { b: [1n, "x"] }, c: 3 });
       expect(lines).toEqual(['{"a":"1180591620717411303424","nested":{"b":["1","x"]},"c":3}']);
     });
+
+    it("P12 AUD-15: jsonLineLog writes C1, bidi and invisible characters as JSON escapes", () => {
+      const lines: string[] = [];
+      vi.spyOn(console, "log").mockImplementation((line: unknown) => {
+        lines.push(String(line));
+      });
+      jsonLineLog({ uri: "a\u0085b\u202Ec\u2066d\u200Be\uFEFFf\u061Cg" });
+      expect(lines).toEqual(['{"uri":"a\\u0085b\\u202ec\\u2066d\\u200be\\ufefff\\u061cg"}']);
+      expect(JSON.parse(lines[0] as string)).toEqual({ uri: "a\u0085b\u202Ec\u2066d\u200Be\uFEFFf\u061Cg" });
+    });
   });
 
   it("logs a short preview, never a whole attacker-sized URI", async () => {

@@ -588,6 +588,18 @@ describe("attest8004 CLI: risk-v1 output", () => {
     expect(printable("a\u061cb")).toBe("a\\u061cb");
   });
 
+  it("P12 AUD-15: a tool name from the evidence is clipped to 64 characters", async () => {
+    const long = `nansen_${"x".repeat(500)}`;
+    const h = harness({ tag: "risk-v1", riskReport: { ...riskMatchReport, uncheckedToolCalls: [{ index: 2, name: long }] } });
+    await h.run(["verify", HASH]);
+    expect(h.all()).not.toContain(long);
+    expect(h.all()).toContain(`#2 ${long.slice(0, 64)}…`);
+  });
+
+  it("P12 AUD-15: printable escapes zero-width and invisible format characters too", () => {
+    expect(printable("a\u200bb\u200dc\u2060d\u2064e\ufefff")).toBe("a\\u200bb\\u200dc\\u2060d\\u2064e\\ufefff");
+  });
+
   it("mandate-v1's differing keys (operator-controlled) can't inject report lines either", async () => {
     const h = harness({ report: { ...mismatchReport, differingKeys: ["block\nproblems           none"] } });
     await expect(h.run(["verify", HASH])).resolves.toBe(1);

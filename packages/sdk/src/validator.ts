@@ -116,10 +116,13 @@ export interface ValidatorOptions {
 
 /**
  * Writes `entry` as one JSON line on stdout, every `bigint` (at any depth) as a decimal string:
- * `JSON.stringify` alone throws on a bigint. The validator base's default logger.
+ * `JSON.stringify` alone throws on a bigint. C1 controls, bidi controls and invisible format characters, which
+ * `JSON.stringify` leaves raw and a hostile request URI can carry, are written as `\uXXXX` escapes, so a terminal
+ * or log viewer shows them instead of acting on them (P12, AUD-15). The validator base's default logger.
  */
 export function jsonLineLog(entry: Record<string, unknown>): void {
-  console.log(JSON.stringify(entry, (_key, value: unknown) => (typeof value === "bigint" ? value.toString() : value)));
+  const line = JSON.stringify(entry, (_key, value: unknown) => (typeof value === "bigint" ? value.toString() : value));
+  console.log(line.replace(/[\u0080-\u009f\u061c\u200b-\u200f\u2028\u2029\u202a-\u202e\u2060-\u2064\u2066-\u2069\ufeff]/g, (c) => `\\u${c.charCodeAt(0).toString(16).padStart(4, "0")}`));
 }
 
 /** The `schema` of every evidence document `buildEvidence` builds (ARCHITECTURE §6). */

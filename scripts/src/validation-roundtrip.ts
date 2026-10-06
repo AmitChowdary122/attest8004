@@ -31,6 +31,7 @@ import {
 import { privateKeyToAccount } from "viem/accounts";
 import { monadTestnet } from "viem/chains";
 import { DEPLOYMENTS } from "@attest8004/sdk";
+import { printableError } from "./demo-text.ts";
 
 /**
  * Explicit gas limits (Monad charges for the limit): Monad testnet eth_estimateGas on 2 Oct 2026
@@ -241,6 +242,7 @@ async function main(): Promise<void> {
 }
 
 main().catch((error: unknown) => {
-  console.error(error instanceof Error ? error.message : error);
+  // viem's full message carries the request's URL, which may hold a key (P12, AUD-15): the short, redacted form only.
+  console.error(printableError(error));
   process.exitCode = 1;
 });

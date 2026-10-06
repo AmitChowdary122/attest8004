@@ -77,6 +77,22 @@ describe("parseRiskServiceConfig", () => {
     });
   });
 
+  it("P12 AUD-15: LLM_BASE_URL must be https, except for a loopback host (the Bearer key would go in clear)", () => {
+    const problem = (url: string) => {
+      try {
+        parseRiskServiceConfig({ ...base, LLM_BASE_URL: url }, ROOT);
+        return null;
+      } catch (error) {
+        return (error as Error).message;
+      }
+    };
+    expect(problem("http://llm.example.com/v1")).toContain("LLM_BASE_URL must be https (plain http only for a loopback host)");
+    expect(problem("http://127.0.0.1:8080/v1")).toBeNull();
+    expect(problem("http://localhost:8080/v1")).toBeNull();
+    expect(problem("http://[::1]:8080/v1")).toBeNull();
+    expect(problem("https://llm.example.com/v1")).toBeNull();
+  });
+
   it("reads every override", () => {
     const config = parseRiskServiceConfig(
       {

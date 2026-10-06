@@ -18,7 +18,7 @@ export const MODEL_OUTPUT = "recorded, not re-run";
  * Inside JSON strings the escape is still valid JSON for the same character.
  */
 export function printable(text: string): string {
-  return text.replace(/[\u0000-\u0009\u000b-\u001f\u007f-\u009f\u061c\u200e\u200f\u2028\u2029\u202a-\u202e\u2066-\u2069]/g, (c) =>
+  return text.replace(/[\u0000-\u0009\u000b-\u001f\u007f-\u009f\u061c\u200b-\u200f\u2028\u2029\u202a-\u202e\u2060-\u2064\u2066-\u2069\ufeff]/g, (c) =>
     `\\u${c.charCodeAt(0).toString(16).padStart(4, "0")}`,
   );
 }
@@ -200,8 +200,11 @@ function riskVerdictLine(report: RiskVerifyReport): string {
   }
 }
 
+/** Tool names come from the evidence the operator wrote: each is clipped (P12, AUD-15). */
+const MAX_TOOL_NAME_CHARS = 64;
+
 function calls(refs: readonly ToolCallRef[]): string {
-  return refs.map((ref) => `#${ref.index} ${oneLine(ref.name)}`).join(", ");
+  return refs.map((ref) => `#${ref.index} ${oneLine(clipped(ref.name, MAX_TOOL_NAME_CHARS))}`).join(", ");
 }
 
 /**
