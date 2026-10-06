@@ -179,3 +179,25 @@ export async function verifyWhenFinal<R>(o: {
     await o.sleep(o.pollMs ?? 500);
   }
 }
+
+/**
+ * The simulator's result line, a JSON string literal holding the workflow's own JSON; null for a malformed line or
+ * anything else (P12: parsed inside the stream handler, where a throw would be uncaught).
+ */
+export function parseResultLine(line: string): string | null {
+  try {
+    const value: unknown = JSON.parse(line.trim());
+    return typeof value === "string" ? value : null;
+  } catch {
+    return null;
+  }
+}
+
+/** Why a simulation exited non-zero: the workflow's own `NOT_LANDED` throw, by its detail, or a plain failure (P12). */
+export function simulationFailure(tail: readonly string[]): { kind: "NOT_LANDED"; detail: string } | { kind: "FAILED" } {
+  for (const line of tail) {
+    const match = /NOT_LANDED: (.*)$/.exec(line);
+    if (match) return { kind: "NOT_LANDED", detail: (match[1] as string).trim() };
+  }
+  return { kind: "FAILED" };
+}

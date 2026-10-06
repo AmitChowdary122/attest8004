@@ -9,7 +9,9 @@ import {
   findCreCli,
   fitOuterGas,
   landedVerdict,
+  parseResultLine,
   printableCommand,
+  simulationFailure,
   requestLogIndex,
   simulateArgv,
   simulationDecision,
@@ -213,5 +215,29 @@ describe("verifyWhenFinal: verify reads at the finalized head, so it waits until
       }),
     ).rejects.toThrow(/didn't finalize/);
     expect(calls).toBe(0);
+  });
+});
+
+// P12 (P11 deferred minors): the simulator's stream is parsed defensively, and a NOT_LANDED throw reads as "not landed".
+describe("parseResultLine", () => {
+  it("reads the simulator's JSON string literal", () => {
+    expect(parseResultLine('"{\\"a\\":1}"')).toBe('{"a":1}');
+  });
+
+  it("is null for a malformed line or anything that isn't a JSON string, never a throw", () => {
+    expect(parseResultLine('"{oops')).toBeNull();
+    expect(parseResultLine("42")).toBeNull();
+    expect(parseResultLine('{"a":1}')).toBeNull();
+  });
+});
+
+describe("simulationFailure", () => {
+  it("names a NOT_LANDED throw from the workflow's output", () => {
+    const tail = ["2026-10-07 [USER LOG] WRITE tx 0xab", "Error: workflow execution failed: NOT_LANDED: tx 0xab: RECEIVER_REVERTED", "exit status 1"];
+    expect(simulationFailure(tail)).toEqual({ kind: "NOT_LANDED", detail: "tx 0xab: RECEIVER_REVERTED" });
+  });
+
+  it("is a plain failure otherwise", () => {
+    expect(simulationFailure(["Error: context deadline exceeded"])).toEqual({ kind: "FAILED" });
   });
 });

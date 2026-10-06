@@ -44,6 +44,8 @@ import {
   simulateArgv,
   simulationDecision,
   verifyWhenFinal,
+  parseResultLine,
+  simulationFailure,
 } from "./cre-demo-plan.ts";
 import { DEMO_VALUES } from "./demo-budget.ts";
 import { AGENT_ID, FORWARDER, IDENTITY_REGISTRY, MANDATE_CONTRACTS, MANDATE_REGISTRY, REGISTRY, UNKNOWN_TARGET, VAULT } from "./demo-chain.ts";
@@ -252,7 +254,7 @@ function simulate(creCli: string, args: string[]): Promise<{ code: number | null
       const user = /\[USER LOG\] (.*)$/.exec(line);
       if (user) say(`  ${color.dim("CRE ▸")} ${user[1]}`);
       if (expectResult && line.trim().startsWith('"')) {
-        result = JSON.parse(line.trim()) as string;
+        result = parseResultLine(line); // never throws inside the stream handler (P12)
         expectResult = false;
       }
       if (line.includes("Workflow Simulation Result")) expectResult = true;
@@ -331,8 +333,13 @@ async function scene(o: {
   const run = await simulate(o.pre.creCli, args);
   say(color.dim(waitCloseLine(Date.now() - simStart)));
   if (run.code !== 0 || run.result === null) {
-    for (const line of run.tail.slice(-8)) say(color.dim(`    ${line}`));
-    say(color.bad(`  ✗ the simulation failed (exit ${run.code})`));
+    const failure = simulationFailure(run.tail);
+    if (failure.kind === "NOT_LANDED") {
+      say(color.bad(`  ✗ not landed: ${failure.detail}`));
+    } else {
+      for (const line of run.tail.slice(-8)) say(color.dim(`    ${line}`));
+      say(color.bad(`  ✗ the simulation failed (exit ${run.code})`));
+    }
     return { name: o.name, ok: false, ms: Date.now() - started };
   }
   const result = JSON.parse(run.result) as { declined?: string; detail?: string; score?: number; responseHash?: Hex; txHash?: Hash; gasLimit?: string };
